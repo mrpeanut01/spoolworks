@@ -45,8 +45,12 @@ struct PrinterCFSView: View {
             .padding(.vertical, 22)
         }
         .background(Theme.background)
+        // Deliberately no `onDisappear { stopAutoPoll() }`. The poll is app-wide: the header
+        // reports CFS state from every screen, and job consumption has to keep accruing while the
+        // user is looking at Inventory or writing a tag. Tying it to this screen meant the header
+        // read "not polled" until someone happened to visit it, and a print running in the
+        // background went unrecorded. `startAutoPoll` is idempotent, so appearing again is safe.
         .onAppear { model.startAutoPoll() }
-        .onDisappear { model.stopAutoPoll() }
     }
 
     // MARK: Status strip

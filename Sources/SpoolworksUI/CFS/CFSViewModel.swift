@@ -54,6 +54,8 @@ final class CFSViewModel: ObservableObject {
     /// process, and `filament_used` moves continuously where `remainLen` moves in 1 % steps —
     /// 10 g at a time on a 1 kg spool.
     static let jobPollInterval: TimeInterval = 5
+    /// How long to wait before looking again when there is nothing to poll yet.
+    static let retryInterval: TimeInterval = 5
 
     private let transport: PrinterTransporting
     private let jobReader: PrintJobReading
@@ -151,8 +153,12 @@ final class CFSViewModel: ObservableObject {
         timer = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if await self.autoPoll, await self.canPoll { await self.poll() }
-                try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
+                let ready = await self.canPoll
+                if await self.autoPoll, ready { await self.poll() }
+                // Retry sooner while there is nothing to poll, so adding a printer or its password
+                // takes effect in seconds rather than at the end of a full interval.
+                let delay = ready ? Self.pollInterval : Self.retryInterval
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
     }

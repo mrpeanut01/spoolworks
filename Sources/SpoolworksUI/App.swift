@@ -245,6 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             environment?.monitor.stop()
+            // The polls outlive any one screen now, so quitting is what ends them.
+            environment?.cfsModel.stopAutoPoll()
         }
     }
 }

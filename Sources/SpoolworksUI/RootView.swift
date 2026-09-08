@@ -98,7 +98,13 @@ struct RootView: View {
             env.sidebarSelection = .inventory
             env.monitor.start()
             env.inventoryModel.load()
-            Task { await env.printerModel.refresh() }
+            // Ordered on purpose: the polls need a configured printer, and `refresh()` is what
+            // discovers one. Starting them first meant `canPoll` was false on the first pass and
+            // nothing happened for a full interval.
+            Task {
+                await env.printerModel.refresh()
+                env.cfsModel.startAutoPoll()
+            }
             // The catalogue used to load only when MaterialsView appeared. Now that Materials is
             // a window rather than a sidebar destination, nothing opened it on a normal run — so
             // the sidebar footer read "0 materials, version 0" and Intake could never resolve a
