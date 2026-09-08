@@ -38,7 +38,29 @@ struct IntakeView: View {
         // Auto-read, so no button has to be pressed. Read mode is what arms TagViewModel's
         // arrival handling; Intake is a reading screen whichever method is chosen, and a blank tag
         // presented in Method B simply fails to decode and is ignored.
-        .onAppear { tagModel.mode = .read }
+        .onAppear {
+            model.isActive = true
+            arm()
+        }
+        .onDisappear {
+            model.isActive = false
+            // Leave the reader in read mode. A write arming that outlived this screen would make
+            // a tag presented anywhere else get written.
+            tagModel.mode = .read
+        }
+        // Re-arm whenever anything that decides the mode changes.
+        .onChange(of: model.method) { _, _ in arm() }
+        .onChange(of: model.tagsHandled) { _, _ in arm() }
+        .onChange(of: model.materialID) { _, _ in arm() }
+        .onChange(of: model.colorHex) { _, _ in arm() }
+        // Feed the reader's activity through so the slot rows can show it.
+        .onChange(of: tagModel.activity) { _, activity in
+            model.activityLabel = activity.isRunning ? activity.label : nil
+        }
+        // A verified write ticks off the next slot.
+        .onChange(of: tagModel.writeOutcome) { _, outcome in
+            if case let .succeeded(summary) = outcome { model.absorbWrite(uid: summary.uid) }
+        }
         // Keyed on the UID rather than the record: a spool's two tags carry the *same* payload, so
         // watching the record would miss the second one entirely.
         .onChange(of: tagModel.lastRead?.uid ?? []) { _, _ in
@@ -71,6 +93,22 @@ struct IntakeView: View {
 
     /// Which of the spool's two tags the open confirmation sheet belongs to.
     @State private var pendingSlot: IntakeViewModel.TagSlot?
+
+    /// Puts the reader into the mode this screen currently needs.
+    ///
+    /// Method A reads. Method B **writes on presentation** — the draft is loaded and auto-write
+    /// armed, so a blank tag laid on the reader is written without a button. Once both tags are
+    /// done the arming is dropped again: a third tag presented while tidying up must not be
+    /// written.
+    private func arm() {
+        guard model.isActive else { return }
+        if model.isArmedToWrite {
+            model.loadDraft(into: tagModel)
+            tagModel.mode = .write
+        } else {
+            tagModel.mode = .read
+        }
+    }
 
     /// Loads the intake form into the tag draft and raises the standard write confirmation.
     private func beginWrite(_ slot: IntakeViewModel.TagSlot) {
@@ -140,20 +178,35 @@ struct IntakeView: View {
 
     private func tagPanel(tinted: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
                 Text(model.tagPanelLabel).kicker()
                 Spacer()
-                Text(model.tagProgress)
+                if model.tagsHandled >= 2 {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.success)
+                        .accessibilityHidden(true)
+                }
+                Text(model.tagSummary)
                     .font(Theme.monoSmall)
-                    .foregroundStyle(Theme.secondaryLabel)
+                    .foregroundStyle(model.tagsHandled >= 2 ? Theme.success : Theme.secondaryLabel)
             }
             .padding(.bottom, 12)
+
+            if model.isArmedToWrite {
+                HStack(spacing: 7) {
+                    StatusDot(level: .ready, size: 8)
+                    Text("Armed — lay a blank tag on the reader and it is written, then read back to verify.")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.secondaryLabel)
+                }
+                .padding(.bottom, 10)
+            }
 
             ForEach(model.tags) { slot in
                 TagRow(slot: slot,
                        isScan: model.isScan,
-                       busy: tagModel.activity.isRunning,
-                       previousDone: slot.index == 0 || model.tags[0].isDone) {
+                       busy: tagModel.activity.isRunning) {
                     if model.isScan {
                         // The one shared reader path. `onChange(of: lastRead.uid)` files the
                         // result in the next slot, exactly as an untouched tag would be.
@@ -360,7 +413,6 @@ private struct TagRow: View {
     let slot: IntakeViewModel.TagSlot
     let isScan: Bool
     let busy: Bool
-    let previousDone: Bool
     let action: () -> Void
 
     var body: some View {
@@ -368,39 +420,72 @@ private struct TagRow: View {
             Text(slot.name)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .frame(width: 84, alignment: .leading)
+
             Text(detail)
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.secondaryLabel)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(state).kicker().foregroundStyle(Theme.accent)
+
+            // A write takes several seconds — dump, authenticate, write, read back — and the row
+            // used to sit there saying "ready" throughout, which reads as nothing happening.
+            if slot.state.isWorking {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 14, height: 14)
+                    .accessibilityHidden(true)
+            } else if slot.state == .done {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.success)
+                    .accessibilityHidden(true)
+            }
+
+            Text(slot.state.caption)
+                .kicker()
+                .foregroundStyle(captionColour)
+                .frame(minWidth: 62, alignment: .trailing)
+
             Button(cta, action: action)
                 .buttonStyle(.sw(.primary, size: 11.5, h: 16, v: 8))
-                .disabled(busy || !previousDone)
+                .disabled(busy || slot.state == .waiting)
+                .opacity(slot.state == .done ? 0.6 : 1)
         }
         .padding(.vertical, 11)
         .overlay(alignment: .bottom) { Hairline() }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(slot.name), \(slot.state.caption). \(detail)")
+    }
+
+    private var captionColour: Color {
+        switch slot.state {
+        case .done: return Theme.success
+        case .working: return Theme.busy
+        case .ready: return Theme.accent
+        case .waiting: return Theme.kickerLabel
+        }
     }
 
     private var detail: String {
-        if isScan {
-            return slot.isDone ? "read and decoded · payload matches" : "waiting — present this tag"
+        switch slot.state {
+        case .done:
+            return isScan ? "read and decoded · payload matches"
+                          : "written, then read back byte for byte"
+        case let .working(what):
+            return what
+        case .ready:
+            return isScan ? "present this tag to the reader"
+                          : "present a blank MIFARE Classic 1K tag"
+        case .waiting:
+            return isScan ? "waiting for the first tag" : "waiting for tag 1"
         }
-        if slot.isDone { return "written and verified byte for byte" }
-        return previousDone ? "present a blank MIFARE Classic 1K tag" : "waiting for tag 1"
-    }
-
-    private var state: String {
-        if isScan { return slot.isDone ? "read" : "ready" }
-        if slot.isDone { return "verified" }
-        return previousDone ? "ready" : "waiting"
     }
 
     private var cta: String {
-        // Kept as a manual fallback for a tag the reader saw but did not decode; the normal path
-        // is that it never needs pressing.
+        // The normal path never needs this pressed — tags are read and written on presentation.
+        // It stays for a tag the reader saw but could not decode.
         if isScan { return slot.isDone ? "Re-read" : "Read now" }
-        return slot.isDone ? "Rewrite" : "Write"
+        return slot.isDone ? "Rewrite" : "Write now"
     }
 }
 

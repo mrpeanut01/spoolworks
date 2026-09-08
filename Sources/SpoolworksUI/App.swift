@@ -77,16 +77,20 @@ final class AppEnvironment: ObservableObject {
                                      printers: printerModel,
                                      inventory: inventoryModel)
         // Every verified write logs its spool, whichever screen or path produced it.
-        self.tagModel.onWriteSucceeded = { [weak inventoryModel, weak settings] summary in
+        let intakeModel = IntakeViewModel(monitor: monitor,
+                                          inventory: inventoryModel,
+                                          materials: self.materialsModel,
+                                          toasts: toasts)
+        self.intakeModel = intakeModel
+        self.tagModel.onWriteSucceeded = { [weak inventoryModel, weak settings, weak intakeModel] summary in
             guard let inventoryModel, let settings else { return }
+            // Intake owns its own add-to-stock step and the user is meant to see both tags
+            // verified before committing, so a write made there logs nothing on its own.
+            guard intakeModel?.isActive != true else { return }
             inventoryModel.logWrittenSpool(record: summary.record,
                                            materialLabel: summary.materialLabel,
                                            enabled: settings.addWrittenSpoolsToInventory)
         }
-        self.intakeModel = IntakeViewModel(monitor: monitor,
-                                           inventory: inventoryModel,
-                                           materials: self.materialsModel,
-                                           toasts: toasts)
     }
 
     static let tagMemoryWindowID = "tag-memory"

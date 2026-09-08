@@ -84,5 +84,6 @@ let exitCode = TestDriver.run([
     writeFormDefaultsTests,
     intakeAutoReadTests,
     intakeReaderContentionTests,
+    intakeSlotStateTests,
 ])
 exit(exitCode)

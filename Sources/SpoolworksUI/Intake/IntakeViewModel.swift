@@ -47,12 +47,41 @@ final class IntakeViewModel: ObservableObject {
         }
     }
 
+    /// Where one of a spool's two tags has got to.
+    ///
+    /// Replaces a pair of booleans that could only say "done" or "not done". The screen showed
+    /// "ready" and "waiting" flickering against each other with nothing to say a tag had actually
+    /// been written, because there was no state for *in progress* and no state for *verified* as
+    /// distinct from *ticked off*.
+    enum SlotState: Equatable {
+        /// The other tag has not been done yet; this one is not next.
+        case waiting
+        /// Present a tag now.
+        case ready
+        /// The reader is working on it. Carries what it is doing, for the row and its spinner.
+        case working(String)
+        /// Written and read back byte for byte, or read and decoded.
+        case done
+
+        var isWorking: Bool { if case .working = self { return true }; return false }
+
+        var caption: String {
+            switch self {
+            case .waiting: return "waiting"
+            case .ready: return "ready"
+            case let .working(what): return what
+            case .done: return "verified"
+            }
+        }
+    }
+
     /// One of a spool's two tags, and how far it has got.
     struct TagSlot: Identifiable, Equatable {
         let index: Int
-        var isDone: Bool
+        var state: SlotState
         var id: Int { index }
         var name: String { "Tag \(index + 1) of 2" }
+        var isDone: Bool { state == .done }
     }
 
     // MARK: Published state
@@ -83,6 +112,8 @@ final class IntakeViewModel: ObservableObject {
     /// UID is the right key here: presenting tag 1 twice must not tick off tag 2, and presenting
     /// tag 2 must.
     private var absorbedUIDs: Set<[UInt8]> = []
+    /// UIDs already written, so writing one tag twice cannot claim both slots.
+    private var writtenUIDs: Set<[UInt8]> = []
 
     // MARK: The form
 
@@ -137,9 +168,41 @@ final class IntakeViewModel: ObservableObject {
 
     // MARK: Derived
 
+    /// True while the Intake screen is on show.
+    ///
+    /// The app logs a spool to stock after any verified write — which is right on the Write tag
+    /// screen, where writing *is* the whole operation. It is wrong here: Intake has its own
+    /// "Add to stock" step, and the point of that step is to see both tags verified before
+    /// committing. Auto-logging landed the spool after the first tag, so the second was written
+    /// against a record that already existed.
+    @Published var isActive = false
+
+    /// What the reader is doing right now, pushed in by the view from ``TagViewModel``.
+    ///
+    /// Held rather than observed so the model stays testable without a reader: the view owns the
+    /// subscription, this owns the meaning.
+    @Published var activityLabel: String?
+
     var tags: [TagSlot] {
-        (0..<2).map { TagSlot(index: $0, isDone: tagsHandled > $0) }
+        (0..<2).map { index in
+            if tagsHandled > index { return TagSlot(index: index, state: .done) }
+            // Only the next undone slot can be in flight — the reader does one tag at a time.
+            if index == tagsHandled, let activityLabel {
+                return TagSlot(index: index, state: .working(activityLabel))
+            }
+            return TagSlot(index: index, state: index == tagsHandled ? .ready : .waiting)
+        }
     }
+
+    /// `"1 of 2 written and verified"`. The old wording stopped at "written", which is the weaker
+    /// claim — a write is only believed here once it has been read back.
+    var tagSummary: String {
+        let verb = isScan ? "read" : "written and verified"
+        return "\(tagsHandled) of 2 \(verb)"
+    }
+
+    /// Whether a tag presented now would be written without further asking.
+    var isArmedToWrite: Bool { !isScan && canWriteTags && tagsHandled < 2 }
 
     var isScan: Bool { method == .scan }
 
@@ -152,9 +215,7 @@ final class IntakeViewModel: ObservableObject {
         isScan ? "Step 3 · Confirm" : "Step 2 · Describe the spool"
     }
 
-    var tagProgress: String {
-        "\(tagsHandled) of 2 \(isScan ? "read" : "written")"
-    }
+    var tagProgress: String { tagSummary }
 
     var tagNote: String {
         isScan
@@ -362,6 +423,22 @@ final class IntakeViewModel: ObservableObject {
 
     var canWriteTags: Bool { writeBlocker == nil }
 
+    /// Records a verified write, filling the next slot.
+    ///
+    /// Keyed on the tag's UID for the same reason reads are: writing the *same* blank tag twice
+    /// must not claim both sides of the spool are done. That is the failure this guards — a spool
+    /// tagged on one side only fails to read half the time it is loaded, and the screen would have
+    /// said it was fine.
+    func absorbWrite(uid: [UInt8]) {
+        guard !isScan else { return }
+        guard !writtenUIDs.contains(uid) else { return }
+        writtenUIDs.insert(uid)
+        tagsHandled = min(2, writtenUIDs.count)
+        toasts.success(tagsHandled >= 2
+                       ? "Both tags written and verified"
+                       : "Tag \(tagsHandled) of 2 written and verified")
+    }
+
     func markTagWritten(_ slot: TagSlot) {
         tagsHandled = max(tagsHandled, slot.index + 1)
     }
@@ -430,6 +507,8 @@ final class IntakeViewModel: ObservableObject {
         failure = nil
         mismatch = nil
         absorbedUIDs.removeAll()
+        writtenUIDs.removeAll()
+        activityLabel = nil
         uidLabel = "—"
         if !keepingMethod { method = .scan }
         brand = ""

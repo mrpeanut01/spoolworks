@@ -217,7 +217,8 @@ let intakeViewModelTests = TestSuite(name: "Intake view model", cases: [
             model.method = .manual
             t.equal(model.tagPanelLabel, "Step 3 · Write both tags", "manual writes")
             t.equal(model.formLabel, "Step 2 · Describe the spool", "manual describes first")
-            t.equal(model.tagProgress, "0 of 2 written", "progress")
+            t.equal(model.tagProgress, "0 of 2 written and verified",
+                    "the stronger claim: a write is only believed after read-back")
         }
     },
 
@@ -730,6 +731,94 @@ let intakeReaderContentionTests = TestSuite(name: "Intake reader contention", ca
             model.setBusy(true)
             model.absorb(read(uid: [1, 2, 3, 4], record: record))
             t.equal(model.tagsHandled, 1, "the result is not discarded")
+        }
+    },
+])
+
+
+// MARK: - Intake slot states
+
+let intakeSlotStateTests = TestSuite(name: "Intake slot states", cases: [
+
+    // The row used to derive "ready"/"waiting" from a single boolean, with no state for work in
+    // progress and none for verified — so it flickered between two words and never confirmed a
+    // tag had actually been written.
+    test("only the next undone slot is ready; the other waits") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.method = .manual
+            t.equal(model.tags[0].state, .ready, "the first is next")
+            t.equal(model.tags[1].state, .waiting, "the second waits its turn")
+        }
+    },
+
+    test("the reader's activity shows on the slot in flight, and only that one") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.method = .manual
+            model.activityLabel = "Writing tag…"
+
+            t.equal(model.tags[0].state, .working("Writing tag…"), "the one being worked on")
+            t.expect(model.tags[0].state.isWorking, "and it reports itself busy, for the spinner")
+            t.equal(model.tags[1].state, .waiting, "the other is untouched")
+        }
+    },
+
+    test("a verified write marks a slot done and the next becomes ready") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.method = .manual
+
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            t.equal(model.tags[0].state, .done, "first verified")
+            t.equal(model.tags[1].state, .ready, "second is now next")
+            t.equal(model.tagSummary, "1 of 2 written and verified", "and the count says so")
+
+            model.absorbWrite(uid: [9, 9, 9, 9])
+            t.equal(model.tags[1].state, .done, "both verified")
+            t.equal(model.tagSummary, "2 of 2 written and verified", "count")
+        }
+    },
+
+    // A spool tagged on one side only fails to read half the time it is loaded. Writing the same
+    // blank tag twice must not claim both sides are done.
+    test("writing the same tag twice does not claim both slots") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            t.equal(model.tagsHandled, 1, "still one side done")
+            t.equal(model.tags[1].state, .ready, "the second is still outstanding")
+        }
+    },
+
+    // Arming has to stop once both are done, or a third tag laid down while tidying up gets
+    // written.
+    test("arming drops once both tags are written") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.method = .manual
+            model.catalogueBrand = model.catalogueBrands.first ?? ""
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            model.absorbWrite(uid: [9, 9, 9, 9])
+            t.expect(!model.isArmedToWrite, "no longer armed")
+        }
+    },
+
+    test("scanning never arms a write") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            t.expect(model.isScan, "method A")
+            t.expect(!model.isArmedToWrite, "reading is not writing")
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            t.equal(model.tagsHandled, 0, "and a write outcome is ignored here")
         }
     },
 ])
