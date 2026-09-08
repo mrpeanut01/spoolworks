@@ -84,6 +84,7 @@ let exitCode = TestDriver.run([
     tagCascadeTests,
     tagAutoWriteStateTests,
     tagArrivalTests,
+    identifyLoopTests,
     readerMonitorBusyTests,
 
     // Spool management UI

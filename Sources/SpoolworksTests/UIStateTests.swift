@@ -413,6 +413,70 @@ let tagAutoWriteStateTests = TestSuite(name: "Auto-write indicator", cases: [
 
 // MARK: - Arrivals: arming, deferral, retry
 
+// Read / identify is a *loop*: present a spool, check it, present the next, check that one again.
+// Every other screen wants the opposite — one tag, one read — so the model's dedup is right there
+// and wrong here, and `beginIdentification()` is what reconciles the two.
+let identifyLoopTests = TestSuite(name: "Identify loop", cases: [
+
+    test("beginning an identification forgets the last tag and its arming") { t in
+        runOnMain {
+            let h = makeHarness()
+            await h.model.autoReadIfNeeded(card: tagA)
+            await h.model.settle()
+            // The reader is a stub here, so the read fails and releases its own arming; what
+            // matters is that a retained record and a spent arming are both cleared, whichever
+            // way they got set.
+            guard let read = try? blankTagRead() else {
+                t.expect(false, "could not build a fixture read"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.expect(h.model.lastRead != nil, "something is retained")
+            t.expect(h.model.autoReadArmingForTesting != nil, "and the arming is spent")
+
+            h.model.beginIdentification()
+            t.equal(h.model.lastRead, nil, "the screen starts blank")
+            t.equal(h.model.autoReadArmingForTesting, nil,
+                    "and the same tag put back is read again rather than ignored")
+            t.equal(h.model.mode, .read, "in read mode")
+        }
+    },
+
+    test("the same tag re-presented is read again, which one read per tag would refuse") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? blankTagRead() else {
+                t.expect(false, "could not build a fixture read"); return
+            }
+            await h.model.adoptForTesting(read)
+            guard let uid = t.unwrap(h.model.lastRead?.uid, "a retained uid") else { return }
+
+            // This is the exact guard that made the screen look broken: `autoReadIfNeeded` skips a
+            // card whose UID it already holds, so presenting the tag you had just written did
+            // nothing at all.
+            await h.model.autoReadIfNeeded(card: identity(uid))
+            t.equal(h.model.activity, .idle, "refused, as designed everywhere else")
+
+            h.model.beginIdentification()
+            t.equal(h.model.lastRead, nil, "the loop clears first")
+            t.equal(h.model.autoReadArmingForTesting, nil, "so the next presentation is not a repeat")
+        }
+    },
+
+    test("clearing puts the screen back without needing a tag to do it") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? blankTagRead() else {
+                t.expect(false, "could not build a fixture read"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.expect(h.model.lastRead != nil, "something on screen")
+            h.model.clearRetainedRead()
+            t.equal(h.model.lastRead, nil, "and gone")
+            t.equal(h.model.readFailure, nil, "along with any failure beside it")
+        }
+    },
+])
+
 let tagArrivalTests = TestSuite(name: "Tag arrivals", cases: [
 
     test("an auto-read that cannot run keeps its arming") { t in

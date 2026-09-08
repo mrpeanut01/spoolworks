@@ -13,15 +13,25 @@ import SpoolworksCore
 /// is broken.
 struct IdentifyView: View {
     @ObservedObject var env: AppEnvironment
-    @State private var showDebug = false
+    /// Observed individually, not reached through `env`.
+    ///
+    /// This is the same trap the header bar documents, and it is what made this screen look broken:
+    /// `AppEnvironment` holds these as plain `let`s, and a nested `ObservableObject` does not
+    /// republish through its owner. Reaching `env.tagModel.lastRead` from a computed property
+    /// therefore *read* the right value and never re-rendered when it changed — so a tag was read,
+    /// the record was decoded, and the screen went on showing whatever had been there when it was
+    /// last drawn. Both reported symptoms, "it does not read" and "it starts pre-filled", were the
+    /// one missing subscription.
+    @ObservedObject var model: TagViewModel
+    @ObservedObject var monitor: ReaderMonitor
+    @ObservedObject var inventory: InventoryViewModel
 
-    private var model: TagViewModel { env.tagModel }
-    private var monitor: ReaderMonitor { env.monitor }
+    @State private var showDebug = false
 
     /// The untagged spool waiting for this read, if the user asked for one from Inventory.
     private var attachTarget: Spool? {
-        guard let id = env.inventoryModel.awaitingTagFor else { return nil }
-        return env.inventoryModel.inventory.spool(id: id)
+        guard let id = inventory.awaitingTagFor else { return nil }
+        return inventory.inventory.spool(id: id)
     }
 
     /// Binds a freshly read tag to the spool that asked for it.
@@ -31,10 +41,10 @@ struct IdentifyView: View {
     /// factory tag opens with the default key, and calling it Spoolworks-written would be a claim
     /// about provenance the app has no basis for.
     private func attachIfRequested() {
-        guard env.inventoryModel.awaitingTagFor != nil,
+        guard inventory.awaitingTagFor != nil,
               let read = model.lastRead, let record = read.record else { return }
         let type = env.materialsModel.rows.first { $0.id == record.materialId }?.materialType ?? ""
-        env.inventoryModel.attachTag(record: record,
+        inventory.attachTag(record: record,
                                      materialType: type,
                                      source: read.isProgrammed ? .spoolworksWritten : .crealityFactory)
     }
@@ -42,7 +52,7 @@ struct IdentifyView: View {
     /// The inventory row this tag belongs to, if any.
     private var matched: Spool? {
         guard let record = model.lastRead?.record else { return nil }
-        return env.inventoryModel.existing(for: record)
+        return inventory.existing(for: record)
     }
 
     var body: some View {
@@ -67,7 +77,7 @@ struct IdentifyView: View {
                 // identified, and those are very different outcomes.
                 if let target = attachTarget {
                     AttachBanner(spool: target, what: "read") {
-                        env.inventoryModel.cancelTagRequest()
+                        inventory.cancelTagRequest()
                     }
                     .padding(.bottom, 18)
                 }
@@ -93,6 +103,11 @@ struct IdentifyView: View {
         // than the record, for the same reason Intake is: a spool's two tags carry the *same*
         // payload, so watching the record would miss the second one entirely.
         .onChange(of: model.lastRead?.uid ?? []) { _, _ in attachIfRequested() }
+        // The loop. Every arrival is a new presentation, including the *same* tag lifted and put
+        // back — which the model otherwise treats as nothing having happened, deliberately, because
+        // on every other screen one tag means one read. Here re-presenting a tag is the gesture:
+        // check this spool, check the next, check that one again.
+        .onChange(of: monitor.insertionCount) { _, _ in model.beginIdentification() }
     }
 
     // MARK: Hero
@@ -114,8 +129,14 @@ struct IdentifyView: View {
                 Button("Read tag") { Task { await model.read() } }
                     .buttonStyle(.sw(.primary, h: 16, v: 10))
                     .disabled(!model.canRead)
+                // Puts the screen back to "place a tag on the reader" without needing a tag to do
+                // it. Presenting the next spool clears it anyway; this is for stopping.
+                Button("Clear") { model.clearRetainedRead() }
+                    .buttonStyle(.sw(.ghost, h: 14, v: 10))
+                    .disabled(model.lastRead == nil && model.readFailure == nil)
+                    .accessibilityLabel("Clear the tag on screen")
                 if let spool = matched {
-                    Button("Retire spool") { env.inventoryModel.retireTarget = spool }
+                    Button("Retire spool") { inventory.retireTarget = spool }
                         .buttonStyle(.sw(.secondary, h: 16, v: 10))
                 }
                 Spacer(minLength: Theme.Spacing.m)

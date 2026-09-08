@@ -124,7 +124,10 @@ struct RootView: View {
             IntakeView(model: env.intakeModel, inventory: env.inventoryModel,
                        env: env, tagModel: env.tagModel)
         case .identify:
-            IdentifyView(env: env)
+            IdentifyView(env: env,
+                         model: env.tagModel,
+                         monitor: env.monitor,
+                         inventory: env.inventoryModel)
         case .write:
             WriteTagView(monitor: env.monitor, model: env.tagModel, settings: env.settings, env: env)
         }
