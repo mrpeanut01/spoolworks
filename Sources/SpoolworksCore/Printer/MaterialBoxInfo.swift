@@ -220,6 +220,17 @@ public struct SameMaterialGroup: Codable, Hashable, Sendable {
 
     /// `"101001 · 0C12E1F"` — how the design labels the group.
     public var label: String { "\(filamentId) · \(color)" }
+
+    /// ``color`` as an ordinary 6-digit `RRGGBB`, for anything that wants to *show* it.
+    ///
+    /// The wire value is the tag's 7-character colour field: a leading `'0'` nibble the tag format
+    /// never uses, then the colour (see `RGB8.tagColorField`). Rendering it raw is what makes a
+    /// group read as two identifiers rather than an id and a colour — `0C12E1F` looks like a part
+    /// number. Anything shorter or longer than the two known forms is passed through untouched
+    /// rather than truncated into a different colour.
+    public var colorHex: String {
+        color.count == 7 ? String(color.dropFirst()).uppercased() : color.uppercased()
+    }
     /// `"T1B, T1D"`.
     public var slotsLabel: String { slots.joined(separator: ", ") }
     /// A group of one is not a group: the firmware lists every filament here, partnered or not.

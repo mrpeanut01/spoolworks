@@ -270,7 +270,7 @@ struct IntakeView: View {
                         }
                         .labelsHidden()
                     }
-                    FieldBox(label: "Name", note: "auto from the material, editable") {
+                    FieldBox(label: "Name", note: "follows the material") {
                         TextField("", text: $model.name).textFieldStyle(.plain).swInput()
                     }
                     FieldBox(label: "Material", note: "decides the filament ID") {

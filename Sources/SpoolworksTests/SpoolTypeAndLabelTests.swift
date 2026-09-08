@@ -210,3 +210,69 @@ let spoolTypeEditingTests = TestSuite(name: "Spool type editing", cases: [
         }
     },
 ])
+
+// MARK: - The name follows the material
+
+let intakeNameTests = TestSuite(name: "Intake name generation", cases: [
+
+    test("changing the material changes the name, even after it was edited by hand") { t in
+        onMain {
+            let toasts = ToastCenter()
+            let catalogue = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: catalogue) }
+            let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+            await materials.load()
+            guard materials.rows.count > 1 else {
+                t.expect(false, "the bundled catalogue should have more than one filament")
+                return
+            }
+            let (inventory, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: materials,
+                                        toasts: toasts)
+            model.method = .manual
+
+            // Two filaments from one brand, so switching between them is a pure material change.
+            let brand = materials.rows.map(\.brand).first { candidate in
+                materials.rows.filter { $0.brand == candidate }.count > 1
+            }
+            guard let brand, case let choices = materials.rows.filter({ $0.brand == brand }),
+                  choices.count > 1 else {
+                t.expect(false, "no brand with two filaments to switch between")
+                return
+            }
+            model.catalogueBrand = brand
+
+            model.materialID = choices[0].id
+            t.equal(model.name, choices[0].name, "the name comes from the material")
+
+            // The behaviour that was wrong: a hand-typed name used to survive the switch, leaving
+            // the form describing a filament it was no longer going to write.
+            model.name = "My own label"
+            model.materialID = choices[1].id
+            t.equal(model.name, choices[1].name, "and a hand-edited one is replaced, not kept")
+            t.equal(model.filamentId, "1" + choices[1].id, "the id moved with it")
+            t.equal(model.brand, choices[1].brand, "and so did the brand")
+        }
+    },
+
+    test("brand and name compose the inventory label, so neither has to carry the other") { t in
+        // The reason the name is just the material and not "Brand - Material": `Spool.label`
+        // already joins them. Storing the brand inside the name too would render it twice, and
+        // `brand` is not decoration — the swatch library matches a manufacturer on it and the CFS
+        // reconcile writes it from the slot.
+        let spool = Spool(identity: nil,
+                          brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                          colorHex: "C12E1F", colorName: "Cherry Pie",
+                          netWeightGrams: 1000, remainingPercent: 100,
+                          location: .unknown, tagSource: .crealityFactory)
+        t.equal(spool.label, "Creality Hyper PLA · Cherry Pie",
+                "brand and material read as one name already")
+    },
+])

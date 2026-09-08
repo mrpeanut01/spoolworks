@@ -204,7 +204,7 @@ struct PrinterCFSView: View {
                     .foregroundStyle(Theme.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Grouped as identical · same_material").kicker()
+                Text("Grouped by filament and colour · same_material").kicker()
                 let groups = info.material.sameMaterial
                 if groups.isEmpty {
                     Text("The printer reports no groupings.")
@@ -214,20 +214,50 @@ struct PrinterCFSView: View {
                     VStack(spacing: 0) {
                         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
                             HStack(spacing: Theme.Spacing.s) {
-                                Text(group.label)
+                                // The colour is the half of the key that is easy to miss: rendered
+                                // as the raw 7-character tag field it reads as a second part
+                                // number, which is exactly why this panel looked as though it
+                                // grouped on material alone.
+                                Swatch(hex: group.colorHex, size: 14)
+                                Text(group.filamentId)
                                     .font(Theme.monoCaption)
+                                Text(group.colorHex)
+                                    .font(Theme.monoCaption)
+                                    .foregroundStyle(Theme.secondaryLabel)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(group.materialType).font(.system(size: 13))
                                 Text(group.slotsLabel)
                                     .font(Theme.monoCaption)
-                                    .frame(width: 90, alignment: .trailing)
+                                    .frame(width: 78, alignment: .trailing)
+                                // The distinction that matters. Every filament the printer holds is
+                                // listed here whether or not it has a partner, so without this the
+                                // one line that actually does something looks like the other three.
+                                // `spooldiag` has always marked these; the screen did not.
+                                SWTag(text: group.isPartnered ? "partners" : "alone",
+                                      style: group.isPartnered ? .accent : .neutral)
                             }
                             .padding(.vertical, Theme.Spacing.s)
                             .overlay(alignment: .bottom) { Hairline() }
                             .accessibilityElement(children: .combine)
+                            .accessibilityLabel(
+                                "Filament \(group.filamentId), colour \(group.colorHex), "
+                                + "\(group.materialType), "
+                                + (group.isPartnered
+                                   ? "slots \(group.slotsLabel) are auto-refill partners"
+                                   : "slot \(group.slotsLabel), no partner"))
                         }
                     }
                 }
+
+                // What the panel is, since it looks like a control and is not one.
+                Text("The printer decides these and Spoolworks only reads them — nothing here is "
+                     + "a setting, and none of it turns auto refill on or off. Two slots are "
+                     + "grouped only when their filament ID and their colour both match, which is "
+                     + "why slots holding one filament in three colours make three groups rather "
+                     + "than one.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(info.material.isAutoRefillEnabled
                      ? "Auto refill is on: the printer draws from a partner slot as one runs out. Spoolworks binds each slot to its own spool, so the handover keeps usage attributed to the right one."
                      : "Auto refill is off.")

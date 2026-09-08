@@ -312,7 +312,12 @@ final class IntakeViewModel: ObservableObject {
         filamentId = "1" + row.id
         brand = row.brand
         materialType = row.materialType
-        if name.isEmpty || name == row.name { name = row.name }
+        // Always, not "unless the user has typed something". The old rule kept a hand-edited name
+        // across a change of material, which sounds protective and is the wrong way round: the name
+        // describes the material, so a name that outlives the material it describes is simply
+        // wrong. Picking CR-ABS and keeping "Hyper PLA" writes a tag whose id and whose name
+        // disagree, and the inventory row then reads as a filament the spool is not.
+        name = row.name
         if let hex = row.colorHex.isEmpty ? nil : row.colorHex { colorHex = Spool.normaliseHex(hex) }
     }
 

@@ -73,6 +73,7 @@ let exitCode = TestDriver.run([
     inventoryStoreTests,
     spoolPlacesTests,
     materialBoxInfoTests,
+    sameMaterialGroupingTests,
     cfsIdentityAmbiguityTests,
     liveCFSFixtureTests,
 
@@ -98,5 +99,6 @@ let exitCode = TestDriver.run([
     inventoryEditingTests,
     tagSourceLabelTests,
     spoolTypeEditingTests,
+    intakeNameTests,
 ])
 exit(exitCode)
