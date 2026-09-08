@@ -97,6 +97,11 @@ struct RootView: View {
             env.monitor.start()
             env.inventoryModel.load()
             Task { await env.printerModel.refresh() }
+            // The catalogue used to load only when MaterialsView appeared. Now that Materials is
+            // a window rather than a sidebar destination, nothing opened it on a normal run — so
+            // the sidebar footer read "0 materials, version 0" and Intake could never resolve a
+            // filament id to a name. It is app-wide state; it loads with the app.
+            Task { await env.materialsModel.load() }
         }
         .onChange(of: env.sidebarSelection) { _, new in storedSelection = new.rawValue }
     }

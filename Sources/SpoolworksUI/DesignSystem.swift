@@ -32,7 +32,7 @@ enum Theme {
     /// `#EC3013` — the Modernist accent, and the only chromatic colour in the system. Carries the
     /// primary action, the progress fill, the active-nav rule and small emphasis. Lightened on
     /// dark, where the light value sits at 2.6:1 against the dark ground.
-    static let accent = Color.pair(light: 0xEC3013, dark: 0xFF6B4F)
+    static let accent = Color.pair(light: 0xEC3013, dark: 0xF7492A)
 
     /// Errors. The accent is itself red, so danger is pushed deeper to stay distinguishable from
     /// "this is merely the primary button".
@@ -72,7 +72,7 @@ enum Theme {
     /// The **structural** rule — 2 pt, solid ink. This is the system's signature: card borders,
     /// section dividers and the frame around the whole app are all this at ``ruleWidth``.
     /// Inverted rather than lightened on dark, where solid paper-white rules would glare.
-    static let rule = Color.pair(light: 0x201E1D, dark: 0x6E6867)
+    static let rule = Color.pair(light: 0x201E1D, dark: 0x7E7876)
 
     // MARK: Text
 
@@ -83,8 +83,12 @@ enum Theme {
     /// The kicker / small-caps heading colour — `--color-neutral-600`.
     static let kickerLabel = Color.pair(light: 0x7D7979, dark: 0x9B9797)
 
-    /// Ink for text sitting on an accent fill.
-    static let onAccent = Color.pair(light: 0xF3F2F2, dark: 0x201E1D)
+    /// Text sitting on an accent fill — light in **both** appearances.
+    ///
+    /// It was briefly inverted on dark, which put dark text on the red button and broke the one
+    /// thing the design is most recognisable for: white on red. A slightly punchier dark accent
+    /// (above) buys back the contrast that inversion was there to provide.
+    static let onAccent = Color.pair(light: 0xF8F7F6, dark: 0xFBF7F5)
 
     /// The active sidebar row: ink in light, paper in dark. The design inverts the row outright
     /// rather than tinting it, and that inversion is what makes the sidebar readable at a glance.
