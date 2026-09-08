@@ -1,5 +1,7 @@
 import Foundation
 import CoreGraphics
+import AppKit
+import SwiftUI
 @testable import SpoolworksCore
 @testable import SpoolworksUI
 
@@ -556,5 +558,51 @@ let scanTargetTests = TestSuite(name: "Scan target geometry", cases: [
                 "non-finite")
         t.equal(ScanTarget.rect(inPixelSize: CGSize(width: 2, height: 2)), .zero,
                 "smaller than one unit of target")
+    },
+])
+
+// MARK: - The system colour panel
+
+let systemColorPanelTests = TestSuite(name: "System colour panel", cases: [
+
+    test("a picked colour is pinned to sRGB before it becomes a hex") { t in
+        // The panel hands back whatever space the user picked in. A Display P3 red is a *different*
+        // set of code values from an sRGB red, and the tag stores sRGB — so reading components off
+        // the panel's colour without converting would write a different hex for the same visible
+        // colour depending on the display. Same defect `Color.rgb8` exists to prevent.
+        let p3 = NSColor(displayP3Red: 1, green: 0, blue: 0, alpha: 1)
+        let hex = t.unwrap(SystemColorPanel.canonicalHex(from: p3), "hex for P3 red")
+        t.equal(hex, "FF0000", "P3 red converts to sRGB red rather than being read raw")
+
+        // And a colour already in sRGB is untouched.
+        let srgb = NSColor(srgbRed: 193 / 255.0, green: 46 / 255.0, blue: 31 / 255.0, alpha: 1)
+        t.equal(SystemColorPanel.canonicalHex(from: srgb), "C12E1F", "sRGB passes through")
+    },
+
+    test("the hex is the canonical form the tag stores") { t in
+        for (color, expected) in [(NSColor.black, "000000"), (NSColor.white, "FFFFFF")] {
+            let hex = t.unwrap(SystemColorPanel.canonicalHex(from: color), "hex")
+            t.equal(hex, expected, "\(expected)")
+            t.equal(hex?.count, 6, "six digits, no hash")
+            t.equal(hex, hex?.uppercased(), "uppercase")
+        }
+    },
+
+    test("hex to panel and back is exact, so the field and the panel cannot oscillate") { t in
+        // The two write to each other: a pick updates the field, and a colour typed or scanned is
+        // pushed back into an open panel. That is only safe while the round trip is the identity —
+        // if seeding the panel with a hex could produce a *different* hex on read-back, the pair
+        // would chase each other. Both ends are 8-bit sRGB, so it is exact; this is what says so.
+        for hex in ["C12E1F", "0087BE", "000000", "FFFFFF", "3C3C3D", "DEE4E1", "010203"] {
+            guard let color = t.unwrap(Color(tagHex: hex), "colour for \(hex)") else { continue }
+            t.equal(SystemColorPanel.canonicalHex(from: NSColor(color)), hex, "round trip of \(hex)")
+        }
+    },
+
+    test("a colour with no RGB representation yields no hex rather than a wrong one") { t in
+        // Pattern colours cannot be converted. Returning nil leaves the field alone; inventing a
+        // value would put a colour on a tag that nobody chose.
+        let pattern = NSColor(patternImage: NSImage(size: NSSize(width: 1, height: 1)))
+        t.expect(SystemColorPanel.canonicalHex(from: pattern) == nil, "pattern colour returns nil")
     },
 ])

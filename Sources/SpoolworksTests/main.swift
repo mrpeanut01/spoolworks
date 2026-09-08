@@ -37,6 +37,7 @@ let exitCode = TestDriver.run([
     filamentColorEstimatorTests,
     filamentColorStabiliserTests,
     scanTargetTests,
+    systemColorPanelTests,
 
     // Printer transport / upload
     printerModelTests,

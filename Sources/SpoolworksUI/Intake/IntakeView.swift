@@ -311,8 +311,20 @@ struct IntakeView: View {
                     Button("Scan…") { isScanningColour = true }
                         .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
                         .help("Read the colour off the spool with a camera.")
+                    // The swatch is the third way in, beside typing a code and scanning one. All
+                    // three write the same `colorHex`, which is what makes "the last thing you did
+                    // wins" fall out rather than needing to be arbitrated: there is one value, and
+                    // no input holds a copy of its own.
+                    Button { openColorPanel() } label: {
+                        Swatch(hex: model.colorHex, size: 52, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Pick the colour from the macOS colour palette.")
+                    .accessibilityLabel("Colour \(model.colorHex.isEmpty ? "not set" : model.colorHex)")
+                    .accessibilityHint("Opens the macOS colour palette")
+                } else {
+                    Swatch(hex: model.colorHex, size: 52, height: 44)
                 }
-                Swatch(hex: model.colorHex, size: 52, height: 44)
             }
             .padding(.bottom, 18)
 
@@ -340,6 +352,30 @@ struct IntakeView: View {
         .cardSurface(padding: 20)
         .sheet(isPresented: $isScanningColour) {
             ColorScanSheet { hex in model.colorHex = hex }
+        }
+        // A colour typed or scanned while the panel is open has to reach the panel too, or its next
+        // click would quietly undo the newer value.
+        .onChange(of: model.colorHex) { _, hex in
+            SystemColorPanel.shared.update(hex: Spool.normaliseHex(hex), owner: colorPanelOwner)
+        }
+        // Switching to Method A hands authority over colour back to the tag, so an open panel must
+        // stop writing to the field. Without this a click in a panel left over from Method B would
+        // overwrite a colour that had been decoded off a spool.
+        .onChange(of: model.isScan) { _, isScan in
+            if isScan { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+        }
+        // Unconditional on purpose: `relinquish` is a no-op unless this screen still owns the
+        // panel, which is exactly the check that makes it safe to call from here.
+        .onDisappear { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+    }
+
+    /// Identifies this screen to the app-wide colour panel. See ``SystemColorPanel``.
+    private var colorPanelOwner: AnyHashable { "intake.colour" }
+
+    private func openColorPanel() {
+        SystemColorPanel.shared.present(hex: Spool.normaliseHex(model.colorHex),
+                                        owner: colorPanelOwner) { hex in
+            model.colorHex = hex
         }
     }
 
