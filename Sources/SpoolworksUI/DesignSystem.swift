@@ -41,6 +41,15 @@ enum Theme {
     /// `--color-accent-2-600`, the warm secondary the package derives.
     static let warning = Color.pair(light: 0xC94B39, dark: 0xE8A87C)
 
+    /// Work in progress: a poll in flight, a tag being read or written.
+    ///
+    /// The Modernist system is deliberately mono, so a second hue is a departure. It earns its
+    /// place because these are **status** colours rather than brand ones, and the three states
+    /// they distinguish — offline, busy, ready — are the ones a glance at the header is for.
+    /// Chosen on the same perceptual lightness as ``success`` and ``danger`` so no one state
+    /// shouts louder than another.
+    static let busy = Color.pair(light: 0x1F5FA8, dark: 0x6FA8E8)
+
     /// No Modernist equivalent — the system is mono. Chosen on the same perceptual axis so a
     /// success pill sits at the same visual weight as an accent one.
     static let success = Color.pair(light: 0x1E7A3C, dark: 0x5FD08A)

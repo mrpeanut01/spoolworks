@@ -164,11 +164,16 @@ private struct HeaderBar: View {
             }
 
             HStack(spacing: Theme.Spacing.xl) {
-                StatusCell(title: "Printer", value: printerLabel)
+                // The CFS gets no cell of its own any more. It had one, spelling out
+                // "connect · polled 12 s ago", which is detail the Printer & CFS screen already
+                // shows in full — in the header it was a sentence where a colour would do. The
+                // printer's dot now carries offline / printing / ready, and the freshness moved
+                // to this cell's tooltip.
+                StatusCell(title: "Printer", value: printerLabel, level: printerLevel,
+                           help: printerHelp)
                 VRule()
-                StatusCell(title: "CFS state", value: cfsLabel, pulsing: cfs.state.isPolling)
-                VRule()
-                StatusCell(title: "Reader", value: readerLabel)
+                StatusCell(title: "Reader", value: readerLabel, level: readerLevel,
+                           help: "Blue while a tag is being read or written.")
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 20)
@@ -181,18 +186,39 @@ private struct HeaderBar: View {
 
     private var printerLabel: String {
         guard let target = cfs.target else { return "none configured" }
-        return target.host.isEmpty
+        let name = target.host.isEmpty
             ? target.displayName
             : "\(target.displayName) · \(target.host)"
+        // Only the one word: what is being printed belongs on the Printer & CFS screen.
+        return cfs.job?.state.isActive == true ? "\(name) · printing" : name
     }
 
-    private var cfsLabel: String {
-        guard cfs.canPoll else { return "not connected" }
-        if let info = cfs.info {
-            let head = info.hasNoCFS ? "external only" : info.material.state
-            return "\(head) · \(cfs.freshness)"
+    /// Offline when there is nothing to talk to, busy while a job is running or a poll is in
+    /// flight, ready otherwise.
+    private var printerLevel: StatusLevel {
+        guard cfs.target != nil, cfs.canPoll else { return .offline }
+        if case .failed = cfs.state { return .offline }
+        if cfs.job?.state.isActive == true || cfs.state.isPolling { return .busy }
+        return cfs.isConnected ? .ready : .offline
+    }
+
+    /// The detail the CFS cell used to spell out, kept where it costs no space.
+    private var printerHelp: String {
+        guard cfs.canPoll else { return cfs.blockedReason ?? "No printer configured." }
+        var parts = [cfs.freshness]
+        if let info = cfs.info { parts.append(info.hasNoCFS ? "external spool only" : cfs.slotSummary) }
+        if let summary = cfs.jobSummary { parts.append(summary) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Busy whenever a tag is on the reader — which is exactly when it is being read or written.
+    private var readerLevel: StatusLevel {
+        switch monitor.state {
+        case .starting: return .busy
+        case .subsystemUnavailable, .noReader: return .offline
+        case .idle: return .ready
+        case .cardPresent: return .busy
         }
-        return cfs.freshness
     }
 
     private var readerLabel: String {
@@ -210,33 +236,24 @@ private struct HeaderBar: View {
 private struct StatusCell: View {
     let title: String
     let value: String
-    var pulsing = false
-
-    @State private var dim = false
+    let level: StatusLevel
+    var help: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).kicker()
-            HStack(spacing: 6) {
-                if pulsing {
-                    Rectangle()
-                        .fill(Theme.accent)
-                        .frame(width: 8, height: 8)
-                        .opacity(dim ? 0.25 : 1)
-                        .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true),
-                                   value: dim)
-                        .onAppear { dim = true }
-                        .onDisappear { dim = false }
-                        .accessibilityHidden(true)
-                }
+            HStack(spacing: 7) {
+                StatusDot(level: level)
                 Text(value)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.label)
                     .lineLimit(1)
             }
         }
+        .help(help)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(value)")
+        // The state is spoken, not just coloured.
+        .accessibilityLabel("\(title): \(level.spoken), \(value)")
     }
 }
 

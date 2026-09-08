@@ -347,3 +347,60 @@ extension View {
         background(NonRestorableWindow().frame(width: 0, height: 0).accessibilityHidden(true))
     }
 }
+
+// MARK: - Status
+
+/// What a piece of hardware is doing, at a glance.
+///
+/// Three states, because three is what can be told apart instantly. Anything finer belongs in the
+/// text beside the dot, which is always present — colour is never the only carrier of state in
+/// this app, so the dot supplements a label rather than replacing one.
+enum StatusLevel {
+    /// Not reachable, not configured, or failed.
+    case offline
+    /// Doing something right now: printing, reading, writing, polling.
+    case busy
+    /// Connected and idle.
+    case ready
+
+    var color: Color {
+        switch self {
+        case .offline: return Theme.danger
+        case .busy: return Theme.busy
+        case .ready: return Theme.success
+        }
+    }
+
+    /// Spoken by VoiceOver, so the state is available without seeing the colour.
+    var spoken: String {
+        switch self {
+        case .offline: return "offline"
+        case .busy: return "busy"
+        case .ready: return "ready"
+        }
+    }
+}
+
+/// A square status indicator. Square, not round — nothing in this system is rounded.
+///
+/// Pulses only while busy, so motion means "something is happening" rather than being decoration.
+struct StatusDot: View {
+    let level: StatusLevel
+    var size: CGFloat = 9
+
+    @State private var dim = false
+
+    var body: some View {
+        Rectangle()
+            .fill(level.color)
+            .frame(width: size, height: size)
+            .opacity(dim ? 0.3 : 1)
+            .animation(level == .busy
+                       ? .easeInOut(duration: 1).repeatForever(autoreverses: true)
+                       : .default,
+                       value: dim)
+            .onAppear { dim = (level == .busy) }
+            .onChange(of: level) { _, new in dim = (new == .busy) }
+            .accessibilityHidden(true)
+    }
+}
