@@ -113,7 +113,7 @@ final class IntakeViewModel: ObservableObject {
     }
     /// The five weights the tag's length code can express. There is no "other": a weight the tag
     /// cannot encode would be lost the moment the spool was written.
-    static let weights: [Int] = [1000, 750, 600, 500, 250]
+    static let weights: [Int] = FilamentLength.allCases.map(\.grams).sorted(by: >)
 
     // Strong, not `unowned`. All three are owned by `AppEnvironment` for the app's lifetime
     // and none of them references this model back, so there is no cycle to break — while

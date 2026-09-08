@@ -213,13 +213,27 @@ struct TagFormCard: View {
     @ViewBuilder
     private var weight: some View {
         if isEditable {
-            Picker("Weight", selection: $model.draft.weight) {
-                ForEach(FilamentLength.allCases, id: \.self) { length in
-                    Text(length.label).tag(length)
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Weight", selection: $model.draft.weight) {
+                    ForEach(FilamentLength.allCases, id: \.self) { length in
+                        // The ones Creality never published are marked in the list itself, so the
+                        // choice is informed rather than explained after the fact.
+                        Text(length.isCrealityStandard ? length.label : "\(length.label) ·  non-standard")
+                            .tag(length)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220, alignment: .leading)
+
+                if !model.draft.weight.isCrealityStandard {
+                    Label("Creality's printer and apps will read this tag as 1 KG — the length code is legal but not one they publish. Spoolworks reads it correctly.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 320, alignment: .leading)
                 }
             }
-            .labelsHidden()
-            .frame(maxWidth: 180, alignment: .leading)
         } else {
             readOnly(record.map { $0.knownLength?.label ?? "\($0.weightGrams) g" })
         }

@@ -525,3 +525,44 @@ let filamentSwatchLibraryTests = TestSuite(name: "Filament swatch library", case
                  "the rest stay reachable through a maker's list")
     },
 ])
+
+
+// MARK: - Length codes below Creality's set
+
+let smallSpoolLengthTests = TestSuite(name: "Small-spool length codes", cases: [
+
+    // The derivation has to reproduce the five published codes exactly, or it is not the same
+    // encoding and the new ones are guesses.
+    test("floor(grams x 0.33) reproduces every documented code") { t in
+        for length in FilamentLength.allCases where length.isCrealityStandard {
+            let derived = String(format: "%04d", Int(Double(length.grams) * 0.33))
+            t.equal(derived, length.rawValue,
+                    "\(length.grams) g derives its own published code")
+        }
+    },
+
+    test("100 g and 200 g are available and decode back to their weights") { t in
+        t.equal(FilamentLength.g100.rawValue, "0033", "100 g is 33 m")
+        t.equal(FilamentLength.g200.rawValue, "0066", "200 g is 66 m")
+        t.equal(FilamentLength(rawValue: "0033")?.grams, 100, "and reads back")
+        t.equal(FilamentLength.forGrams(100), .g100, "reachable by weight")
+    },
+
+    // Legal on the wire, but every Creality client falls back to 1 KG for a code it does not know.
+    test("the new codes are flagged as outside Creality's set") { t in
+        t.expect(!FilamentLength.g100.isCrealityStandard, "100 g")
+        t.expect(!FilamentLength.g200.isCrealityStandard, "200 g")
+        for length in [FilamentLength.kg1, .g750, .g600, .g500, .g250] {
+            t.expect(length.isCrealityStandard, "\(length.label) is published")
+        }
+    },
+
+    test("a 100 g record round-trips through the tag codec") { t in
+        let record = try SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                     filamentLength: .g100)
+        t.equal(record.filamentLength, "0033", "written as four digits")
+        t.equal(record.weightGrams, 100, "and read back as 100 g")
+        let decoded = try SpoolRecord(validating: record.encoded)
+        t.equal(decoded.weightGrams, 100, "survives a full encode/decode")
+    },
+])

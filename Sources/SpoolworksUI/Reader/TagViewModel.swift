@@ -977,6 +977,15 @@ final class TagViewModel: ObservableObject {
         } catch {
             lastRead = nil
             readFailure = error.localizedDescription
+            // Release the auto-read arming. It is set *before* the read so a tag cannot be read
+            // twice, but leaving it set after a failure means the same tag can never be retried by
+            // lifting it and putting it back: `autoReadIfNeeded` sees its UID as already handled.
+            //
+            // Observed on the bench after replugging the reader — the first tag failed, would not
+            // read again however many times it was presented, and only came back after a
+            // *different* tag was scanned, because that overwrote the single stored UID. A failed
+            // read must leave the tag as unread as it actually is.
+            autoReadUID = nil
             toasts.error("Error reading tag — \(error.localizedDescription)")
         }
     }

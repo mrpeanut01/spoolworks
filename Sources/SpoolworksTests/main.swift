@@ -54,6 +54,7 @@ let exitCode = TestDriver.run([
     spoolConsumptionTests,
     serialAllocationTests,
     filamentSwatchLibraryTests,
+    smallSpoolLengthTests,
     cfsVersusJobTests,
 
     // Spool inventory

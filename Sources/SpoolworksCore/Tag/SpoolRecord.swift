@@ -15,6 +15,19 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     case g600 = "0198"
     case g500 = "0165"
     case g250 = "0082"
+    // -- beyond Creality's set ------------------------------------------------------------------
+    //
+    // Sample and small spools, which the five documented values do not reach. The codes are
+    // derived at the ratio the documented ones use — `floor(grams × 0.33)` metres, which
+    // reproduces all five of them exactly — so the encoding is right even though Creality never
+    // published these.
+    //
+    // **A Creality client reading one of these reports "1 KG."** `Utils.cs:169` defaults any
+    // unrecognised length to 1 kg, so the printer, the Windows app and the Android app will all
+    // call a 100 g spool a kilo. Spoolworks reads it correctly. See ``isCrealityStandard``, which
+    // is what the write form uses to warn before this is committed to a tag.
+    case g200 = "0066"
+    case g100 = "0033"
 
     /// Nominal spool weight in grams (`Utils.cs:172-188`).
     public var grams: Int {
@@ -24,6 +37,21 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
         case .g600: return 600
         case .g500: return 500
         case .g250: return 250
+        case .g200: return 200
+        case .g100: return 100
+        }
+    }
+
+    /// Whether Creality's own software recognises this length code.
+    ///
+    /// The five documented values round-trip through the printer, the Windows app and the Android
+    /// app. The rest are legal on the wire — the field is four free ASCII digits — but every
+    /// Creality client falls back to "1 KG" for a code it does not know (`Utils.cs:169`), so a tag
+    /// written with one is read correctly *here* and misreported everywhere else.
+    public var isCrealityStandard: Bool {
+        switch self {
+        case .kg1, .g750, .g600, .g500, .g250: return true
+        case .g200, .g100: return false
         }
     }
 
@@ -35,6 +63,8 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
         case .g600: return "600 G"
         case .g500: return "500 G"
         case .g250: return "250 G"
+        case .g200: return "200 G"
+        case .g100: return "100 G"
         }
     }
 
