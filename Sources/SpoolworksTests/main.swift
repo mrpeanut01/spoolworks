@@ -55,6 +55,7 @@ let exitCode = TestDriver.run([
     inventoryStoreTests,
     materialBoxInfoTests,
     cfsIdentityAmbiguityTests,
+    liveCFSFixtureTests,
 
     // UI state machine (code-review fixes)
     spoolDraftTests,

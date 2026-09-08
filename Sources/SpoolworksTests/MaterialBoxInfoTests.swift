@@ -200,3 +200,98 @@ let cfsIdentityAmbiguityTests = TestSuite(name: "CFS identity ambiguity", cases:
         t.equal(before.map(\.2), after.map(\.2), "no figures moved")
     },
 ])
+
+// MARK: - Firmware 1.4.2, captured from a live K2 Plus
+
+// A second real dump, pulled off the printer with `spooldiag boxinfo --raw` after the CFS screen
+// was built. It differs from the first in ways that mattered: newer firmware, an unoccupied chain
+// position, an empty slot, and fields we had never seen.
+private enum LiveFixture {
+    static func data() -> Data? {
+        guard let url = Bundle.module.url(forResource: "printer-k2plus-cfs-fw142",
+                                          withExtension: "json") else { return nil }
+        return try? Data(contentsOf: url)
+    }
+}
+
+let liveCFSFixtureTests = TestSuite(name: "Live CFS dump (fw 1.4.2)", cases: [
+
+    // The printer reports a fixed chain of four positions whether or not anything is plugged in.
+    // Counting them gave "4 boxes" for one physical unit and rendered three empty sections.
+    test("unoccupied chain positions are not counted as attached boxes") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+
+        t.equal(info.allBoxes.count, 4, "the printer reports four positions")
+        t.equal(info.boxes.count, 1, "only one is attached")
+        t.equal(info.boxes.first?.boxID, "T1", "and it is T1")
+        t.expect(!info.hasNoCFS, "a CFS is attached")
+        t.equal(info.slotCount, 4, "four slots, from the one real box")
+        t.equal(info.loadedSlotCount, 3, "three of them loaded")
+    },
+
+    // An unoccupied position omits `list` entirely. A strict decoder would throw on the document.
+    test("a position with no list key at all still decodes") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        guard let t2 = t.unwrap(info.allBoxes.first(where: { $0.boxID == "T2" }), "T2")
+        else { return }
+        t.equal(t2.state, "None", "state")
+        t.equal(t2.version, "-1", "firmware placeholder")
+        t.equal(t2.list.count, 0, "no slots")
+        t.expect(!t2.isAttached, "not attached")
+        t.equal(t2.temperatureLabel, "—", "no sensor reading rather than a bogus zero")
+    },
+
+    // This is the whole reason colour is in the identity key, observed live rather than argued.
+    test("two loaded slots differ only by colour — same filament, same serial") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        guard let box = t.unwrap(info.boxes.first, "T1") else { return }
+
+        guard let a = t.unwrap(box.list.first { $0.materialId == "A" }, "T1A"),
+              let b = t.unwrap(box.list.first { $0.materialId == "B" }, "T1B") else { return }
+
+        t.equal(a.filamentId, b.filamentId, "same filament id")
+        t.equal(a.serialNum, b.serialNum, "same serial")
+        t.equal(a.venderId, b.venderId, "same vendor")
+        t.expect(a.rgbHex != b.rgbHex, "different colour — the only thing separating them")
+        t.expect(a.identity != b.identity, "so the identities differ")
+        t.expect(a.identity?.hasGenericSerial == true, "and the serial is flagged as uninformative")
+    },
+
+    test("an empty slot reporting remainLen 0 is not mistaken for a spent spool") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        guard let d = t.unwrap(info.boxes.first?.list.first { $0.materialId == "D" }, "T1D")
+        else { return }
+        t.expect(!d.isLoaded, "no filament id, so nothing is loaded")
+        t.expect(d.identity == nil, "and no identity to reconcile against")
+        t.expect(!d.hasTag, "rfid 0")
+    },
+
+    // This printer uses 0330 for 1 kg, which is what Utils.cs says and what the design's
+    // "0165 → 1 kg" annotation contradicts.
+    test("the live dump confirms 0330 is 1 kg") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        guard let a = t.unwrap(info.boxes.first?.list.first, "T1A") else { return }
+        t.equal(a.filamentLen, "0330", "length code")
+        t.equal(a.netWeightGrams, 1000, "1 kg")
+    },
+
+    test("reconciling the live dump produces one spool per loaded slot") { t in
+        guard let data = t.unwrap(LiveFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        var inventory = SpoolInventory()
+        let report = inventory.reconcile(with: info)
+
+        t.equal(report.discovered.count, 3, "three loaded slots, three spools")
+        t.equal(inventory.active.count, 3, "and nothing invented for the empty slot")
+        t.equal(Set(inventory.active.map(\.location)).count, 3, "each in its own slot")
+
+        // Re-polling the same reading must be inert.
+        let again = inventory.reconcile(with: info)
+        t.expect(again.isEmpty, "a repeat poll changes nothing")
+    },
+])

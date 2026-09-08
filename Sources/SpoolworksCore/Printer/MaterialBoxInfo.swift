@@ -49,7 +49,16 @@ public struct MaterialBoxInfo: Codable, Hashable, Sendable {
 
     // MARK: Derived
 
-    public var boxes: [CFSBox] { material.info }
+    /// The CFS units **actually attached**.
+    ///
+    /// The printer reports a fixed chain of four positions whether or not anything is plugged into
+    /// them: a K2 Plus with one CFS returns `T1` populated and `T2`–`T4` as
+    /// `{"boxID": "T2", "state": "None", "version": "-1", "sn": "-1"}` — no `list` key at all.
+    /// Counting those gave "4 boxes" for one physical unit and rendered three empty sections.
+    public var boxes: [CFSBox] { material.info.filter(\.isAttached) }
+
+    /// Every chain position the printer reported, attached or not. For diagnostics.
+    public var allBoxes: [CFSBox] { material.info }
 
     /// Total slots across every attached box — `4 × boxes`.
     public var slotCount: Int { boxes.reduce(0) { $0 + $1.list.count } }
@@ -277,6 +286,12 @@ public struct CFSBox: Codable, Hashable, Sendable, Identifiable {
     /// `"39 %RH"`.
     public var humidityLabel: String { humidity.isEmpty ? "—" : "\(humidity) %RH" }
     public var isConnected: Bool { state == "connect" }
+
+    /// Whether anything is physically plugged into this chain position.
+    ///
+    /// Slots are the stronger signal and are checked first: a box that reports any slot at all is
+    /// present whatever it calls its state, and an unoccupied position omits `list` entirely.
+    public var isAttached: Bool { !list.isEmpty || isConnected }
 }
 
 // MARK: - A slot

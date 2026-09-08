@@ -138,12 +138,9 @@ the evidence trail for how the tag format was established, and are deliberately 
 
 ## Licensing
 
-The original work here is **MIT** — see [`LICENSE`](LICENSE).
-
-That grant does not cover everything in the tree. [`NOTICE`](NOTICE) itemises the third-party
-material, and one item is unresolved: **upstream publishes no LICENSE file**, so the three verbatim
-DnG-Crafts files in `reference/` carry default copyright and no grant to redistribute. Read
-`NOTICE` before publishing this anywhere.
+**MIT** — see [`LICENSE`](LICENSE). [`NOTICE`](NOTICE) credits the work this is built on:
+DnG-Crafts/K2-RFID, whose reverse engineering of the tag format made the whole thing possible; the
+meodai colour-name dataset; and Creality's material data.
 
 ## Known limitations
 

@@ -21,6 +21,13 @@ func usage() {
                                 A blank tag also needs --allow-key-write, which
                                 rewrites its sector keys irreversibly.
 
+      spooldiag boxinfo --host ADDR [--family k2|k1|hi|i7] [--raw]
+                                Read the CFS state from the printer over SSH and
+                                print every slot. Password comes from the
+                                SPOOLWORKS_SSH_PASSWORD environment variable, so
+                                it never reaches the process list or the shell
+                                history. Read-only.
+
     Only `write --confirm` modifies a tag; everything else is read-only.
     """)
 }
@@ -269,6 +276,123 @@ case "write":
     print("  blocks written    : \(result.writtenBlocks.keys.sorted())")
     let readable = result.backup.filter { !$0.authFailed }.count
     print("  backup captured   : \(readable)/16 sectors readable before writing")
+
+case "boxinfo":
+    // Verifies the whole CFS path end to end against real hardware: SSHTransport ->
+    // PrinterService.boxInfo -> MaterialBoxInfo.decode. The GUI's Printer & CFS screen runs
+    // exactly this, so a failure here is a failure there.
+    func argument(_ name: String) -> String? {
+        guard let i = args.firstIndex(of: "--" + name), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+    guard let host = argument("host") else {
+        print("boxinfo: --host is required")
+        exit(2)
+    }
+    // Never from argv: anything on the command line is visible in `ps` to every user on the
+    // machine, and lands in shell history.
+    guard let password = ProcessInfo.processInfo.environment["SPOOLWORKS_SSH_PASSWORD"],
+          !password.isEmpty else {
+        print("boxinfo: set SPOOLWORKS_SSH_PASSWORD in the environment")
+        exit(2)
+    }
+    let familyName = argument("family") ?? "k2"
+    guard let printerType = PrinterType(rawValue: familyName) else {
+        print("boxinfo: unknown family '\(familyName)'")
+        exit(2)
+    }
+    let model = PrinterModel(profileName: printerType.displayName,
+                             family: PrinterFamily(printerType))
+    let configuration = SSHConfiguration(host: host, hostKeyPolicy: .acceptNew)
+    let service = PrinterService(transport: SSHTransport(configuration: configuration,
+                                                         password: password))
+
+    // --raw prints the document untouched, for capturing a fixture or diagnosing a decode
+    // failure against firmware we have not seen.
+    let wantsRaw = args.contains("--raw")
+
+    if wantsRaw {
+        let transport = SSHTransport(configuration: configuration, password: password)
+        let rawSemaphore = DispatchSemaphore(value: 0)
+        var rawOutcome: Result<Data, Error>!
+        Task {
+            do { rawOutcome = .success(try await transport.download(from: model.materialBoxInfoPath)) }
+            catch { rawOutcome = .failure(error) }
+            rawSemaphore.signal()
+        }
+        rawSemaphore.wait()
+        switch rawOutcome! {
+        case let .failure(error):
+            FileHandle.standardError.write(Data("Failed: \(error.localizedDescription)\n".utf8))
+            exit(1)
+        case let .success(data):
+            FileHandle.standardOutput.write(data)
+            exit(0)
+        }
+    }
+
+    print("Reading \(model.materialBoxInfoPath) from \(host)…")
+    let semaphore = DispatchSemaphore(value: 0)
+    var outcome: Result<MaterialBoxInfo, Error>!
+    Task {
+        do { outcome = .success(try await service.boxInfo(of: model)) }
+        catch { outcome = .failure(error) }
+        semaphore.signal()
+    }
+    semaphore.wait()
+
+    switch outcome! {
+    case let .failure(error):
+        print("\nFailed: \(error.localizedDescription)")
+        exit(1)
+    case let .success(info):
+        print("\nCFS state      : \(info.material.state.isEmpty ? "—" : info.material.state)")
+        print("Auto refill    : \(info.material.isAutoRefillEnabled ? "on" : "off")")
+        print("Boxes          : \(info.boxes.count)")
+        print("Slots          : \(info.loadedSlotCount) loaded of \(info.slotCount)")
+
+        for box in info.boxes {
+            print("\n\(box.boxID)  \(box.state)  \(box.temperatureLabel)  \(box.humidityLabel)  fw \(box.version)")
+            for slot in box.list {
+                guard slot.isLoaded else {
+                    print("  \(slot.label(in: box))  — empty —")
+                    continue
+                }
+                let percent = slot.remainingPercent.map { "\(Int($0))%" } ?? "—"
+                print("  \(slot.label(in: box))  \(percent.padding(toLength: 5, withPad: " ", startingAt: 0))"
+                      + "  #\(slot.rgbHex)  \(slot.brand) \(slot.name) (\(slot.materialType))")
+                print("        filament \(slot.filamentId) · vendor \(slot.venderId) · serial \(slot.serialNum)"
+                      + " · len \(slot.filamentLen) → \(Spool.weightLabel(slot.netWeightGrams)) · \(slot.tagLabel)")
+                if let identity = slot.identity, identity.hasGenericSerial {
+                    print("        note: serial is the hard-coded 000001 — colour is carrying the identity")
+                }
+            }
+        }
+
+        if !info.material.sameMaterial.isEmpty {
+            print("\nGrouped as identical:")
+            for group in info.material.sameMaterial {
+                print("  \(group.label)  \(group.materialType)  [\(group.slotsLabel)]"
+                      + (group.isPartnered ? "  ← auto-refill partners" : ""))
+            }
+        }
+
+        if let rack = info.rackMaterial {
+            print("\nExternal holder: " + (rack.attach
+                ? "\(rack.brand) \(rack.name) (\(rack.materialType)) #\(rack.rgbHex)"
+                : "nothing mounted"))
+        }
+
+        // What the inventory would do with this reading.
+        var inventory = SpoolInventory()
+        let report = inventory.reconcile(with: info)
+        print("\nReconciliation would: discover \(report.discovered.count),"
+              + " update \(report.updated.count), unload \(report.unloaded.count)")
+        for spool in inventory.active {
+            print("  \(spool.remainingLabel.padding(toLength: 5, withPad: " ", startingAt: 0))"
+                  + "  \(spool.location.description)  \(spool.label)")
+        }
+    }
 
 default:
     usage()

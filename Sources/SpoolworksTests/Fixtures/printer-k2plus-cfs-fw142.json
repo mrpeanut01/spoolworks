@@ -1,0 +1,178 @@
+{
+    "rackMaterial": {
+        "attach": false,
+        "selected": false,
+        "rfid": 1,
+        "editStatus": 2,
+        "filamentId": "",
+        "color": "",
+        "brand": "",
+        "name": "",
+        "materialType": "",
+        "minTemp": 190,
+        "maxTemp": 230,
+        "pressure": "0.04",
+        "maxVSpeed": "23"
+    },
+    "Material": {
+        "state": "connect",
+        "filament": 1,
+        "auto_refill": 1,
+        "same_material": [
+            [
+                "101001",
+                "0000000",
+                [
+                    "T1A"
+                ],
+                "PLA"
+            ],
+            [
+                "101001",
+                "0FFFFFF",
+                [
+                    "T1B"
+                ],
+                "PLA"
+            ],
+            [
+                "102001",
+                "0000000",
+                [
+                    "T1C"
+                ],
+                "PLA-CF"
+            ]
+        ],
+        "enable": 1,
+        "tnn_map": {
+            "T1A": "T1A"
+        },
+        "info": [
+            {
+                "boxID": "T1",
+                "state": "connect",
+                "filament": "None",
+                "temperature": "24",
+                "dry_and_humidity": "30",
+                "version": "1.4.2",
+                "sn": "10000919795L325IXVX",
+                "uuid": [
+                    4,
+                    88,
+                    59,
+                    72,
+                    36,
+                    34,
+                    176,
+                    4,
+                    54,
+                    53,
+                    52,
+                    52
+                ],
+                "slot_rfid_scrap": "0",
+                "list": [
+                    {
+                        "materialId": "A",
+                        "state": 0,
+                        "times": 1,
+                        "scrap": 0,
+                        "remainLen": "99",
+                        "filamentId": "101001",
+                        "brand": "Creality",
+                        "name": "Hyper PLA",
+                        "materialType": "PLA",
+                        "density": 1.24,
+                        "diameter": "1.75",
+                        "minTemp": 190,
+                        "maxTemp": 240,
+                        "pressure": "0.044",
+                        "maxVSpeed": "23",
+                        "venderId": "0276",
+                        "color": "#0000000",
+                        "filamentLen": "0330",
+                        "serialNum": "000001",
+                        "reserve": "000000",
+                        "rfid": 2,
+                        "editStatus": 0
+                    },
+                    {
+                        "materialId": "B",
+                        "state": 0,
+                        "scrap": 0,
+                        "remainLen": "100",
+                        "filamentId": "101001",
+                        "brand": "Creality",
+                        "name": "Hyper PLA",
+                        "materialType": "PLA",
+                        "density": 1.24,
+                        "diameter": "1.75",
+                        "minTemp": 190,
+                        "maxTemp": 240,
+                        "pressure": "0.044",
+                        "maxVSpeed": "23",
+                        "venderId": "0276",
+                        "color": "#0FFFFFF",
+                        "filamentLen": "0330",
+                        "serialNum": "000001",
+                        "reserve": "000000",
+                        "rfid": 2,
+                        "editStatus": 0
+                    },
+                    {
+                        "materialId": "C",
+                        "state": 0,
+                        "scrap": 0,
+                        "remainLen": "93",
+                        "filamentId": "102001",
+                        "brand": "Creality",
+                        "name": "Hyper PLA-CF",
+                        "materialType": "PLA-CF",
+                        "density": 1.27,
+                        "diameter": "1.75",
+                        "minTemp": 190,
+                        "maxTemp": 240,
+                        "pressure": "0.04",
+                        "maxVSpeed": "23",
+                        "venderId": "0276",
+                        "color": "#0000000",
+                        "filamentLen": "0330",
+                        "serialNum": "000011",
+                        "reserve": "000000",
+                        "rfid": 2,
+                        "editStatus": 0
+                    },
+                    {
+                        "materialId": "D",
+                        "state": 0,
+                        "scrap": 0,
+                        "remainLen": "0",
+                        "rfid": 0
+                    }
+                ]
+            },
+            {
+                "boxID": "T2",
+                "state": "None",
+                "filament": "None",
+                "version": "-1",
+                "sn": "-1"
+            },
+            {
+                "boxID": "T3",
+                "state": "None",
+                "filament": "None",
+                "version": "-1",
+                "sn": "-1"
+            },
+            {
+                "boxID": "T4",
+                "state": "None",
+                "filament": "None",
+                "version": "-1",
+                "sn": "-1"
+            }
+        ]
+    }
+}

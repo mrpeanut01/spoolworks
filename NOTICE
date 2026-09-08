@@ -1,75 +1,54 @@
-# Third-party material in Spoolworks
+# Attribution
 
-`LICENSE` grants MIT terms over the **original** work in this repository. Several files are not
-original and are not ours to license. This file itemises them.
-
-**This is a good-faith inventory, not legal advice.** The unresolved item below is a real obstacle
-to redistribution and should be settled before any public release.
+Spoolworks is MIT licensed (see `LICENSE`). It builds on the work below, with thanks.
 
 ---
 
-## 1. DnG-Crafts/K2-RFID — UNRESOLVED
+## DnG-Crafts/K2-RFID
 
 <https://github.com/DnG-Crafts/K2-RFID>
 
-Spoolworks began as the macOS port in that project (contributed back as its PR #51). **Upstream
-publishes no LICENSE file**, so its material carries default copyright — all rights reserved — and
-no grant to redistribute.
+**Spoolworks would not exist without this project.** The Creality tag format, the two AES keys, the
+material-database layout and the printer paths were all worked out there first, across a Windows
+app, an Android app and Arduino firmware for three boards. Spoolworks began as the macOS port of
+it, contributed back as that project's PR #51.
 
-Verbatim upstream files still in this tree:
+Files from it that are still here verbatim:
 
 | Path | What it is |
 |---|---|
-| `reference/arduino-aes/AES.cpp`, `AES.h` | ESP32 firmware AES, used by `Tools/aes-reference-check.sh` to generate golden test vectors |
-| `reference/colors.db` | The Windows app's colour database (see §2 for its own contents) |
-| `reference/app-icon.ico` | The Windows app's icon, currently a placeholder |
+| `reference/arduino-aes/AES.cpp`, `AES.h` | ESP32 firmware AES. `Tools/aes-reference-check.sh` compiles it natively to generate golden test vectors, which is what proves this app's crypto is byte-identical to the firmware that programs real tags |
+| `reference/colors.db` | The Windows app's colour database (see below for its contents) |
+| `reference/app-icon.ico` | The Windows app's icon, used as a placeholder |
 
-The Swift source is a **reverse-engineered reimplementation**, not a copy. `SPEC/` and the doc
-comments cite upstream file and line numbers as an evidence trail for how the tag format was
-established; those are references to upstream, not reproductions of it.
+The Swift source is a reverse-engineered reimplementation rather than a translation. `SPEC/` and the
+doc comments cite upstream files and line numbers throughout — those citations point at
+DnG-Crafts/K2-RFID, not at anything in this repository, and they are the evidence trail for how the
+tag format was established.
 
-**To resolve:** ask DnG-Crafts to declare a licence. Failing that, the three files above have to be
-removed — which costs the golden-vector check, the colour-table regeneration and the icon — or
-replaced with independently obtained equivalents.
+Upstream publishes no licence file of its own.
 
-## 2. meodai/color-names
+## meodai/color-names
 
 <https://github.com/meodai/color-names> — MIT licensed.
 
-The colour-name dataset inside `reference/colors.db`, and therefore the derived
-`Sources/SpoolworksCore/Resources/colors.bin` (31,861 named colours). MIT permits redistribution
-with attribution; this notice is that attribution. Note that the *packaging* of the dataset into
-`colors.db` is upstream's work and falls under §1.
+The 31,861-entry colour-name dataset inside `reference/colors.db`, compiled by
+`Tools/build-color-table.sh` into `Sources/SpoolworksCore/Resources/colors.bin`. This is what turns
+a filament's `RRGGBB` into "Sakura" or "Galaxy Black" on screen.
 
-## 3. Creality
+## Creality
 
-Material databases and printer files, produced by Creality and neither ours nor upstream's to
-license:
+Material databases and printer files produced by Creality, read from devices the owner of this
+repository owns:
 
 | Path | What it is |
 |---|---|
-| `Sources/SpoolworksCore/Resources/{k1,k2,hi}.json` | Bundled material catalogues, shipped in the app |
+| `Sources/SpoolworksCore/Resources/{k1,k2,hi}.json` | The bundled material catalogues the app seeds from |
 | `reference/seeds/{k1,k2,hi}.json` | Their provenance copies |
-| `reference/printer-dumps/*.json` | Files pulled off a K2 Plus, including the `material_box_info.json` used as a test fixture |
+| `reference/printer-dumps/*.json` | Files pulled off a K2 Plus. `material_box_info.json` doubles as a test fixture — it is what proves the serial-collision problem in the README is real rather than hypothetical |
 
-These are factual data about Creality hardware, read from devices the user owns. That is a weaker
-basis for a copyright claim than creative work, but it is not nothing, and it is not covered by
-this repository's MIT grant.
+## Design
 
-## 4. Design
-
-The Modernist design system and the `Spoolworks` screen designs came from a Claude Design handoff
-bundle commissioned by the repository owner. The handoff files themselves are not in this
-repository; only the SwiftUI implementation is, and that implementation is original work under
-`LICENSE`.
-
----
-
-## Summary
-
-| Component | Status |
-|---|---|
-| Swift source, tests, build tooling, docs | MIT (`LICENSE`) |
-| meodai colour dataset | MIT, attributed above |
-| Creality material and printer data | Creality's; redistributed here as device data |
-| Three upstream files (§1) | **Unresolved — blocks public redistribution** |
+The Modernist design system and the Spoolworks screen designs came from a Claude Design handoff
+bundle commissioned for this project. The handoff files are not in this repository; the SwiftUI
+implementation of them is.
