@@ -517,3 +517,44 @@ let uploadDefaultsTests = TestSuite(name: "Upload defaults", cases: [
         }
     },
 ])
+
+
+// MARK: - The write form
+
+let writeFormDefaultsTests = TestSuite(name: "Write form defaults", cases: [
+
+    // Two spools tagged back to back must not collide — that is the whole point of randomising.
+    test("consecutive drafts do not share a serial") { t in
+        let a = SpoolDraft(), b = SpoolDraft()
+        t.expect(a.serialNumber != b.serialNumber,
+                 "two drafts, two serials (got \(a.serialNumber) twice)")
+        t.expect(a.serialNumber != SpoolRecord.defaultSerialNumber, "and neither is 000001")
+    },
+
+    // A form that arrives claiming a material would put that material on the tag if a write
+    // started before anyone looked at it. Blank cannot be written until a choice is made.
+    test("a fresh form is blank and therefore not writable") { t in
+        let draft = SpoolDraft()
+        t.equal(draft.materialID, "", "no material chosen")
+        t.expect(!draft.isValid, "so it cannot be written yet")
+        t.expect(!draft.validationIssues.isEmpty, "and it says what is missing")
+    },
+
+    // The randomised serial must not make an untouched form look edited — both sides of the
+    // comparison have to start from the same draft.
+    test("a freshly built model does not report itself edited") { t in
+        onMain {
+            let monitor = ReaderMonitor()
+            let suite = "sw-draft-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let model = TagViewModel(monitor: monitor,
+                                     toasts: ToastCenter(),
+                                     settings: AppSettings(defaults: defaults),
+                                     defaults: defaults)
+            t.expect(!model.draftIsEdited, "untouched")
+            t.equal(model.draft.serialNumber, model.draftBaseline.serialNumber,
+                    "including the random serial")
+        }
+    },
+])

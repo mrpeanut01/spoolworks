@@ -127,6 +127,21 @@ public struct SpoolRecord: Equatable, Hashable, CustomStringConvertible, Sendabl
     public static let defaultBatch = "A2"
     /// `000001` — the literal Windows always writes (`MainForm.cs:451`).
     public static let defaultSerialNumber = "000001"
+
+    /// A serial for a spool this app is about to tag.
+    ///
+    /// Six digits, because that is the field's width, and **never** ``defaultSerialNumber``.
+    /// `000001` is what the Windows app hard-codes, so every factory spool of a given material
+    /// already carries it — the K2 Plus dump in `reference/` has all four slots reporting it. A
+    /// tag written with that value is indistinguishable from the entire Creality catalogue, and
+    /// two spools written back to back would be indistinguishable from each other.
+    ///
+    /// Random rather than sequential because there is nowhere to keep a counter that survives a
+    /// reinstall. Six digits gives a ~1-in-900,000 collision per pair, which is far better than
+    /// the certainty a constant provides.
+    public static func randomSerialNumber() -> String {
+        String(format: "%06d", Int.random(in: 100_000...999_999))
+    }
     /// `000000` — the 6-character logical reserve field.
     public static let defaultReserve = "000000"
 

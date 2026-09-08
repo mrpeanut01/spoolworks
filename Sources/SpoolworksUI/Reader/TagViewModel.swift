@@ -57,7 +57,9 @@ struct SpoolDraft: Equatable {
     /// Written to sector 2 in plaintext. Advisory — the Arduino firmware writes a constant there.
     var printerType: PrinterType? = .k2
     /// `MainForm.cs:451` hard-codes `000001`; exposed because Android and the Arduino do not.
-    var serialNumber: String = SpoolRecord.defaultSerialNumber
+    /// Randomised per draft rather than the Windows constant — see
+    /// ``SpoolworksCore/SpoolRecord/randomSerialNumber()`` for why `000001` is actively harmful.
+    var serialNumber: String = SpoolRecord.randomSerialNumber()
 
     var colorHex: String { color.rgb8.hexString }
 
@@ -491,7 +493,13 @@ final class TagViewModel: ObservableObject {
 
     /// ``draft`` as this class last set it. Anything else means the user has typed or picked
     /// something since, which is what stops a fresh read from overwriting composed work.
-    @Published private(set) var draftBaseline = SpoolDraft()
+    /// What ``draft`` looked like before the user touched it.
+    ///
+    /// Seeded from `draft` rather than from a second `SpoolDraft()`. Now that the default serial is
+    /// randomised per instance, two independently constructed drafts differ in that one field —
+    /// so a freshly built form compared itself against a stranger and reported itself edited
+    /// before anyone had typed anything.
+    @Published private(set) var draftBaseline: SpoolDraft
 
     /// True when the form no longer matches what was last loaded into it.
     var draftIsEdited: Bool { !draft.hasSameValues(as: draftBaseline) }
@@ -629,6 +637,10 @@ final class TagViewModel: ObservableObject {
         self.toasts = toasts
         self.settings = settings
         self.defaults = defaults
+        // Both sides of the edited-comparison start as the *same* draft, random serial included.
+        let initialDraft = SpoolDraft()
+        self.draft = initialDraft
+        self.draftBaseline = initialDraft
         self.recentColors = Self.sanitisedColors(defaults.stringArray(forKey: StorageKeys.recentColors) ?? [])
         // Absent means never chosen, which is on — `bool(forKey:)` alone would silently default it
         // off for every existing install.
@@ -745,7 +757,13 @@ final class TagViewModel: ObservableObject {
         await catalog.load(type)
         if catalog.isReady {
             manualMaterialEntry = false
-            selectVendor(preferredVendor() ?? catalog.vendors.first ?? "")
+            // Deliberately does **not** fall back to the first brand in the catalogue. An
+            // unattended default meant the form arrived claiming a specific material — the first
+            // one alphabetically — and a write started before anyone looked at it would put that
+            // material on the tag. A blank form cannot be written until a choice is made, which is
+            // the correct amount of friction for an irreversible operation. A brand already in the
+            // draft (from a read, or the user's own pick) is still honoured.
+            selectVendor(preferredVendor() ?? "")
         } else {
             // No catalogue: the ID field becomes the input, pre-filled with whatever was there.
             manualMaterialEntry = true
@@ -1033,8 +1051,8 @@ final class TagViewModel: ObservableObject {
     func prepareCatalog() async {
         guard catalog.state == .idle else { return }
         await printerTypeChanged(to: draft.printerType)
-        // Selecting the first material of the first brand is initialisation, not the user
-        // editing the form: re-baseline so the first read is still allowed to adopt it.
+        // Loading the catalogue is initialisation, not the user editing the form: re-baseline so
+        // the first read is still allowed to adopt it.
         draftBaseline = draft
     }
 
@@ -1159,6 +1177,9 @@ final class TagViewModel: ObservableObject {
             writeOutcome = .succeeded(summary)
             rememberColor(plan.record.rgbHex)
             autoWriteSkipped = nil
+            // The next spool is a different spool. Carrying this serial forward would tag two of
+            // them identically, which is the collision the randomisation exists to avoid.
+            draft.serialNumber = SpoolRecord.randomSerialNumber()
             // Fired here rather than from the confirmation sheet's completion handler, because a
             // write can also happen through auto-write with no sheet involved — and a spool that
             // reached stock or not depending on which path programmed it would be worse than

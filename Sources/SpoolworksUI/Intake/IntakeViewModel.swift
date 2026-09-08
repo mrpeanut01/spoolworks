@@ -418,7 +418,5 @@ final class IntakeViewModel: ObservableObject {
     /// reinstall. Deliberately **not** `000001`: that is the value Windows hard-codes, so every
     /// factory spool already shares it, and reusing it would make an app-written spool collide with
     /// the entire Creality catalogue.
-    nonisolated static func allocateSerial() -> String {
-        String(format: "%06d", Int.random(in: 100_000...999_999))
-    }
+    nonisolated static func allocateSerial() -> String { SpoolRecord.randomSerialNumber() }
 }

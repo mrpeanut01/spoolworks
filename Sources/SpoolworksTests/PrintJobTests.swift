@@ -430,3 +430,34 @@ let cfsVersusJobTests = TestSuite(name: "CFS versus job tracking", cases: [
         t.expect(report.isEmpty, "nothing reported as changed")
     },
 ])
+
+
+// MARK: - Serial allocation
+
+let serialAllocationTests = TestSuite(name: "Serial allocation", cases: [
+
+    // 000001 is what the Windows app hard-codes, so every factory spool of a material carries it —
+    // all four slots of the K2 Plus dump report it. Writing it makes a tag indistinguishable from
+    // the whole Creality catalogue, and two spools written in a row indistinguishable from each
+    // other.
+    test("an allocated serial is never the Windows constant, and fits the field") { t in
+        var seen = Set<String>()
+        for _ in 0..<2_000 {
+            let serial = SpoolRecord.randomSerialNumber()
+            t.expect(serial != SpoolRecord.defaultSerialNumber, "not 000001")
+            t.equal(serial.count, 6, "fits the tag's serial field")
+            t.expect(serial.allSatisfy(\.isNumber), "digits only")
+            seen.insert(serial)
+        }
+        // Not a distribution test — just that it is not a constant wearing a random hat.
+        t.expect(seen.count > 1_800, "well spread, got \(seen.count) distinct in 2000")
+    },
+
+    test("an allocated serial builds a valid record") { t in
+        let serial = SpoolRecord.randomSerialNumber()
+        let record = try SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                     filamentLength: .kg1, serialNumber: serial)
+        t.equal(record.serialNumber, serial, "carried onto the tag unchanged")
+        t.equal(record.encoded.count, 40, "and the record is still 40 characters")
+    },
+])
