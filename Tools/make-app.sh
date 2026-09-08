@@ -111,31 +111,18 @@ fi
 
 # ---------------------------------------------------------------------------- icon
 
-# Best effort: derive an .icns from the Windows app icon if `sips` can read it. A missing icon is
-# not an error — the app launches with the generic one.
-ICON_SOURCE="${REPO_ROOT}/reference/app-icon.ico"
+# Resources/AppIcon.icns is generated from the Modernist tokens by Tools/make-icon.swift and
+# committed. It replaced a best-effort conversion of the Windows app's .ico, which was both the
+# wrong product's branding and one of the unlicensed upstream files.
+ICON_SOURCE="${REPO_ROOT}/Resources/AppIcon.icns"
 ICON_NAME=""
 if [[ -f "${ICON_SOURCE}" ]]; then
-    WORK="$(mktemp -d)"
-    if sips -s format png "${ICON_SOURCE}" --out "${WORK}/icon.png" >/dev/null 2>&1; then
-        ICONSET="${WORK}/${APP_NAME}.iconset"
-        mkdir -p "${ICONSET}"
-        ok=1
-        for size in 16 32 64 128 256 512; do
-            sips -z "${size}" "${size}" "${WORK}/icon.png" \
-                 --out "${ICONSET}/icon_${size}x${size}.png" >/dev/null 2>&1 || ok=0
-            sips -z "$((size * 2))" "$((size * 2))" "${WORK}/icon.png" \
-                 --out "${ICONSET}/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || ok=0
-        done
-        if [[ ${ok} -eq 1 ]] && iconutil -c icns "${ICONSET}" \
-                -o "${CONTENTS}/Resources/${APP_NAME}.icns" >/dev/null 2>&1; then
-            ICON_NAME="${APP_NAME}"
-            echo "    icon: generated ${APP_NAME}.icns from reference/app-icon.ico"
-        fi
-    fi
-    rm -rf "${WORK}"
+    cp "${ICON_SOURCE}" "${CONTENTS}/Resources/${APP_NAME}.icns"
+    ICON_NAME="${APP_NAME}"
+    echo "    icon: Resources/AppIcon.icns"
+else
+    echo "    icon: none — run 'swift Tools/make-icon.swift' to generate one"
 fi
-[[ -n "${ICON_NAME}" ]] || echo "    icon: none (using the system default)"
 
 # ---------------------------------------------------------------------------- Info.plist
 

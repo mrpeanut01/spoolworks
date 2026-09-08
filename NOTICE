@@ -19,7 +19,6 @@ Files from it that are still here verbatim:
 |---|---|
 | `reference/arduino-aes/AES.cpp`, `AES.h` | ESP32 firmware AES. `Tools/aes-reference-check.sh` compiles it natively to generate golden test vectors, which is what proves this app's crypto is byte-identical to the firmware that programs real tags |
 | `reference/colors.db` | The Windows app's colour database (see below for its contents) |
-| `reference/app-icon.ico` | The Windows app's icon, used as a placeholder |
 
 The Swift source is a reverse-engineered reimplementation rather than a translation. `SPEC/` and the
 doc comments cite upstream files and line numbers throughout — those citations point at

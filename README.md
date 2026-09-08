@@ -125,7 +125,7 @@ Inputs that are not source, kept because the build tools, the specs and the test
 |---|---|
 | `reference/colors.db` | `Tools/build-color-table.sh`, which regenerates `colors.bin` |
 | `reference/arduino-aes/` | `Tools/aes-reference-check.sh`, which compiles the ESP32 firmware's AES natively to generate golden vectors |
-| `reference/app-icon.ico` | `Tools/make-app.sh` — **a placeholder inherited from the Windows app; replace with the Spoolworks mark** |
+| `Resources/AppIcon.icns` | `Tools/make-app.sh`. Generated from the design tokens by `Tools/make-icon.swift` — regenerate it if the palette changes |
 | `reference/seeds/` | Provenance for the `{k1,k2,hi}.json` catalogues bundled in `SpoolworksCore/Resources` |
 | `reference/printer-dumps/` | Real files pulled off a K2 Plus. `material_box_info.json` is also a test fixture: it is what proves the serial-collision problem above is real, not hypothetical |
 

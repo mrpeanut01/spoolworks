@@ -107,6 +107,50 @@ let inventoryViewModelTests = TestSuite(name: "Inventory view model", cases: [
         }
     },
 
+    test("a weigh-in converts grams to a percentage and records the delta") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let spool = sampleSpool(percent: 100)   // 1 kg net
+            model.add(spool)
+
+            t.expect(model.adjust(spool, toGrams: 640), "accepted")
+            guard let after = t.unwrap(model.inventory.spool(id: spool.id), "spool") else { return }
+            t.equal(after.remainingPercent, 64, "640 g of 1000 g")
+            t.equal(after.usage.first?.kind, .adjustment, "recorded as an adjustment")
+            t.equal(after.usage.first?.deltaGrams, -360, "delta derived from the reading")
+        }
+    },
+
+    // Weighing the spool *with* its core gives a figure larger than the spool can hold. Clamping
+    // to 100% would silently discard what the user actually measured.
+    test("a weigh-in larger than the spool is refused, not clamped") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let spool = sampleSpool(percent: 50)
+            model.add(spool)
+
+            t.expect(!model.adjust(spool, toGrams: 1250), "refused — that is gross weight")
+            guard let after = t.unwrap(model.inventory.spool(id: spool.id), "spool") else { return }
+            t.equal(after.remainingPercent, 50, "unchanged")
+            t.equal(after.usage.count, 0, "and nothing written to the history")
+
+            t.expect(!model.adjust(spool, toGrams: -5), "a negative reading is refused too")
+        }
+    },
+
+    test("a weigh-in of exactly zero is a spent spool, not an error") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let spool = sampleSpool(percent: 8)
+            model.add(spool)
+            t.expect(model.adjust(spool, toGrams: 0), "accepted")
+            t.equal(model.inventory.spool(id: spool.id)?.remainingPercent, 0, "empty")
+        }
+    },
+
     test("a hand adjustment records the delta it caused") { t in
         onMain {
             let (model, _, dir) = makeInventory()

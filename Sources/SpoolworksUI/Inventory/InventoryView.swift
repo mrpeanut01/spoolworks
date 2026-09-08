@@ -258,6 +258,8 @@ private struct InventoryDetailRail: View {
         Text("Usage log").kicker().padding(.bottom, 10)
         UsageLog(entries: spool.usage).padding(.bottom, 18)
 
+        WeighInControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
+
         VStack(spacing: Theme.Spacing.s) {
             Button("Read tag to verify") { env.sidebarSelection = .identify }
                 .buttonStyle(.sw(.secondary, block: true))
@@ -374,5 +376,83 @@ struct InlineFailure: View {
         .background(Theme.danger.opacity(0.08))
         .overlay(Rectangle().strokeBorder(Theme.danger, lineWidth: 1))
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+// MARK: - Weigh-in
+
+/// Correct what is left by putting the spool on scales.
+///
+/// Not in the design, but the design's own copy asks for it: with no CFS attached it says
+/// "weigh-in corrections carry more weight here", and a spool sitting on a shelf has no other way
+/// to stay accurate — its last reading is however full it was when it left the printer.
+///
+/// It asks for **filament** grams rather than gross weight. A spool's core is 150–250 g depending
+/// on the maker, and there is nowhere honest to get that number from: it is not on the tag, not in
+/// the material database, and not the same across brands. Asking for gross and guessing the core
+/// would overstate every corrected spool by roughly a fifth, so the label says which is wanted.
+private struct WeighInControl: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var isOpen = false
+    @State private var entry = ""
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            Button(isOpen ? "Cancel weigh-in" : "Correct by weighing") {
+                isOpen.toggle()
+                entry = ""
+                problem = nil
+            }
+            .buttonStyle(.sw(.secondary, block: true))
+
+            if isOpen {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                    FieldBox(label: "Filament remaining", note: "grams, not including the spool") {
+                        TextField("", text: $entry)
+                            .textFieldStyle(.plain)
+                            .swInput()
+                            .onSubmit(apply)
+                    }
+
+                    HStack(spacing: Theme.Spacing.s) {
+                        Button("Apply", action: apply)
+                            .buttonStyle(.sw(.primary, size: 12, h: 14, v: 8))
+                            .disabled(entry.isEmpty)
+                        Text("of \(spool.netWeightGrams) g net")
+                            .font(Theme.caption)
+                            .foregroundStyle(Theme.secondaryLabel)
+                    }
+
+                    if let problem {
+                        Text(problem)
+                            .font(Theme.caption)
+                            .foregroundStyle(Theme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(Theme.Spacing.m)
+                .background(Theme.surface)
+                .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
+            }
+        }
+    }
+
+    private func apply() {
+        guard let grams = Int(entry.trimmingCharacters(in: .whitespaces)) else {
+            problem = "Enter a whole number of grams."
+            return
+        }
+        guard model.adjust(spool, toGrams: grams) else {
+            problem = "That is more than this spool holds (\(spool.netWeightGrams) g). "
+                + "Weigh the filament only, without the spool it is wound on."
+            return
+        }
+        isOpen = false
+        entry = ""
+        problem = nil
     }
 }

@@ -98,10 +98,29 @@ final class InventoryViewModel: ObservableObject {
         guard var current = inventory.spool(id: spool.id) else { return }
         current.record(percent: percent,
                        kind: .adjustment,
-                       detail: "Manual adjustment",
-                       source: "Adjusted by hand")
+                       detail: "Weighed in",
+                       source: "Weighed \(Date.now.formatted(date: .abbreviated, time: .omitted))")
         inventory.update(current)
         persist()
+    }
+
+    /// Records a weigh-in: the user put the spool on scales and this is what is left.
+    ///
+    /// Takes **grams of filament**, not gross weight — a spool's own core is 150–250 g depending
+    /// on the maker, and silently treating gross as net would overstate every corrected spool by
+    /// about a fifth. The UI says so at the point of entry; this method simply believes what it is
+    /// given.
+    ///
+    /// Returns false when the figure is not usable, so the caller can keep the field open with the
+    /// value still in it rather than appearing to accept and discard it.
+    @discardableResult
+    func adjust(_ spool: Spool, toGrams grams: Int) -> Bool {
+        guard grams >= 0, spool.netWeightGrams > 0 else { return false }
+        // More than a full spool is a mis-keyed figure or the wrong net weight, not a real
+        // reading. Refusing beats clamping to 100% and losing what the user actually measured.
+        guard grams <= spool.netWeightGrams else { return false }
+        adjust(spool, toPercent: Double(grams) / Double(spool.netWeightGrams) * 100)
+        return true
     }
 
     func setLocation(_ location: SpoolLocation, for spool: Spool) {
