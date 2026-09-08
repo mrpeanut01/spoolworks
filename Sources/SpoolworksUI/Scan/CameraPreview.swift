@@ -19,6 +19,20 @@ struct CameraPreview: NSViewRepresentable {
     let session: AVCaptureSession
     /// Drawn in the accent when the reading has settled, so "hold still" has a visible end.
     var isSettled: Bool
+    /// Any value that changes as frames arrive.
+    ///
+    /// The reticle is positioned from `layerRectConverted(fromMetadataOutputRect:)`, and that can
+    /// only answer once the capture connection exists. The sheet lays out the instant it opens,
+    /// which is *before* the session has started delivering — so the first `layout()` gets an empty
+    /// rectangle, and without something to trigger a second one the reticle never appears at all.
+    /// It is a quiet failure: the picture is there, the readout is live, and the box the user is
+    /// supposed to aim with simply is not drawn.
+    ///
+    /// Frames arriving is the precondition itself, so it is the right thing to wait on. Deliberately
+    /// *not* a timer or a self-rescheduling `needsLayout`: this codebase has already had one
+    /// self-sustaining main-thread loop that livelocked the app (see ``StatusDot``), and there is no
+    /// reason to risk a second.
+    var tick: Int
 
     func makeNSView(context: Context) -> PreviewView {
         let view = PreviewView()
@@ -30,6 +44,9 @@ struct CameraPreview: NSViewRepresentable {
     func updateNSView(_ view: PreviewView, context: Context) {
         if view.previewLayer.session !== session { view.previewLayer.session = session }
         view.isSettled = isSettled
+        // Only until it lands. Once the video rectangle is known the geometry is stable, and a
+        // relayout on every frame would be work for nothing.
+        if !view.hasTarget { view.needsLayout = true }
     }
 
     final class PreviewView: NSView {
@@ -45,11 +62,17 @@ struct CameraPreview: NSViewRepresentable {
             }
         }
 
+        /// False until the preview layer can say where the video is — see ``CameraPreview/tick``.
+        private(set) var hasTarget = false
+
         override init(frame: NSRect) {
             super.init(frame: frame)
+            // Layer *first*, then `wantsLayer`: that is the documented order for a layer-hosting
+            // view, and the reverse has AppKit create a layer only for this line to throw it away.
+            let host = CALayer()
+            host.backgroundColor = NSColor.black.cgColor
+            layer = host
             wantsLayer = true
-            layer = CALayer()
-            layer?.backgroundColor = NSColor.black.cgColor
 
             // `.resizeAspect`, not `.resizeAspectFill`: a fill crops the frame, and a user lining a
             // spool up against the edge of the picture would be aiming at something the sensor can
@@ -100,7 +123,8 @@ struct CameraPreview: NSViewRepresentable {
             reticleLayer.frame = bounds
 
             let target = targetRect()
-            guard !target.isEmpty else {
+            hasTarget = !target.isEmpty
+            guard hasTarget else {
                 dimLayer.path = nil
                 reticleLayer.path = nil
                 return

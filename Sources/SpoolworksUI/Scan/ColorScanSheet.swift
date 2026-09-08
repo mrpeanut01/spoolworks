@@ -99,7 +99,8 @@ struct ColorScanSheet: View {
     private var liveBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             CameraPreview(session: scanner.session,
-                          isSettled: scanner.reading?.isSteady == true)
+                          isSettled: scanner.reading?.isSteady == true,
+                          tick: scanner.frameTick)
                 .frame(maxWidth: .infinity, minHeight: 300)
                 .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
                 .accessibilityLabel("Camera preview with a target square in the centre")

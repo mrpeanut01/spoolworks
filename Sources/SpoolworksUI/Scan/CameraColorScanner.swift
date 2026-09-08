@@ -57,6 +57,12 @@ final class CameraColorScanner: NSObject, ObservableObject {
     @Published private(set) var reading: FilamentColorStabiliser.Reading?
     /// The nearest name from the 31,861-row table, for the colour currently being reported.
     @Published private(set) var readingName: String?
+    /// Increments on every measured frame.
+    ///
+    /// Its only job is to be a value that changes, so `CameraPreview` gets an `updateNSView` while
+    /// the capture pipeline is coming up. See the note there on why the reticle cannot be placed
+    /// until the first frame has flowed.
+    @Published private(set) var frameTick = 0
     @Published private(set) var cameras: [Camera] = []
     @Published var selectedCameraID: String? {
         didSet {
@@ -139,6 +145,7 @@ final class CameraColorScanner: NSObject, ObservableObject {
         state = .idle
         reading = nil
         readingName = nil
+        frameTick = 0
     }
 
     /// Throws the settled window away — used when the user has moved the camera to a new spot and
@@ -269,6 +276,7 @@ final class CameraColorScanner: NSObject, ObservableObject {
     private func publish(_ reading: FilamentColorStabiliser.Reading) {
         let previous = self.reading?.color
         self.reading = reading
+        frameTick &+= 1
         guard reading.color != previous else { return }
 
         // The name lookup is a 31,861-row linear scan. It is 0.04 ms in a release build but ~14 ms
