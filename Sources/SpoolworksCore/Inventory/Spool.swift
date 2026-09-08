@@ -228,6 +228,19 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
     // -- bookkeeping ---------------------------------------------------------------------------
     public var tagSource: TagSource
     public var intakeDate: Date
+    /// The last `remainLen` the CFS actually reported, as distinct from ``remainingPercent``.
+    ///
+    /// These two drift apart on purpose. The CFS reports whole percent — 10 g on a 1 kg spool —
+    /// and job consumption is measured to a fraction of a gram, so a 20 g print moves the app's
+    /// figure while the CFS's own reading does not budge. Comparing a poll against
+    /// ``remainingPercent`` therefore reads "unchanged CFS" as "the app has drifted" and
+    /// overwrites the finer number with the coarser one. Observed live: a spool ended a 20 g print
+    /// at 98.8 % because every poll put back what the job had deducted.
+    ///
+    /// Keeping the last raw reading separately is what lets ``SpoolInventory/reconcile(with:at:addingUnknown:)``
+    /// ask the only question that matters — *did the measurement change?* — rather than
+    /// *does the measurement disagree?*
+    public var lastCFSPercent: Double?
     public var usage: [UsageEntry]
     /// Retired spools stay in the file so their usage history survives, and are filtered out of
     /// every default view. The design's Retire dialog promises exactly this: *"it stays on the
@@ -247,6 +260,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
                 remainingSource: String = "",
                 tagSource: TagSource = .untagged,
                 intakeDate: Date = .now,
+                lastCFSPercent: Double? = nil,
                 usage: [UsageEntry] = [],
                 isRetired: Bool = false) {
         self.id = id
@@ -262,6 +276,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         self.remainingSource = remainingSource
         self.tagSource = tagSource
         self.intakeDate = intakeDate
+        self.lastCFSPercent = lastCFSPercent
         self.usage = usage
         self.isRetired = isRetired
     }

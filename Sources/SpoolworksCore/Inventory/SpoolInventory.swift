@@ -224,14 +224,26 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
                                        detail: "Loaded into \(entry.label)", date: date)
                     changed = true
                 }
+                // A poll is only news when the **measurement** changed, not when it merely
+                // disagrees with our figure. The CFS reports whole percent, so a print smaller
+                // than 1 % of the spool leaves it unmoved while job tracking has legitimately
+                // deducted grams; treating that as a discrepancy overwrites the finer number with
+                // the coarser one, every 30 seconds, forever.
                 if let percent = entry.slot.remainingPercent,
-                   abs(percent - spools[index].remainingPercent) >= 0.5 {
-                    spools[index].record(percent: percent,
-                                         kind: .cfsPoll,
-                                         detail: "CFS poll · \(entry.label)",
-                                         date: date,
-                                         source: source)
-                    changed = true
+                   spools[index].lastCFSPercent.map({ abs(percent - $0) >= 0.5 }) ?? true {
+                    spools[index].lastCFSPercent = percent
+                    // Only write a line if it actually moves the figure — on first sight the
+                    // reading usually equals what we already have.
+                    if abs(percent - spools[index].remainingPercent) >= 0.5 {
+                        spools[index].record(percent: percent,
+                                             kind: .cfsPoll,
+                                             detail: "CFS poll · \(entry.label)",
+                                             date: date,
+                                             source: source)
+                        changed = true
+                    } else {
+                        spools[index].remainingSource = source
+                    }
                 } else {
                     spools[index].remainingSource = source
                 }
@@ -249,7 +261,8 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
                                   location: entry.location,
                                   remainingSource: source,
                                   tagSource: entry.slot.hasTag ? .crealityFactory : .untagged,
-                                  intakeDate: date)
+                                  intakeDate: date,
+                                  lastCFSPercent: entry.slot.remainingPercent)
                 spool.note(kind: .intake, detail: "Discovered in \(entry.label)", date: date)
                 spools.insert(spool, at: 0)
                 seen.insert(spool.id)

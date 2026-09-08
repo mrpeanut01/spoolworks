@@ -319,3 +319,114 @@ let spoolConsumptionTests = TestSuite(name: "Spool consumption", cases: [
         t.equal(spool.usage.count, 2, "both events on the record")
     },
 ])
+
+
+// MARK: - The CFS must not undo job tracking
+
+// Observed live over an hour: a 20 g print moved the app's figure repeatedly, and every 30 s poll
+// put it straight back, because remainLen for that slot never left "99". 1 % is 10 g on a 1 kg
+// spool, so the CFS cannot see a print this size at all — and comparing its reading against the
+// app's finer figure read "unchanged CFS" as "the app has drifted".
+let cfsVersusJobTests = TestSuite(name: "CFS versus job tracking", cases: [
+
+    test("an unchanged CFS reading does not undo job consumption") { t in
+        let slot = CFSSlot(materialId: "A", remainLen: "99", filamentId: "101001",
+                           brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                           venderId: "0276", color: "#0000000", filamentLen: "0330",
+                           serialNum: "000001", rfid: 2)
+        let info = MaterialBoxInfo(material: MaterialSection(
+            state: "connect",
+            info: [CFSBox(boxID: "T1", state: "connect", list: [slot])]))
+
+        var inventory = SpoolInventory()
+        inventory.reconcile(with: info)
+        guard var spool = t.unwrap(inventory.active.first, "discovered spool") else { return }
+        t.equal(spool.remainingPercent, 99, "starts at the measured figure")
+
+        // A 20 g print, deducted as the job runs.
+        spool.consume(grams: 20.27, detail: "job lid.stl_PLA_29m0s.gcode")
+        inventory.update(spool)
+        t.expect(abs(inventory.active[0].remainingPercent - 96.973) < 0.01, "job moved the figure")
+
+        // The CFS still says 99 — it cannot resolve 20 g. Three more polls.
+        for _ in 0..<3 { inventory.reconcile(with: info) }
+
+        t.expect(abs(inventory.active[0].remainingPercent - 96.973) < 0.01,
+                 "the unchanged reading left it alone, got \(inventory.active[0].remainingPercent)")
+        t.equal(inventory.active[0].usage.filter { $0.kind == .cfsPoll }.count, 0,
+                "and wrote no corrections")
+    },
+
+    // The flip side: a reading that genuinely moves is a real measurement and must win.
+    test("a CFS reading that actually changes is taken as the truth") { t in
+        func info(_ remain: String) -> MaterialBoxInfo {
+            MaterialBoxInfo(material: MaterialSection(state: "connect", info: [
+                CFSBox(boxID: "T1", state: "connect", list: [
+                    CFSSlot(materialId: "A", remainLen: remain, filamentId: "101001",
+                            brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                            venderId: "0276", color: "#0000000", filamentLen: "0330",
+                            serialNum: "000001", rfid: 2)])]))
+        }
+        var inventory = SpoolInventory()
+        inventory.reconcile(with: info("99"))
+        guard var spool = t.unwrap(inventory.active.first, "spool") else { return }
+        spool.consume(grams: 20.27, detail: "job a.gcode")
+        inventory.update(spool)
+
+        // The spool has drawn enough for the CFS to finally notice. 97 confirms the estimate of
+        // 96.973 to within 0.03 %, so there is nothing to correct — and writing "+0.3 g" would be
+        // churn, not information. The reading is still remembered.
+        inventory.reconcile(with: info("97"))
+        t.expect(abs(inventory.active[0].remainingPercent - 96.973) < 0.01,
+                 "a measurement that agrees leaves the finer figure alone")
+        t.equal(inventory.active[0].usage.filter { $0.kind == .cfsPoll }.count, 0,
+                "and writes no line")
+        t.equal(inventory.active[0].lastCFSPercent, 97, "but the raw reading is remembered")
+    },
+
+    // The case the correction exists for: the spool was swapped, unloaded and refilled, or the
+    // estimate simply drifted. A materially different measurement must overwrite it.
+    test("a measurement that materially disagrees overwrites the estimate") { t in
+        func info(_ remain: String) -> MaterialBoxInfo {
+            MaterialBoxInfo(material: MaterialSection(state: "connect", info: [
+                CFSBox(boxID: "T1", state: "connect", list: [
+                    CFSSlot(materialId: "A", remainLen: remain, filamentId: "101001",
+                            brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                            venderId: "0276", color: "#0000000", filamentLen: "0330",
+                            serialNum: "000001", rfid: 2)])]))
+        }
+        var inventory = SpoolInventory()
+        inventory.reconcile(with: info("99"))
+        guard var spool = t.unwrap(inventory.active.first, "spool") else { return }
+        spool.consume(grams: 20.27, detail: "job a.gcode")
+        inventory.update(spool)
+
+        // The CFS now reports far less than the estimate — something happened off-book.
+        inventory.reconcile(with: info("60"))
+        t.equal(inventory.active[0].remainingPercent, 60, "the measurement wins")
+        t.equal(inventory.active[0].usage.first?.kind, .cfsPoll, "and the correction is recorded")
+        t.expect((inventory.active[0].usage.first?.deltaGrams ?? 0) < 0,
+                 "as a loss, since the spool holds less than we thought")
+    },
+
+    test("the remembered reading is what a poll is compared against, not our figure") { t in
+        let spool = Spool(identity: SpoolIdentity(vendorId: "0276", filamentId: "101001",
+                                                  colorHex: "000000", serialNumber: "000001"),
+                          brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                          colorHex: "000000", netWeightGrams: 1000,
+                          remainingPercent: 90, location: .cfs(box: "T1", slot: "A"),
+                          lastCFSPercent: 99)
+        var inventory = SpoolInventory(spools: [spool])
+        let info = MaterialBoxInfo(material: MaterialSection(state: "connect", info: [
+            CFSBox(boxID: "T1", state: "connect", list: [
+                CFSSlot(materialId: "A", remainLen: "99", filamentId: "101001",
+                        brand: "Creality", name: "Hyper PLA", materialType: "PLA",
+                        venderId: "0276", color: "#0000000", filamentLen: "0330",
+                        serialNum: "000001", rfid: 2)])]))
+
+        let report = inventory.reconcile(with: info)
+        t.equal(inventory.active[0].remainingPercent, 90,
+                "a 9-point gap is ignored because the measurement itself did not move")
+        t.expect(report.isEmpty, "nothing reported as changed")
+    },
+])
