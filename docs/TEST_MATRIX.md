@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `cd macOS && swift run SpoolworksTests` · Hardware: `cd macOS && swift run spooldiag <cmd>`
-Status at last update: **523 automated tests passing**, 0 failing.
+Status at last update: **556 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
