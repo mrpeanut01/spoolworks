@@ -170,6 +170,12 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
          principal class the process launches as an accessory with no menus. -->
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <!-- Required before the process may touch AVFoundation at all. Without it macOS does not
+         return an error, it *terminates* the app the moment a capture device is opened — which is
+         why CameraColorScanner checks for this key before it touches a capture API, and why the
+         verify step below refuses to ship a bundle missing it. -->
+    <key>NSCameraUsageDescription</key>
+    <string>Spoolworks uses the camera to read a spool's filament colour so it can be written to the tag.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Spoolworks. Derived from DnG-Crafts/K2-RFID; see repository for licensing.</string>
 $( [[ -n "${ICON_NAME}" ]] && printf '    <key>CFBundleIconFile</key>\n    <string>%s</string>\n' "${ICON_NAME}" )
@@ -269,6 +275,15 @@ if [[ -n "${leaks}" ]]; then
     exit 1
 fi
 echo "    no developer paths in the binary"
+
+# The camera usage description is checked rather than assumed. A bundle without it does not
+# degrade — the colour scanner terminates the whole app the first time it is opened — and the
+# failure would only ever be found by a user, on the one machine where nobody was watching.
+if ! plutil -extract NSCameraUsageDescription raw -o - "${CONTENTS}/Info.plist" >/dev/null 2>&1; then
+    echo "make-app.sh: Info.plist has no NSCameraUsageDescription; the colour scanner would kill the app" >&2
+    exit 1
+fi
+echo "    camera usage description present"
 
 plutil -lint "${CONTENTS}/Info.plist" | sed 's/^/    /'
 

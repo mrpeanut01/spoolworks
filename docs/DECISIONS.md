@@ -135,6 +135,60 @@ Key recovery was explicitly considered and rejected as out of scope; it is a sep
 the ACR1552's PC/SC pseudo-APDU interface most likely cannot issue the low-level nested-auth
 commands such attacks require.
 
+## D-010 — Camera colour scanning measures the *dominant, best-lit* colour, not the average
+**Context:** Intake Method B (enter and tag) needs a colour for a third-party spool, and typing a
+hex code means guessing. A camera can read it — but filament is a 1.75 mm cylinder wound in a
+spiral, so a close-up of a wrap is a corrugated surface, not a flat patch. Every frame contains a
+specular highlight along each strand, deep shadow in every valley between them, and whatever shows
+through the gaps. Measured on a synthetic wrap with a known albedo: a plain mean of the pixels is
+ΔE 7.6 off with shading alone and **ΔE 21 off** once a quarter of the target is spool core; a plain
+median is ΔE 4.1 and ΔE 9.7 respectively.
+
+**Alternatives:** (a) average the target area; (b) median of the target area; (c) sample one pixel
+under a crosshair; (d) k-means over the patch; (e) mode seek for the dominant colour, then average
+its best-lit slice.
+
+**Chosen:** (e). Sample a 20 × 20 grid of patch means across a small centred target, discard clipped
+and crushed patches, find the densest cluster, keep everything sharing its colour at any lightness
+below a specular ceiling, and average the brightest 30% of that.
+
+**Why:**
+- *Dominant, not average* — a contaminant has to out-**cover** the filament before it can affect the
+  answer, rather than diluting it in proportion to its area. This is what takes the ΔE 21
+  contamination case to ΔE 1.4.
+- *Best-lit, not median* — within one material shading only ever makes a sample **darker**, so the
+  unshadowed samples are the honest ones and the bulk of the distribution is not. A median
+  deliberately reports a shadow. For a cylinder lit by a distant source the brightest 30% of the
+  projected area is illuminated at ≥90% of peak whatever angle the light comes from, which is where
+  the fraction comes from.
+- *k-means was rejected* on determinism. Its initialisation makes the winner of a tie arbitrary, and
+  an arbitrary winner shows up as a readout that flips between two colours while nothing in front of
+  the camera moves. The mode seek breaks ties on the lowest index with a strict `>`, the same rule
+  and the same reasoning as `ColorMatcher` (SPEC-05 §2.3).
+
+**The load-bearing detail — the metric.** Cluster membership is the **angle between linear-RGB
+vectors**, not distance in CIELAB's a*/b* plane. Lambertian shading multiplies all three linear
+channels by one scalar, so the vector's *direction* is exactly shading-invariant: a lit red and its
+own deep shadow are **1.8°** apart, while red and blue are 86°. The obvious alternative fails badly
+and quietly — those same two reds are **35 units** apart in a*/b*, further than many pairs of
+genuinely different colours, because CIELAB chroma falls with lightness. An early draft used a*/b*
+and could not hold one material together across its own shading; the numbers are pinned as a test.
+CIELAB is still used, for the L* axis and the final average, where it is the right tool.
+
+**What this does not fix:** the camera's own white balance, which is now the largest source of
+error. A spool under a warm lamp reads warm, and auto white balance will actively try to neutralise
+a large field of one colour. Keeping the target at 22% of the frame's shorter side is a partial
+defence — the camera balances on the whole scene — and the rest of the answer is that this is a good
+way to *pick a swatch*, not a colorimeter. The reading is offered for confirmation into an editable
+field, never applied silently.
+
+**Impact:** ~340 lines of new domain code in `SpoolworksCore/Color/`, testable without a camera and
+tested against synthetic wraps with known albedo (shading, specular, contamination, noise, black,
+white, underexposure). 1.4 ms per frame in a release build, so the live readout is free. The app
+bundle now carries `NSCameraUsageDescription`, and `make-app.sh` **verifies** it: AVFoundation does
+not return an error when that key is missing, it terminates the process — so `CameraColorScanner`
+also checks for the key before touching a capture API, which is what keeps `swift run` working.
+
 ## D-006 — Hardware safety: writes are explicit and reversible where possible
 **Context:** Writing a wrong payload to a real spool tag can brick a customer's spool data, and
 sector-trailer writes can permanently lock a tag.
