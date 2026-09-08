@@ -181,9 +181,33 @@ printf 'APPL????' > "${CONTENTS}/PkgInfo"
 
 # ---------------------------------------------------------------------------- sign
 
-# Ad-hoc signature. Enough for local launch and for Gatekeeper's "downloaded from the internet"
-# prompt to be the only obstacle; real distribution signing and notarisation are out of scope.
-echo "==> Codesigning (ad-hoc)"
+# Prefer a stable local signing identity; fall back to ad-hoc.
+#
+# This is not about Gatekeeper — an ad-hoc signature is fine for launching locally, and real
+# distribution signing and notarisation are still out of scope. It is about the **Keychain**.
+#
+# A keychain item's access control names the applications allowed to read it, and an application
+# is identified by its code signature's designated requirement. An ad-hoc signature has no
+# designated requirement at all, so every rebuild looks like a different application and the app
+# has to be re-authorised for its own saved SSH password every single time. Signing with a
+# certificate produces a requirement tied to that certificate:
+#
+#     designated => identifier "com.obsidiang.spoolworks" and certificate leaf = H"2e915e…"
+#
+# which is identical across rebuilds. One authorisation, then it holds.
+#
+# To create the certificate: Keychain Access ▸ Certificate Assistant ▸ Create a Certificate…,
+# name it as below, Identity Type "Self Signed Root", Certificate Type "Code Signing". Nothing
+# breaks without it — the build simply falls back to ad-hoc.
+SIGN_IDENTITY="${SPOOLWORKS_SIGN_IDENTITY:-Spoolworks Local Signing}"
+if security find-certificate -c "${SIGN_IDENTITY}" >/dev/null 2>&1; then
+    echo "==> Codesigning as '${SIGN_IDENTITY}'"
+else
+    echo "==> Codesigning (ad-hoc — no '${SIGN_IDENTITY}' certificate found)"
+    echo "    the app will ask for keychain access again after every rebuild; see the note in this script"
+    SIGN_IDENTITY="-"
+fi
+
 # codesign refuses to sign anything carrying `com.apple.FinderInfo` ("resource fork, Finder
 # information, or similar detritus not allowed"). Two sources put it there: `cp -R` copying
 # attributes across, and — if the checkout lives in a synced folder such as Dropbox or iCloud
@@ -192,7 +216,7 @@ echo "==> Codesigning (ad-hoc)"
 signed=0
 for attempt in 1 2 3; do
     xattr -cr "${APP_BUNDLE}" 2>/dev/null || true
-    if codesign --force --sign - --timestamp=none "${APP_BUNDLE}" 2>&1 | sed 's/^/    /'; then
+    if codesign --force --sign "${SIGN_IDENTITY}" --timestamp=none "${APP_BUNDLE}" 2>&1 | sed 's/^/    /'; then
         if codesign --verify "${APP_BUNDLE}" 2>/dev/null; then
             signed=1
             break

@@ -88,8 +88,32 @@ Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
 
-The app is ad-hoc signed (there is no Apple Developer ID for this project), so the first launch
-needs a right-click ▸ **Open**.
+The app is signed with a local certificate if you have one and ad-hoc otherwise; either way there
+is no Apple Developer ID, so the first launch needs a right-click ▸ **Open**.
+
+### Stop the app asking for keychain access on every build
+
+A keychain item records which application may read it, and an application is identified by its code
+signature. **An ad-hoc signature has no stable identity** — every rebuild looks like a different
+app, so Spoolworks has to be re-authorised for its own saved SSH password each time.
+
+Fix it once, with a local self-signed certificate:
+
+1. Open **Keychain Access** ▸ menu **Keychain Access** ▸ **Certificate Assistant** ▸
+   **Create a Certificate…**
+2. Name: `Spoolworks Local Signing` · Identity Type: **Self Signed Root** ·
+   Certificate Type: **Code Signing**
+3. Create, then Continue past the self-signed warning.
+
+`Tools/make-app.sh` picks it up automatically, and the signature becomes
+
+```
+designated => identifier "com.obsidiang.spoolworks" and certificate leaf = H"…"
+```
+
+which is identical for every build. Authorise once and it holds. Override the name with
+`SPOOLWORKS_SIGN_IDENTITY`; without a certificate the build falls back to ad-hoc and simply keeps
+asking.
 
 ### Diagnostics
 
