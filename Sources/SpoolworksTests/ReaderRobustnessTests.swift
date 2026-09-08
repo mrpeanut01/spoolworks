@@ -287,11 +287,13 @@ let readerRobustnessTests = TestSuite(name: "Reader robustness", cases: [
 
     // MARK: - Status-code mapping
 
-    // These three codes were declared and never mapped. SCARD_W_RESET_CARD is the one that
-    // matters: it means another application reset the card, it is recoverable mid-write, and it
-    // used to surface as an opaque hex string.
+    // These four codes were declared and never mapped. The two card-state ones matter most:
+    // SCARD_W_RESET_CARD means another application reset the card, SCARD_W_UNPOWERED_CARD means
+    // the reader announced a card that is not yet ready to talk. Both are recoverable mid-write,
+    // and both used to surface as an opaque hex string.
     test("previously unmapped PC/SC status codes now have meanings") { t in
         t.equal(PCSCError.from(PCSCError.Code.resetCard), PCSCError.cardReset)
+        t.equal(PCSCError.from(PCSCError.Code.unpoweredCard), PCSCError.cardUnpowered)
         t.equal(PCSCError.from(PCSCError.Code.timeout), PCSCError.timedOut)
         t.equal(PCSCError.from(PCSCError.Code.cancelled), PCSCError.cancelled)
         t.expect(PCSCError.from(0) == nil, "success is not an error")
@@ -302,9 +304,34 @@ let readerRobustnessTests = TestSuite(name: "Reader robustness", cases: [
         }
     },
 
+    // 0x8010_0067 and 0x8010_0068 differ by one bit and mean different things; a transposed
+    // digit in either constant would otherwise be invisible.
+    test("the two adjacent card-state codes do not alias each other") { t in
+        t.equal(PCSCError.Code.unpoweredCard, Int32(bitPattern: 0x8010_0067))
+        t.equal(PCSCError.Code.resetCard, Int32(bitPattern: 0x8010_0068))
+        t.expect(PCSCError.Code.unpoweredCard != PCSCError.Code.resetCard)
+    },
+
+    // Both states leave the tag sitting there perfectly well and only invalidate the handle, so
+    // `withCard` retries them once. Nothing else may be retried: a wrong key or a removed tag
+    // will not fix itself, and re-running the write would just cost the user another wait.
+    test("only the stale-handle states are treated as retryable") { t in
+        t.expect(PCSCError.cardReset.isRecoverableCardState)
+        t.expect(PCSCError.cardUnpowered.isRecoverableCardState)
+
+        for other: PCSCError in [.noCard, .noReader, .timedOut, .cancelled,
+                                 .authenticationFailed(sector: 1),
+                                 .blockOutOfRange(block: 99, count: 64),
+                                 .statusWord(sw1: 0x6A, sw2: 0x82)] {
+            t.expect(!other.isRecoverableCardState, "\(other) must not be retried")
+        }
+    },
+
     test("mapped codes carry a message a user can act on") { t in
         t.expect(PCSCError.cardReset.errorDescription?.contains("reset") == true,
                  "got: \(PCSCError.cardReset.errorDescription ?? "nil")")
+        t.expect(PCSCError.cardUnpowered.errorDescription?.contains("try again") == true,
+                 "got: \(PCSCError.cardUnpowered.errorDescription ?? "nil")")
         t.expect(PCSCError.blockOutOfRange(block: 99, count: 64).errorDescription?.contains("99") == true)
         t.expect(PCSCError.timedOut.errorDescription != nil)
         t.expect(PCSCError.cancelled.errorDescription != nil)

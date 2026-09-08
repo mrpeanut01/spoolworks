@@ -27,6 +27,13 @@ public enum PCSCError: Error, Equatable {
     /// Worth its own case: it is recoverable — reconnect and retry — and mid-write it is the one
     /// failure the user most needs told apart from "the tag is broken".
     case cardReset
+    /// The card is present but not powered up (`SCARD_W_UNPOWERED_CARD`).
+    ///
+    /// The immediate neighbour of ``cardReset`` in both status code and meaning, and just as
+    /// recoverable: the handle is stale, the tag is fine. It shows up when an operation starts in
+    /// the moment between the reader announcing a card and that card being ready to talk — which
+    /// is a race that only appeared once writing began on presentation rather than on a button.
+    case cardUnpowered
     /// The PC/SC request timed out (`SCARD_E_TIMEOUT`).
     case timedOut
     /// The request was cancelled, e.g. by `PCSCContext.cancelPendingWaits()` during shutdown.
@@ -42,6 +49,7 @@ public enum PCSCError: Error, Equatable {
         static let readerUnavailable = Int32(bitPattern: 0x8010_0017)
         static let removedCard = Int32(bitPattern: 0x8010_0069)
         static let resetCard = Int32(bitPattern: 0x8010_0068)
+        static let unpoweredCard = Int32(bitPattern: 0x8010_0067)
         static let timeout = Int32(bitPattern: 0x8010_000A)
         static let cancelled = Int32(bitPattern: 0x8010_0002)
     }
@@ -53,12 +61,25 @@ public enum PCSCError: Error, Equatable {
         case Code.noSmartcard, Code.removedCard: return .noCard
         case Code.readerUnavailable: return .noReader
         case Code.unsupportedFeature: return .unsupported(stringify(rv))
-        // These three were declared and never mapped, so a recoverable mid-write card reset
-        // surfaced as an opaque hex code with no hint that retrying would work.
+        // These four were declared and never mapped, so the two recoverable states — a card
+        // reset mid-write, and a card the reader has announced but not yet powered — surfaced as
+        // opaque hex codes with no hint that retrying would work.
         case Code.resetCard: return .cardReset
+        case Code.unpoweredCard: return .cardUnpowered
         case Code.timeout: return .timedOut
         case Code.cancelled: return .cancelled
         default: return .pcsc(code: rv, message: stringify(rv))
+        }
+    }
+
+    /// Whether the tag is fine and only the connection to it went stale.
+    ///
+    /// Both cases mean: reconnect and try again. Neither means the tag is damaged, and neither
+    /// should be shown to the user as a failure before a retry has been attempted.
+    public var isRecoverableCardState: Bool {
+        switch self {
+        case .cardReset, .cardUnpowered: return true
+        default: return false
         }
     }
 
@@ -89,6 +110,8 @@ extension PCSCError: LocalizedError {
             return "Block \(block) is outside this card's range of 0…\(count - 1)."
         case .cardReset:
             return "The tag was reset by another application. Leave it on the reader and try again."
+        case .cardUnpowered:
+            return "The tag was not ready. Leave it on the reader and try again."
         case .timedOut:
             return "The reader did not respond in time."
         case .cancelled:

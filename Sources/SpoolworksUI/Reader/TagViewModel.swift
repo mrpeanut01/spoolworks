@@ -1174,6 +1174,14 @@ final class TagViewModel: ObservableObject {
         // the in-progress state in its place, so the stale values are never shown for an instant.
         invalidateRead(of: plan.uid)
 
+        // Captured via the callback so it survives a throw; a backup reachable only through a
+        // successful return is absent exactly when it is needed. It lives out here, rather than
+        // in the closure, because `withCard` may run that closure twice — it retries a stale card
+        // handle — and two closure-local publications would race with each other on the main
+        // actor. One box, written by whichever attempt got as far as dumping, published once.
+        let backup = SectorDumpBox()
+        defer { lastWriteBackup = backup.value }
+
         do {
             let (summary, readback) = try await monitor.withCard { session, identity
                 -> (WriteSummary, Result<TagReadResult, Error>) in
@@ -1182,15 +1190,11 @@ final class TagViewModel: ObservableObject {
                 guard identity.uid == plan.uid else {
                     throw WriteAbort.tagChanged(expected: plan.uid, found: identity.uid)
                 }
-                // Captured via the callback so it survives a throw; a backup reachable only
-                // through a successful return is absent exactly when it is needed.
-                var captured: [MifareClassicCard.SectorDump] = []
-                defer { Task { @MainActor [captured] in self.lastWriteBackup = captured } }
                 let service = try TagService(session: session)
                 let result = try service.writeTag(record: plan.record,
                                                   printerType: plan.printerTypeString,
                                                   allowTrailerWrite: allowTrailerWrite,
-                                                  onBackup: { captured = $0 })
+                                                  onBackup: { backup.set($0) })
                 // Same session, immediately after the write. A failure here is *not* a write
                 // failure and must never be reported as one, so it is captured rather than thrown.
                 return (WriteSummary(result, plan: plan), Result { try service.readTag() })
@@ -1559,5 +1563,18 @@ extension WriteSummary {
         }
         lines.append("")
         return lines.joined(separator: "\n")
+    }
+}
+
+/// A pre-write sector dump handed across a thread boundary.
+///
+/// `TagService.writeTag` reports the backup through a synchronous callback that runs on the PC/SC
+/// queue, while the property it ends up in is main-actor state. The box is the handoff.
+private final class SectorDumpBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dumps: [MifareClassicCard.SectorDump] = []
+    var value: [MifareClassicCard.SectorDump] { lock.lock(); defer { lock.unlock() }; return dumps }
+    func set(_ newValue: [MifareClassicCard.SectorDump]) {
+        lock.lock(); dumps = newValue; lock.unlock()
     }
 }

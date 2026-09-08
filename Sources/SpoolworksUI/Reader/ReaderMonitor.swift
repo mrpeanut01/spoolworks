@@ -276,15 +276,47 @@ final class ReaderMonitor: ObservableObject {
     // `TagWriteResult`, `[SectorDump]`) are `public` structs in SpoolworksCore and so do not pick up
     // implicit `Sendable` across the module boundary. Confinement is structural here — the value
     // is produced on the engine queue and consumed on the main actor, never shared.
+    /// How long to wait before the one retry below. Long enough for a card that was announced a
+    /// moment too early to finish powering up, short enough not to read as a hang.
+    private static let settleDelay: Duration = .milliseconds(120)
+
     func withCard<T>(
         _ body: @escaping (CardSession, CardIdentity) throws -> T
     ) async throws -> T {
         beginCardOperation()
         defer { endCardOperation() }
-        let result = try await engine.performOnCard(body)
+        let result = try await performWithRetry(body)
         // The probe inside `performOnCard` is authoritative and cheaper than waiting a tick.
         apply(.cardPresent(result.identity))
         return result.value
+    }
+
+    /// Runs one card operation, retrying once if the *connection* went stale rather than the tag.
+    ///
+    /// `SCARD_W_UNPOWERED_CARD` and `SCARD_W_RESET_CARD` both mean the handle is no longer valid
+    /// while the tag itself is sitting there perfectly well. Both were surfaced to the user as
+    /// failures — `cardReset` even carried a doc comment calling it "recoverable — reconnect and
+    /// retry", and nothing ever did. What the user did instead was press the button again, which
+    /// worked, which is the whole of this method.
+    ///
+    /// It became visible when writing started on presentation rather than on a button press: the
+    /// operation now begins in the moment between the reader announcing a card and that card being
+    /// ready to talk. Reported from the bench as "tag is unpowered" on the first attempt at each
+    /// of a spool's two tags, and fine on the second.
+    ///
+    /// Retrying is safe for what this app does on a card. Both operations are idempotent with the
+    /// same input — a read has no effect at all, and a write puts the same bytes in the same
+    /// blocks and then verifies them by reading back. A partially completed first attempt is
+    /// therefore corrected rather than compounded by the second.
+    private func performWithRetry<T>(
+        _ body: @escaping (CardSession, CardIdentity) throws -> T
+    ) async throws -> PCSCEngine.CardOperation<T> {
+        do {
+            return try await engine.performOnCard(body)
+        } catch let error as PCSCError where error.isRecoverableCardState {
+            try? await Task.sleep(for: Self.settleDelay)
+            return try await engine.performOnCard(body)
+        }
     }
 
     /// Claims the reader for one card operation. Re-entrant: the count, not a flag, is what
