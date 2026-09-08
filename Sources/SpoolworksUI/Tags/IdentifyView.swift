@@ -54,7 +54,10 @@ struct IdentifyView: View {
             .padding(.vertical, 22)
         }
         .background(Theme.background)
-        .onAppear { model.mode = .read }
+        // Blank on arrival, then read whatever is on the reader. Verifying a tag you have just
+        // written is the main reason to come here, and the answer has to come from the tag rather
+        // than from what the write left behind — see `beginIdentification`.
+        .onAppear { model.beginIdentification() }
     }
 
     // MARK: Hero

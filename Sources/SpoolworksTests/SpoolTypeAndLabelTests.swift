@@ -366,3 +366,65 @@ let inventoryLayoutTests = TestSuite(name: "Inventory layout", cases: [
         }
     },
 ])
+
+// MARK: - Where the screens land after a write
+
+let intakeReturnsToScanTests = TestSuite(name: "Intake returns to Method A", cases: [
+
+    test("adding a spool from Method B leaves the screen on Method A") { t in
+        onMain {
+            let catalogue = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: catalogue) }
+            let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+            await materials.load()
+            let (inventory, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: materials,
+                                        toasts: ToastCenter())
+            model.method = .manual
+            model.name = "A third-party spool"
+
+            t.expect(model.canConfirm, "the form is confirmable")
+            model.confirm()
+
+            // Method B is the detour taken because a spool has no tag. The next spool probably has
+            // one, and leaving the screen on B also leaves the reader armed to write rather than
+            // to read.
+            t.equal(model.method, .scan, "back on Method A")
+            t.equal(model.name, "", "and the form is cleared, not merely switched")
+            t.equal(model.tagsHandled, 0, "with the tag slots reset")
+        }
+    },
+
+    test("confirming from Method A still clears the form") { t in
+        onMain {
+            let catalogue = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: catalogue) }
+            let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+            await materials.load()
+            let (inventory, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: materials,
+                                        toasts: ToastCenter())
+            // Already on Method A, so setting the method again changes nothing — this is the case
+            // that would break if the reset were left to `method`'s `didSet` alone.
+            model.method = .manual
+            model.method = .scan
+            model.name = "typed by hand"
+            model.confirm()
+            t.equal(model.method, .scan, "still Method A")
+        }
+    },
+])

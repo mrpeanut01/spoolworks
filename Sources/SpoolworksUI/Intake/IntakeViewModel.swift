@@ -483,6 +483,16 @@ final class IntakeViewModel: ObservableObject {
         inventory.add(spool)
         session.insert(spool, at: 0)
         toasts.success("Added to stock — \(spool.label) · serial \(spool.serialLabel)")
+
+        // Back to Method A once the spool is in stock. Method B is the detour you take *because* a
+        // spool has no tag to read; leaving the screen parked there afterwards starts the next
+        // spool — which probably does have one — on the wrong branch, and the reader is sitting
+        // armed to write rather than to read.
+        //
+        // Both lines on purpose. `method`'s `didSet` already clears the form, but leaning on that
+        // alone would make Method A's own confirm silently stop clearing the day anyone adds an
+        // `oldValue` guard to it.
+        method = .scan
         reset(keepingMethod: true)
     }
 

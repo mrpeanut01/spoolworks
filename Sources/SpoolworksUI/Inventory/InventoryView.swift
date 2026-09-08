@@ -96,7 +96,6 @@ struct InventoryView: View {
 
 // MARK: - Table rows
 
-/// Column widths live here, once, so the header and every row cannot drift apart.
 /// The grab area between two columns, and the splitter between the table and the rail.
 ///
 /// Drawn as the 1 pt or 2 pt rule the design already asks for, with a much wider **invisible** hit
@@ -376,12 +375,11 @@ private struct InventoryDetailRail: View {
 
         RemainingControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
 
-        VStack(spacing: Theme.Spacing.s) {
-            Button("Read tag to verify") { env.sidebarSelection = .identify }
-                .buttonStyle(.sw(.secondary, block: true))
-            Button("Retire spool") { model.retireTarget = spool }
-                .buttonStyle(.sw(.ghost, block: true))
-        }
+        // No "Read tag to verify" here. It only switched screens, which the sidebar already does,
+        // and it read as though it would verify *this* spool when Read / identify simply reads
+        // whatever tag is presented.
+        Button("Retire spool") { model.retireTarget = spool }
+            .buttonStyle(.sw(.ghost, block: true))
     }
 }
 

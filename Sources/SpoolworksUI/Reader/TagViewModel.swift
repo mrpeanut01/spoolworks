@@ -936,6 +936,25 @@ final class TagViewModel: ObservableObject {
         autoWriteHandledUID = uid
     }
 
+    /// Starts a fresh identification: forgets whatever was last read, then looks at the reader.
+    ///
+    /// The Read / identify screen exists to answer "which spool is this", and it was answering with
+    /// the spool that had just been *written* on another screen. Worse than cosmetic: the write's
+    /// read-back leaves that tag in ``lastRead``, and ``autoReadIfNeeded(card:)`` skips any card
+    /// whose UID it already holds — so presenting the tag you had just written did nothing at all.
+    /// The screen showed a record it had not read and refused to read the tag in front of it.
+    ///
+    /// The explicit ``scheduleCardResponse()`` is the other half. `mode`'s `didSet` only schedules
+    /// when the mode actually *changes*, so arriving here from a screen that had already left the
+    /// model in Read — Intake does, on the way out — would clear the panel and then sit ignoring a
+    /// tag physically on the antenna.
+    func beginIdentification() {
+        clearRetainedRead()
+        let alreadyReading = mode == .read
+        mode = .read
+        if alreadyReading { scheduleCardResponse() }
+    }
+
     /// Forgets the retained record, putting Read mode back to "Place a Tag on the Reader".
     ///
     /// ``prefill`` and ``draft`` are deliberately untouched, the mirror of ``resetDraft()``:

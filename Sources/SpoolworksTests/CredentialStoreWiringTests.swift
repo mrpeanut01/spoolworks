@@ -174,7 +174,7 @@ let fileCredentialStoreTests = TestSuite(name: "File credential store", cases: [
     },
 
     test("empty host and empty password are refused, as they were before") { t in
-        try withTemporaryStore { store, _ in
+        withTemporaryStore { store, _ in
             t.throwsError(CredentialError.emptyHost) { try store.setPassword("x", forHost: "") }
             t.throwsError(CredentialError.emptyPassword) { try store.setPassword("", forHost: "h") }
             t.throwsError(CredentialError.emptyHost) { _ = try store.password(forHost: "") }
