@@ -320,12 +320,12 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
 
     // MARK: Helpers
 
-    static func clamp(_ percent: Double) -> Double { min(100, max(0, percent)) }
+    public static func clamp(_ percent: Double) -> Double { min(100, max(0, percent)) }
 
     /// Uppercases, drops a leading `#`, and drops the tag's unknown leading nibble when handed all
     /// seven characters. Anything else is passed through — a caller that supplies rubbish gets its
     /// rubbish back rather than a silent black swatch.
-    static func normaliseHex(_ raw: String) -> String {
+    public static func normaliseHex(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if s.hasPrefix("#") { s.removeFirst() }
         if s.count == 7 { s.removeFirst() }

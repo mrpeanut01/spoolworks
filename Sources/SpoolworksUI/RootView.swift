@@ -3,143 +3,349 @@ import SpoolworksCore
 
 // MARK: - Sidebar model
 
-/// The destinations in the sidebar.
+/// The five destinations, in the two groups the design gives them.
 ///
-/// Replaces the Windows slide-out hamburger panel (`MainForm.SetupSidebarUI`,
-/// `MainForm.cs:108-153`). The sidebar there is a `Panel` animated between 0 and 200 px by a 10 ms
-/// timer, and it auto-closes on **any mouse movement over the form** (`MainForm.cs:887-890`) —
-/// explicit non-goal 1. This is an ordinary `NavigationSplitView` sidebar: user-toggled, its width
-/// remembered by AppKit, dismissed by nothing.
-///
-/// The Windows sidebar's items open **modal dialogs**; §8.1 says the browsing screens should switch
-/// the detail column instead, and that is what `.materials` and `.printers` do.
-/// The `Settings` destination is deliberately absent, and so is the `Settings` scene that used to
-/// back it. What was in it: one tab of prose describing non-configurable behaviour, and two
-/// switches. `advancedTagOperations` now sits next to the operations it gates (the Auto-Write card
-/// and the write confirmation sheet) and still defaults to off; `showKeyMaterial` moved to the new
-/// Reader screen, which is where its effects are read. Nothing was left behind as a dead
-/// preference — the mistake this project already corrected once, when `AutoRead`/`AutoWrite`
-/// lingered in the pane after being superseded.
+/// This replaces the previous Tag / Reader / Materials / Printers sidebar. The reframing is the
+/// design's: Spoolworks is a **stock** app that happens to read tags, so Inventory leads and the
+/// tag operations sit in their own group underneath. The old Reader diagnostics screen is folded
+/// into Read / identify, where its output is actually needed, and Materials and Printers move to
+/// the menu bar and the Printer & CFS screen respectively.
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
-    case tag
-    case reader
-    case materials
-    case printers
+    case inventory
+    case printerCFS
+    case intake
+    case identify
+    case write
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .tag: return "Tag"
-        case .reader: return "Reader"
-        case .materials: return "Materials"
-        case .printers: return "Printers"
+        case .inventory: return "Inventory"
+        case .printerCFS: return "Printer & CFS"
+        case .intake: return "Intake"
+        case .identify: return "Read / identify"
+        case .write: return "Write tag"
         }
     }
 
-    /// SF Symbols, replacing `menu/settings/manage/upload/download/format/memory.png` (§8.2).
     var symbol: String {
         switch self {
-        case .tag: return "tag"
-        case .reader: return "wave.3.right"
-        case .materials: return "square.stack.3d.up"
-        case .printers: return "printer"
-        }
-    }
-
-    /// Sidebar grouping, mirroring the Windows headers `APP` / `PRINTER DATABASE` /
-    /// `RFID FUNCTIONS` (`MainForm.cs:113,115,119`) without the `.ToUpper()` shouting — macOS
-    /// sidebar sections style themselves.
-    enum Group: String, CaseIterable, Identifiable {
-        case rfid = "RFID"
-        case database = "Printer Database"
-
-        var id: String { rawValue }
-
-        var items: [SidebarItem] {
-            switch self {
-            case .rfid: return [.tag, .reader]
-            case .database: return [.materials, .printers]
-            }
+        case .inventory: return "square.stack.3d.up"
+        case .printerCFS: return "printer"
+        case .intake: return "tray.and.arrow.down"
+        case .identify: return "wave.3.right"
+        case .write: return "tag"
         }
     }
 
     var help: String {
         switch self {
-        case .tag: return "Read and write spool tags"
-        case .reader: return "Reader hardware, the tag on it, and diagnostics"
-        case .materials: return "Browse and edit the filament catalogue"
-        case .printers: return "Manage printer databases"
+        case .inventory: return "Every spool you own"
+        case .printerCFS: return "What the printer and its CFS units are holding"
+        case .intake: return "Log incoming spools, tag by tag"
+        case .identify: return "Put a tag on the reader and see which spool it is"
+        case .write: return "Program a tag for a third-party spool"
+        }
+    }
+
+    enum Group: String, CaseIterable, Identifiable {
+        case stock = "Stock"
+        case tags = "Tags"
+
+        var id: String { rawValue }
+
+        var items: [SidebarItem] {
+            switch self {
+            case .stock: return [.inventory, .printerCFS, .intake]
+            case .tags: return [.identify, .write]
+            }
         }
     }
 }
 
 // MARK: - Root
 
-/// The app shell: sidebar plus detail column, with the toast overlay on top.
+/// The app shell: a header strip over a fixed sidebar and the detail column.
+///
+/// Built from plain stacks rather than `NavigationSplitView`. The design's shell is a rigid frame —
+/// a 230 pt sidebar that does not resize, 2 pt rules between every region, and a full-width header
+/// spanning both columns — and `NavigationSplitView` supplies none of that: it owns its own
+/// divider, its sidebar is user-resizable, and it has no place to put a header above both columns.
 struct RootView: View {
     @ObservedObject var env: AppEnvironment
 
-    /// Remembered per scene, so reopening the window lands where you left it.
     @SceneStorage("sidebarSelection") private var storedSelection: String?
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
-
-    /// The selection itself lives on ``AppEnvironment``, not in this view's `@State`: the Tag menu
-    /// is global and some of its commands (⇧⌘W) only make sense with the Tag screen showing, so
-    /// something outside the view hierarchy has to be able to select it.
-    private var selection: Binding<SidebarItem> { $env.sidebarSelection }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
-        } detail: {
-            detail
-                .frame(minWidth: Theme.windowMinWidth - Theme.sidebarMinWidth,
-                       minHeight: Theme.windowMinHeight)
+        VStack(spacing: 0) {
+            HeaderBar(env: env)
+            Rule()
+            HStack(spacing: 0) {
+                Sidebar(env: env)
+                Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
+        .background(Theme.background)
         .toast(env.toasts)
         .onAppear {
             if let stored = storedSelection, let item = SidebarItem(rawValue: stored) {
                 env.sidebarSelection = item
             }
             env.monitor.start()
+            env.inventoryModel.load()
+            Task { await env.printerModel.refresh() }
         }
         .onChange(of: env.sidebarSelection) { _, new in storedSelection = new.rawValue }
-    }
-
-    private var sidebar: some View {
-        List(selection: selection) {
-            ForEach(SidebarItem.Group.allCases) { group in
-                Section(group.rawValue) {
-                    ForEach(group.items) { item in
-                        Label(item.title, systemImage: item.symbol)
-                            .tag(item)
-                            .help(item.help)
-                            .accessibilityLabel(item.title)
-                            .accessibilityHint(item.help)
-                    }
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: Theme.sidebarMinWidth,
-                                        ideal: Theme.sidebarIdealWidth,
-                                        max: Theme.sidebarMaxWidth)
-        .accessibilityLabel("Sections")
     }
 
     @ViewBuilder
     private var detail: some View {
         switch env.sidebarSelection {
-        case .tag:
-            TagView(monitor: env.monitor, model: env.tagModel, settings: env.settings)
-        case .reader:
-            ReaderPane(settings: env.settings, monitor: env.monitor)
-        case .materials:
-            MaterialsView(model: env.materialsModel)
-        case .printers:
-            PrintersView(model: env.printerModel)
+        case .inventory:
+            InventoryView(model: env.inventoryModel, env: env)
+        case .printerCFS:
+            PrinterCFSView(model: env.cfsModel, inventory: env.inventoryModel)
+        case .intake:
+            IntakeView(model: env.intakeModel, inventory: env.inventoryModel, env: env)
+        case .identify:
+            IdentifyView(env: env)
+        case .write:
+            WriteTagView(monitor: env.monitor, model: env.tagModel, settings: env.settings)
         }
+    }
+}
+
+// MARK: - Header
+
+/// The status strip: which printer, what its CFS is doing, and whether a reader is attached.
+///
+/// Everything here is live. The design shows a pulsing dot beside the CFS state; it pulses only
+/// while a poll is actually in flight, so it means "working" rather than being decoration.
+private struct HeaderBar: View {
+    @ObservedObject var env: AppEnvironment
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                Text("SPOOLWORKS")
+                    .font(.system(size: 19, weight: .heavy))
+                    .tracking(-0.4)
+                    .foregroundStyle(Theme.label)
+                Rectangle().fill(Theme.accent).frame(width: 9, height: 9)
+            }
+            .frame(width: Theme.sidebarWidth, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
+            }
+
+            HStack(spacing: Theme.Spacing.xl) {
+                StatusCell(title: "Printer", value: printerLabel)
+                VRule()
+                StatusCell(title: "CFS state", value: cfsLabel, pulsing: env.cfsModel.state.isPolling)
+                VRule()
+                StatusCell(title: "Reader", value: readerLabel)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 20)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.background)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Status")
+    }
+
+    private var printerLabel: String {
+        guard let target = env.cfsModel.target else { return "none configured" }
+        return target.host.isEmpty
+            ? target.displayName
+            : "\(target.displayName) · \(target.host)"
+    }
+
+    private var cfsLabel: String {
+        guard env.cfsModel.canPoll else { return "not connected" }
+        if let info = env.cfsModel.info {
+            let head = info.hasNoCFS ? "external only" : info.material.state
+            return "\(head) · \(env.cfsModel.freshness)"
+        }
+        return env.cfsModel.freshness
+    }
+
+    private var readerLabel: String {
+        let state = env.monitor.state
+        switch state {
+        case .starting: return "starting…"
+        case let .subsystemUnavailable(detail): return detail
+        case .noReader: return "no reader"
+        case let .idle(devices, _): return "\(devices.first ?? "reader") · ready"
+        case let .cardPresent(identity): return "\(identity.deviceName) · tag present"
+        }
+    }
+}
+
+private struct StatusCell: View {
+    let title: String
+    let value: String
+    var pulsing = false
+
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).kicker()
+            HStack(spacing: 6) {
+                if pulsing {
+                    Rectangle()
+                        .fill(Theme.accent)
+                        .frame(width: 8, height: 8)
+                        .opacity(dim ? 0.25 : 1)
+                        .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true),
+                                   value: dim)
+                        .onAppear { dim = true }
+                        .onDisappear { dim = false }
+                        .accessibilityHidden(true)
+                }
+                Text(value)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.label)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(value)")
+    }
+}
+
+// MARK: - Sidebar
+
+private struct Sidebar: View {
+    @ObservedObject var env: AppEnvironment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(SidebarItem.Group.allCases.enumerated()), id: \.element.id) { index, group in
+                if index > 0 {
+                    Hairline().padding(.horizontal, 14).padding(.vertical, 14)
+                }
+                Text(group.rawValue)
+                    .kicker()
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .padding(.top, index == 0 ? 18 : 0)
+
+                ForEach(group.items) { item in
+                    NavRow(item: item,
+                           isSelected: env.sidebarSelection == item,
+                           badge: badge(for: item)) {
+                        env.sidebarSelection = item
+                    }
+                }
+            }
+
+            Spacer(minLength: Theme.Spacing.l)
+
+            MaterialDatabaseFooter(model: env.materialsModel)
+        }
+        .frame(width: Theme.sidebarWidth, alignment: .leading)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.surfaceRecessed)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sections")
+    }
+
+    /// The count beside a destination. Blank rather than zero when there is nothing to report —
+    /// a "0" badge reads as a broken count.
+    private func badge(for item: SidebarItem) -> String {
+        switch item {
+        case .inventory:
+            let n = env.inventoryModel.inventory.active.count
+            return n == 0 ? "" : "\(n)"
+        case .printerCFS:
+            return env.cfsModel.navBadge
+        default:
+            return ""
+        }
+    }
+}
+
+/// One sidebar row. Selected rows invert outright — ink in light, paper in dark — with a 3 pt
+/// accent rule down the leading edge, exactly as the design draws them.
+private struct NavRow: View {
+    let item: SidebarItem
+    let isSelected: Bool
+    let badge: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 15)
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: Theme.Spacing.s)
+                if !badge.isEmpty {
+                    Text(badge)
+                        .font(Theme.monoSmall)
+                        .opacity(0.6)
+                }
+            }
+            .foregroundStyle(isSelected ? Theme.navActiveLabel : Theme.label)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(fill)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(isSelected ? Theme.accent : .clear)
+                    .frame(width: 3)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(item.help)
+        .accessibilityLabel(item.title)
+        .accessibilityHint(item.help)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+
+    private var fill: Color {
+        if isSelected { return Theme.navActiveFill }
+        return hovering ? Theme.navHoverFill : .clear
+    }
+}
+
+/// The pinned footer: which material catalogue the write and intake screens are resolving against.
+private struct MaterialDatabaseFooter: View {
+    @ObservedObject var model: MaterialsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Material database").kicker()
+            Text(summary)
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.secondaryLabel)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 16)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.rule).frame(height: Theme.ruleWidth)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var summary: String {
+        "\(model.printerType.databaseFileName) · \(model.rows.count) materials\nversion \(model.version)"
     }
 }

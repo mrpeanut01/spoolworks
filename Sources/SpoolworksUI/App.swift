@@ -18,6 +18,12 @@ final class AppEnvironment: ObservableObject {
     // switching sidebar sections.
     let materialsModel: MaterialsViewModel
     let printerModel: PrinterViewModel
+    /// Spool management: the stock list, and the only writer of the inventory file.
+    let inventoryModel: InventoryViewModel
+    /// The printer's live CFS state, and the poll that folds it into the inventory.
+    let cfsModel: CFSViewModel
+    /// The Intake screen's own state machine.
+    let intakeModel: IntakeViewModel
 
     /// Which sidebar destination the detail column is showing.
     ///
@@ -27,7 +33,8 @@ final class AppEnvironment: ObservableObject {
     /// arming was spent, `pendingPlan` was set, nothing appeared, and auto-write was then blocked
     /// for as long as that invisible plan stayed pending. A command that needs a screen has to be
     /// able to bring that screen up.
-    @Published var sidebarSelection: SidebarItem = .tag
+    /// Inventory leads: Spoolworks is a stock app that reads tags, not a tag app with a list.
+    @Published var sidebarSelection: SidebarItem = .inventory
 
     init() {
         let monitor = ReaderMonitor()
@@ -45,7 +52,25 @@ final class AppEnvironment: ObservableObject {
             ?? MaterialStorage(directory: FileManager.default.temporaryDirectory
                 .appendingPathComponent("CFS-RFID/material_database", isDirectory: true))
         self.materialsModel = MaterialsViewModel(storage: storage)
-        self.printerModel = PrinterViewModel(storage: storage)
+        // The live SSH transport rather than the default stand-in: without it every printer
+        // operation throws "not implemented", which is what the app shipped with.
+        let printerModel = PrinterViewModel(storage: storage, transport: LivePrinterTransport())
+        self.printerModel = printerModel
+
+        // Same fallback reasoning as the material storage above: a broken Application Support
+        // must leave the app usable and the failure visible, not trap at launch.
+        let inventoryStore = (try? InventoryStore.applicationSupport())
+            ?? InventoryStore(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("Spoolworks", isDirectory: true))
+        let inventoryModel = InventoryViewModel(store: inventoryStore, toasts: toasts)
+        self.inventoryModel = inventoryModel
+        self.cfsModel = CFSViewModel(transport: LivePrinterTransport(),
+                                     printers: printerModel,
+                                     inventory: inventoryModel)
+        self.intakeModel = IntakeViewModel(monitor: monitor,
+                                           inventory: inventoryModel,
+                                           materials: self.materialsModel,
+                                           toasts: toasts)
     }
 
     static let tagMemoryWindowID = "tag-memory"
@@ -63,7 +88,7 @@ public struct SpoolworksApp: App {
     @StateObject private var env = AppEnvironment()
 
     public var body: some Scene {
-        WindowGroup("CFS RFID") {
+        WindowGroup("Spoolworks") {
             RootView(env: env)
                 .frame(minWidth: Theme.windowMinWidth, minHeight: Theme.windowMinHeight)
                 .onAppear { delegate.environment = env }
@@ -113,17 +138,17 @@ struct SpoolworksCommands: Commands {
 
         CommandMenu("Tag") {
             Button("Read Tag") {
-                env.sidebarSelection = .tag
+                env.sidebarSelection = .identify
                 Task { await tagModel.read() }
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(!tagModel.canRead)
 
             Button("Write Tag…") {
-                // The sheet this raises lives in `TagView`, so bring `TagView` up first. Without
-                // this the plan was built against a screen that did not exist, and the pending
-                // plan then blocked auto-write until something else cleared it.
-                env.sidebarSelection = .tag
+                // The sheet this raises lives in the Write screen, so bring that screen up
+                // first. Without this the plan was built against a screen that did not exist, and
+                // the pending plan then blocked auto-write until something else cleared it.
+                env.sidebarSelection = .write
                 Task { await tagModel.prepareWrite() }
             }
             .keyboardShortcut("w", modifiers: [.command, .shift])

@@ -191,7 +191,7 @@ private struct AppHeaderBar: View {
 /// The bottom action bar used to carry these as a sentence next to a disabled button. The bar is
 /// gone; the sentences are not, because "nothing happens when I put a tag on" needs an answer and
 /// a missing reader is the most common one.
-private struct HardwareNotice {
+struct HardwareNotice {
     let title: String
     let detail: String?
     let symbol: String
@@ -259,7 +259,7 @@ extension Theme {
     }
 }
 
-private struct HardwareNoticeBanner: View {
+struct HardwareNoticeBanner: View {
     let notice: HardwareNotice
     @ObservedObject var monitor: ReaderMonitor
 
@@ -396,7 +396,7 @@ private struct ModeBar: View {
 ///
 /// Cancel is the default button, preserving the deliberate "default = safe" choice the Windows
 /// message boxes make (`MainForm.cs:657, 802`).
-private struct WriteConfirmationSheet: View {
+struct WriteConfirmationSheet: View {
     let plan: WritePlan
     /// Observed for one reason: the Write button must not look live while the model is holding the
     /// reader. `commitWrite` guards on exactly that, and used to return in silence — so a click

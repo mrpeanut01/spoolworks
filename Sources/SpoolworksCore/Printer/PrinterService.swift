@@ -168,6 +168,11 @@ public struct PrinterModel: Equatable, Sendable {
     /// `…/box/material_option.json` — the K1 UI's brand/type picker source (SPEC-04 §10.5).
     public var materialOptionPath: String { family.remoteBaseDirectory + "material_option.json" }
 
+    /// `…/box/material_box_info.json` — the CFS's live report of what is loaded. **Read only**:
+    /// nothing in this app writes it, because it is the firmware's own state rather than a
+    /// configuration file.
+    public var materialBoxInfoPath: String { family.remoteBaseDirectory + "material_box_info.json" }
+
     public var defaultPassword: String { family.defaultPassword }
 }
 
@@ -376,6 +381,19 @@ public struct PrinterService: Sendable {
     public init(transport: PrinterTransport, cloud: CrealityCloudAPI? = nil) {
         self.transport = transport
         self.cloud = cloud
+    }
+
+    // MARK: Read (printer → PC)
+
+    /// Reads the printer's live CFS state.
+    ///
+    /// Read-only and idempotent, which is why it has none of the ceremony `upload` needs: no
+    /// version stamping, no staging file, no reboot. A decode failure is surfaced rather than
+    /// swallowed — an unparseable document means the firmware's format has moved, and quietly
+    /// reporting an empty CFS would be indistinguishable from a CFS that is genuinely empty.
+    public func boxInfo(of model: PrinterModel) async throws -> MaterialBoxInfo {
+        let data = try await transport.download(from: model.materialBoxInfoPath)
+        return try MaterialBoxInfo.decode(from: data)
     }
 
     // MARK: Upload (PC → printer)

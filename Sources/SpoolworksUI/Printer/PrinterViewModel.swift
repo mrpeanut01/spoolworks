@@ -42,7 +42,8 @@ enum PrinterTransportError: LocalizedError {
     }
 }
 
-// TODO(wire): bind to SpoolworksCore PrinterService when merged
+/// What the UI needs from a printer. ``LivePrinterTransport`` is the real conformer;
+/// ``UnimplementedPrinterTransport`` remains for previews and tests.
 protocol PrinterTransporting: Sendable {
     /// `result.version` of `…/box/material_database.json` on the printer.
     func remoteDatabaseVersion(_ credentials: PrinterCredentials, family: PrinterType) async throws -> String
@@ -57,6 +58,9 @@ protocol PrinterTransporting: Sendable {
                         progress: @escaping @Sendable (Double) -> Void) async throws
     /// The one and only remote command the Windows app ever issues (SPEC/04 §1.5).
     func reboot(_ credentials: PrinterCredentials, family: PrinterType) async throws
+    /// The CFS's live report of what is loaded, for the Printer & CFS screen.
+    func downloadBoxInfo(_ credentials: PrinterCredentials,
+                         family: PrinterType) async throws -> MaterialBoxInfo
 }
 
 /// Stand-in until SpoolworksCore ships the real thing. Fails loudly and specifically rather than
@@ -79,6 +83,11 @@ struct UnimplementedPrinterTransport: PrinterTransporting {
     }
 
     func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
+        throw PrinterTransportError.notImplemented
+    }
+
+    func downloadBoxInfo(_: PrinterCredentials,
+                         family _: PrinterType) async throws -> MaterialBoxInfo {
         throw PrinterTransportError.notImplemented
     }
 }

@@ -62,5 +62,10 @@ let exitCode = TestDriver.run([
     tagAutoWriteStateTests,
     tagArrivalTests,
     readerMonitorBusyTests,
+
+    // Spool management UI
+    inventoryViewModelTests,
+    intakeViewModelTests,
+    cfsViewModelTests,
 ])
 exit(exitCode)
