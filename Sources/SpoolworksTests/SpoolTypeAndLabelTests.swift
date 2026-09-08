@@ -276,3 +276,93 @@ let intakeNameTests = TestSuite(name: "Intake name generation", cases: [
                 "brand and material read as one name already")
     },
 ])
+
+// MARK: - Draggable column and rail widths
+
+@MainActor
+private func makeLayout() -> (InventoryLayout, UserDefaults, String) {
+    let suite = "sw-layout-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite) ?? .standard
+    return (InventoryLayout(defaults: defaults), defaults, suite)
+}
+
+let inventoryLayoutTests = TestSuite(name: "Inventory layout", cases: [
+
+    test("a drag is clamped to each column's own floor and ceiling") { t in
+        onMain {
+            let (layout, defaults, suite) = makeLayout()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            for column in InventoryLayout.Column.allCases {
+                layout.setWidth(-500, for: column)
+                t.equal(layout.width(column), column.minimum, "\(column) floor")
+                layout.setWidth(9_999, for: column)
+                t.equal(layout.width(column), column.maximum, "\(column) ceiling")
+                layout.setWidth(column.defaultWidth, for: column)
+                t.equal(layout.width(column), column.defaultWidth, "\(column) accepts a real value")
+            }
+        }
+    },
+
+    test("the rail cannot be dragged out of existence, in either direction") { t in
+        onMain {
+            let (layout, defaults, suite) = makeLayout()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            layout.setRailWidth(0)
+            t.equal(layout.railWidth, InventoryLayout.railMinimum, "the rail keeps a floor")
+            layout.setRailWidth(5_000)
+            t.equal(layout.railWidth, InventoryLayout.railMaximum,
+                    "and a ceiling, so the table cannot be squeezed away either")
+        }
+    },
+
+    test("widths survive a relaunch") { t in
+        onMain {
+            let (layout, defaults, suite) = makeLayout()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            layout.setWidth(140, for: .location)
+            layout.setRailWidth(520)
+
+            let reopened = InventoryLayout(defaults: defaults)
+            t.equal(reopened.width(.location), 140, "the column came back")
+            t.equal(reopened.railWidth, 520, "and so did the rail")
+        }
+    },
+
+    test("a stored width outside the limits is clamped on the way in, not trusted") { t in
+        onMain {
+            let (_, defaults, suite) = makeLayout()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            // A hand-edited plist, or one written by a version with different limits. Trusting it
+            // would open the app with a column wider than the window and no way to see the table.
+            defaults.set(99_999.0, forKey: "SpoolworksInventoryColumn_tag")
+            defaults.set(-1.0, forKey: "SpoolworksInventoryRailWidth")
+
+            let layout = InventoryLayout(defaults: defaults)
+            t.equal(layout.width(.tag), InventoryLayout.Column.tag.maximum, "column clamped on load")
+            t.equal(layout.railWidth, InventoryLayout.railMinimum, "rail clamped on load")
+        }
+    },
+
+    test("a non-finite width is replaced rather than clamped") { t in
+        // `NaN` compares false against everything, so `min`/`max` pass it straight through into a
+        // frame and the table stops laying out for the rest of the session.
+        t.equal(InventoryLayout.clamp(.nan, min: 10, max: 100), 10, "NaN falls back to the floor")
+        t.equal(InventoryLayout.clamp(.infinity, min: 10, max: 100), 10, "and so does infinity")
+        t.equal(InventoryLayout.clamp(50, min: 10, max: 100), 50, "a real value is untouched")
+    },
+
+    test("reset puts everything back and forgets it") { t in
+        onMain {
+            let (layout, defaults, suite) = makeLayout()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            layout.setWidth(200, for: .serial)
+            layout.setRailWidth(600)
+            layout.reset()
+
+            t.equal(layout.width(.serial), InventoryLayout.Column.serial.defaultWidth, "column")
+            t.equal(layout.railWidth, InventoryLayout.railDefault, "rail")
+            t.expect(defaults.object(forKey: "SpoolworksInventoryColumn_serial") == nil,
+                     "and the stored value is gone, not merely overwritten")
+        }
+    },
+])

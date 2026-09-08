@@ -8,8 +8,9 @@ import SpoolworksCore
 ///
 /// ## The two methods, and the thing they share
 ///
-/// **Method A — scan a Creality tag.** Read either of the spool's two factory tags, check what came
-/// off it, confirm. Nothing is typed.
+/// **Method A — read a tag.** Read either of the spool's two tags, check what came off it, confirm.
+/// Nothing is typed. Usually a Creality factory tag, but a tag this app wrote reads the same way,
+/// which is why the button no longer names one vendor.
 ///
 /// **Method B — enter and tag.** Describe a third-party spool, write both of its blank tags, and
 /// the spool lands in stock with a serial this app allocated.
@@ -34,7 +35,7 @@ final class IntakeViewModel: ObservableObject {
 
         var title: String {
             switch self {
-            case .scan: return "Method A · Scan a Creality tag"
+            case .scan: return "Method A · Read a tag"
             case .manual: return "Method B · Enter and tag"
             }
         }

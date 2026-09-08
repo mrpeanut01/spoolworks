@@ -19,16 +19,39 @@ public enum InventoryError: Error, Equatable, CustomStringConvertible {
 // MARK: - Filters
 
 /// The Inventory screen's segmented control.
-public enum InventoryFilter: String, CaseIterable, Sendable, Identifiable {
-    case all, onPrinter, shelf, low, untagged
+public enum InventoryFilter: Hashable, Sendable, Identifiable {
 
-    public var id: String { rawValue }
+    case all
+    case onPrinter
+    /// One of the user's own locations.
+    ///
+    /// This replaced a fixed `shelf` case that meant "anywhere but the printer" while being
+    /// *labelled* "Shelf". That was true only while Shelf was the one place a spool could be; once
+    /// locations became a list the user edits, the button named a location it did not filter on and
+    /// kept naming it after the location had been renamed away.
+    ///
+    /// Carries the ``SpoolLocation`` rather than the place's name so matching stays an equality
+    /// check on the value a spool actually holds — a name would have to be resolved back through
+    /// the place list, which ``SpoolInventory`` does not have and should not need.
+    case at(SpoolLocation)
+    case low
+    case untagged
+
+    public var id: String {
+        switch self {
+        case .all: return "all"
+        case .onPrinter: return "onPrinter"
+        case let .at(location): return "at:\(location.description)"
+        case .low: return "low"
+        case .untagged: return "untagged"
+        }
+    }
 
     public var title: String {
         switch self {
         case .all: return "All"
         case .onPrinter: return "On printer"
-        case .shelf: return "Shelf"
+        case let .at(location): return location.description
         case .low: return "Low"
         case .untagged: return "Untagged"
         }
@@ -38,7 +61,7 @@ public enum InventoryFilter: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .all: return true
         case .onPrinter: return spool.location.isOnPrinter
-        case .shelf: return !spool.location.isOnPrinter
+        case let .at(location): return spool.location == location
         case .low: return spool.isLow
         case .untagged: return spool.isUntagged
         }

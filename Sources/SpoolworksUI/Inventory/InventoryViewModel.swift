@@ -134,6 +134,28 @@ final class InventoryViewModel: ObservableObject {
 
     var rows: [Spool] { inventory.filtered(by: filter) }
 
+    /// The filter row: the two states that are not places, then every place the user has
+    /// configured, then the two conditions.
+    ///
+    /// Built from ``places`` rather than from a fixed list, which is the whole point — a location
+    /// the user added has to be filterable, and one they renamed has to stop being offered under
+    /// the old name.
+    var filterOptions: [InventoryFilter] {
+        [.all, .onPrinter]
+            + places.names.map { .at(places.location(for: $0)) }
+            + [.low, .untagged]
+    }
+
+    /// Drops a filter that no longer names anything.
+    ///
+    /// Renaming or removing the place you are currently filtered by would otherwise leave the table
+    /// empty with a selected button that matches nothing — the list would look as though every
+    /// spool had vanished.
+    private func normaliseFilter() {
+        guard case .at = filter, !filterOptions.contains(filter) else { return }
+        filter = .all
+    }
+
     var summary: String { inventory.summary }
 
     /// The spool the detail rail shows. Falls back to the first row so the rail is never empty
@@ -356,6 +378,7 @@ final class InventoryViewModel: ObservableObject {
         guard result.isApplied else { return result }
         places = updated
         SpoolPlacesStore.save(places, to: defaults)
+        normaliseFilter()
         return result
     }
 
@@ -371,6 +394,7 @@ final class InventoryViewModel: ObservableObject {
         guard case let .applied(name) = result else { return result }
         places = updated
         SpoolPlacesStore.save(places, to: defaults)
+        normaliseFilter()
         let moved = inventory.reassign(place: old,
                                        to: updated.location(for: name),
                                        detail: "Place renamed — “\(old)” is now “\(name)”")
@@ -393,6 +417,7 @@ final class InventoryViewModel: ObservableObject {
         guard case let .applied(removed) = result else { return result }
         places = updated
         SpoolPlacesStore.save(places, to: defaults)
+        normaliseFilter()
         let moved = inventory.reassign(
             place: removed,
             to: .unknown,

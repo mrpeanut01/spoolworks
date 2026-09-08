@@ -506,3 +506,84 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
         }
     },
 ])
+
+// MARK: - The filter row follows the place list
+
+let inventoryFilterOptionTests = TestSuite(name: "Inventory filter options", cases: [
+
+    test("there is a filter button for every configured location") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let titles = model.filterOptions.map(\.title)
+            t.equal(titles, ["All", "On printer", "Unplaced", "Shelf", "CFS", "Ext…", "Low", "Untagged"],
+                    "states, then every place, then the conditions")
+
+            _ = model.addPlace("Dry box")
+            t.expect(model.filterOptions.map(\.title).contains("Dry box"),
+                     "a place added is immediately filterable")
+        }
+    },
+
+    test("a renamed place takes its filter button with it") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            _ = model.renamePlace("Shelf", to: "Cabinet")
+            let titles = model.filterOptions.map(\.title)
+            t.expect(titles.contains("Cabinet"), "the new name is offered")
+            t.expect(!titles.contains("Shelf"), "and the old one is not")
+        }
+    },
+
+    test("filtering by a place that is then renamed falls back to All") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.add(makeSpool(location: .shelf("Shelf")))
+            model.filter = .at(.shelf("Shelf"))
+            t.equal(model.rows.count, 1, "the filter finds it")
+
+            // Without the fallback the table would go empty with a button still lit, which reads
+            // as every spool having vanished rather than as a filter naming nothing.
+            _ = model.renamePlace("Shelf", to: "Cabinet")
+            t.equal(model.filter, .all, "the selection falls back")
+            t.equal(model.rows.count, 1, "and the spool is still listed")
+        }
+    },
+
+    test("filtering by a place that is then removed falls back to All") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.filter = .at(.shelf("CFS"))
+            _ = model.removePlace("CFS")
+            t.equal(model.filter, .all, "the selection falls back")
+        }
+    },
+
+    test("a non-place filter is left alone when the list changes") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.filter = .low
+            _ = model.removePlace("CFS")
+            t.equal(model.filter, .low, "Low is not a place and survives")
+        }
+    },
+])

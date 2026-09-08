@@ -351,7 +351,7 @@ struct IntakeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: 20)
         .sheet(isPresented: $isScanningColour) {
-            ColorScanSheet { hex in model.colorHex = hex }
+            ColorScanSheet(hex: $model.colorHex)
         }
         // A colour typed or scanned while the panel is open has to reach the panel too, or its next
         // click would quietly undo the newer value.

@@ -11,13 +11,21 @@ import SpoolworksCore
 struct InventoryView: View {
     @ObservedObject var model: InventoryViewModel
     @ObservedObject var env: AppEnvironment
+    /// Column and rail widths, dragged by the user and remembered. Owned here so the header, every
+    /// row and the splitter read one source — the fixed `Column` constants this replaced existed
+    /// for the same reason, and drifting apart is still the failure it prevents.
+    @StateObject private var layout = InventoryLayout()
 
     var body: some View {
         HStack(spacing: 0) {
             list
-            Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
+            // The rule between the panes is the splitter. Dragging it right narrows the rail, so
+            // the delta is subtracted: the rail's leading edge moving right takes width off it.
+            ResizeHandle(axis: .rail) { delta in
+                layout.setRailWidth(layout.railWidth - delta)
+            }
             InventoryDetailRail(model: model, env: env)
-                .frame(width: Theme.detailRailWidth)
+                .frame(width: layout.railWidth)
         }
         .sheet(item: $model.retireTarget) { spool in
             RetireDialog(spool: spool,
@@ -36,10 +44,14 @@ struct InventoryView: View {
             }
             .padding(.bottom, Theme.Spacing.l)
 
-            SegmentedFilter(options: InventoryFilter.allCases,
-                            title: \.title,
-                            selection: $model.filter)
-                .padding(.bottom, Theme.Spacing.m)
+            ScrollView(.horizontal) {
+                SegmentedFilter(options: model.filterOptions,
+                                title: \.title,
+                                selection: $model.filter)
+            }
+            .scrollIndicators(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, Theme.Spacing.m)
 
             if let error = model.storageError {
                 InlineFailure(text: error).padding(.bottom, Theme.Spacing.m)
@@ -66,11 +78,12 @@ struct InventoryView: View {
 
     private var table: some View {
         VStack(spacing: 0) {
-            InventoryHeaderRow()
+            InventoryHeaderRow(layout: layout)
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { spool in
                         InventoryRow(spool: spool,
+                                     layout: layout,
                                      isSelected: model.selected?.id == spool.id) {
                             model.selectedID = spool.id
                         }
@@ -84,39 +97,124 @@ struct InventoryView: View {
 // MARK: - Table rows
 
 /// Column widths live here, once, so the header and every row cannot drift apart.
-private enum Column {
-    static let swatch: CGFloat = 34
-    static let type: CGFloat = 70
-    static let serial: CGFloat = 78
-    static let location: CGFloat = 118
-    static let remaining: CGFloat = 86
-    static let tag: CGFloat = 118
+/// The grab area between two columns, and the splitter between the table and the rail.
+///
+/// Drawn as the 1 pt or 2 pt rule the design already asks for, with a much wider **invisible** hit
+/// area on top: a 2 pt target is a target you miss, and widening the visible rule to make it
+/// grabbable would put a heavy line through the middle of the table.
+///
+/// The cursor is set on hover rather than left as an arrow — without it a handle is undiscoverable,
+/// because there is nothing to see. `NSCursor.push`/`pop` is paired strictly with the hover
+/// transition; the alternative, `set()`, leaves a resize cursor behind on whatever the pointer
+/// moves to next.
+private struct ResizeHandle: View {
+
+    enum Axis {
+        /// Between two columns: a hairline.
+        case column
+        /// Between the table and the detail rail: the 2 pt rule the design draws there.
+        case rail
+
+        var thickness: CGFloat { self == .rail ? Theme.ruleWidth : Theme.hairline }
+        var colour: Color { self == .rail ? Theme.rule : Theme.separator }
+        /// Total grab width, centred on the rule.
+        var grabWidth: CGFloat { 11 }
+    }
+
+    let axis: Axis
+    /// Horizontal movement since the last callback, in points. Positive is rightward.
+    let onDrag: (CGFloat) -> Void
+
+    @State private var lastTranslation: CGFloat = 0
+    @State private var isHovering = false
+
+    var body: some View {
+        Rectangle()
+            .fill(axis.colour)
+            .frame(width: axis.thickness)
+            .frame(maxHeight: .infinity)
+            // The hit area, not the line. `contentShape` is what makes the transparent overhang
+            // grabbable — without it the gesture only lands on the drawn pixels.
+            .overlay {
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: axis.grabWidth)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        guard hovering != isHovering else { return }
+                        isHovering = hovering
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                // Reported as a delta rather than an absolute, so the caller does
+                                // not have to know where the handle started. `translation` is
+                                // cumulative for the gesture, hence the running subtraction.
+                                onDrag(value.translation.width - lastTranslation)
+                                lastTranslation = value.translation.width
+                            }
+                            .onEnded { _ in lastTranslation = 0 }
+                    )
+            }
+            .accessibilityHidden(true)
+    }
 }
 
 private struct InventoryHeaderRow: View {
+    @ObservedObject var layout: InventoryLayout
+
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
             // A fixed height as well as a width. `Color` is a flexible view: constrained on one
             // axis only it expands on the other, which stretched this header row to fill the pane
             // and pushed the table halfway down the screen.
-            Color.clear.frame(width: Column.swatch, height: 1)
+            Color.clear.frame(width: InventoryLayout.swatchWidth, height: 1)
             Text("Filament").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Type").frame(width: Column.type, alignment: .leading)
-            Text("Serial").frame(width: Column.serial, alignment: .leading)
-            Text("Location").frame(width: Column.location, alignment: .leading)
-            Text("Remaining").frame(width: Column.remaining, alignment: .trailing)
-            Text("Tag").frame(width: Column.tag, alignment: .leading)
+            ForEach(InventoryLayout.Column.allCases, id: \.self) { column in
+                // The handle sits on the column's *leading* edge and sizes the column to its left.
+                // For the first one that is `Filament`, which is flexible — so dragging there
+                // resizes `Type` inversely, and the effect is still "the thing on the left grew".
+                ResizeHandle(axis: .column) { delta in
+                    layout.setWidth(layout.width(column) - delta, for: column)
+                }
+                Text(title(column))
+                    .frame(width: layout.width(column),
+                           alignment: column == .remaining ? .trailing : .leading)
+            }
         }
         .kicker()
         .padding(.vertical, Theme.Spacing.s)
+        .frame(height: 26)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.rule).frame(height: Theme.ruleWidth)
+        }
+        // The way back. Widths are clamped so they cannot be dragged into an unusable state, but
+        // "usable" is not the same as "what I wanted", and re-dragging six columns by hand to undo
+        // one bad afternoon is not a reasonable ask.
+        .contextMenu {
+            Button("Reset column and rail widths") { layout.reset() }
+        }
+    }
+
+    private func title(_ column: InventoryLayout.Column) -> String {
+        switch column {
+        case .type: return "Type"
+        case .serial: return "Serial"
+        case .location: return "Location"
+        case .remaining: return "Remaining"
+        case .tag: return "Tag"
         }
     }
 }
 
 private struct InventoryRow: View {
     let spool: Spool
+    @ObservedObject var layout: InventoryLayout
     let isSelected: Bool
     let select: () -> Void
 
@@ -125,26 +223,31 @@ private struct InventoryRow: View {
     var body: some View {
         Button(action: select) {
             HStack(spacing: Theme.Spacing.s) {
-                Swatch(hex: spool.colorHex).frame(width: Column.swatch, alignment: .leading)
+                Swatch(hex: spool.colorHex)
+                    .frame(width: InventoryLayout.swatchWidth, alignment: .leading)
 
                 Text(spool.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                gap
                 Text(spool.materialType.isEmpty ? "—" : spool.materialType)
                     .font(.system(size: 14))
-                    .frame(width: Column.type, alignment: .leading)
+                    .frame(width: layout.width(.type), alignment: .leading)
 
+                gap
                 Text(spool.serialLabel)
                     .font(Theme.monoCaption)
-                    .frame(width: Column.serial, alignment: .leading)
+                    .frame(width: layout.width(.serial), alignment: .leading)
 
+                gap
                 Text(spool.location.description)
                     .font(.system(size: 14))
                     .lineLimit(1)
-                    .frame(width: Column.location, alignment: .leading)
+                    .frame(width: layout.width(.location), alignment: .leading)
 
+                gap
                 HStack(spacing: 5) {
                     // Low stock is called out in words as well as colour — the row is the only
                     // place a spool's condition is visible while scanning the list.
@@ -156,13 +259,14 @@ private struct InventoryRow: View {
                     Text(spool.remainingLabel)
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 }
-                .frame(width: Column.remaining, alignment: .trailing)
+                .frame(width: layout.width(.remaining), alignment: .trailing)
 
+                gap
                 Text(spool.tagSource.description)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.secondaryLabel)
                     .lineLimit(1)
-                    .frame(width: Column.tag, alignment: .leading)
+                    .frame(width: layout.width(.tag), alignment: .leading)
             }
             .foregroundStyle(Theme.label)
             .padding(.vertical, Theme.Spacing.s)
@@ -178,6 +282,13 @@ private struct InventoryRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(spool.label), \(spool.materialType), \(spool.remainingLabel) remaining, \(spool.location.description)")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+
+    /// Stands in for the header's drag handle, so a row's columns line up with the header's.
+    /// A hairline wide, matching what the handle draws — the handle's grab area overhangs it and
+    /// costs no layout width.
+    private var gap: some View {
+        Color.clear.frame(width: Theme.hairline, height: 1)
     }
 
     private var fill: Color {

@@ -14,11 +14,30 @@ import SpoolworksCore
 /// honest reason a camera reading is a good starting point rather than an answer.
 struct ColorScanSheet: View {
 
-    /// Called with `RRGGBB`, uppercase, when the user takes the reading.
-    let onUse: (String) -> Void
+    /// The form's colour, written **as soon as a reading settles** rather than when the sheet is
+    /// dismissed.
+    ///
+    /// It began as a `(String) -> Void` fired from the Use button, and that was wrong twice over.
+    /// It made the commit depend on the dismissal — one state write and one sheet teardown in the
+    /// same runloop turn, in a view that already presents a second sheet — which is a fragile place
+    /// to put the only thing this screen exists to do. And it meant a settled, obviously-correct
+    /// reading still needed a button press to become real.
+    ///
+    /// A binding writes through immediately and the button is only a way out.
+    @Binding var hex: String
 
     @StateObject private var scanner = CameraColorScanner()
+    @ObservedObject private var nameCache = ColorNameCache.shared
     @Environment(\.dismiss) private var dismiss
+
+    /// The reading that has been taken, latched.
+    ///
+    /// Latched rather than tracking live: once the corners turn green the value is the one that
+    /// will be saved, and a number that keeps moving after it has been ticked is a number you
+    /// cannot act on. `Re-measure` is how you take another.
+    @State private var accepted: String?
+    /// What the field held on the way in, so `Cancel` can undo an automatic acceptance.
+    @State private var original: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,7 +49,20 @@ struct ColorScanSheet: View {
         }
         .frame(width: 640, height: 620)
         .background(Theme.background)
-        .task { await scanner.start() }
+        .task {
+            original = hex
+            await scanner.start()
+        }
+        // The acceptance. Anything that has held still for a full window is as good as this
+        // scanner gets, so it is taken without asking — see `accepted`.
+        .onChange(of: scanner.reading?.isSteady == true) { _, steady in
+            guard steady, accepted == nil, let reading = scanner.reading else { return }
+            accepted = reading.color.hexString
+            hex = reading.color.hexString
+        }
+        .task(id: accepted) {
+            if let accepted { await nameCache.resolve([accepted]) }
+        }
         .onDisappear { scanner.stop() }
     }
 
@@ -113,13 +145,24 @@ struct ColorScanSheet: View {
     private var readout: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 16) {
-                Swatch(hex: hex, size: 64, height: 52)
+                Swatch(hex: shownHex, size: 64, height: 52)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(scanner.readingName ?? "—")
-                        .font(.system(size: 15, weight: .semibold))
-                        .lineLimit(1)
-                    Text("#" + hex)
+                    HStack(spacing: 6) {
+                        // The tick is the whole point of accepting automatically: it says which
+                        // value is the one that will be saved, without the user having to decide
+                        // when the number had stopped moving.
+                        if accepted != nil {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.success)
+                                .accessibilityHidden(true)
+                        }
+                        Text(shownName ?? "—")
+                            .font(.system(size: 15, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    Text("#" + shownHex)
                         .font(Theme.monoCaption)
                         .foregroundStyle(Theme.secondaryLabel)
                         .textSelection(.enabled)
@@ -128,8 +171,9 @@ struct ColorScanSheet: View {
 
                 if let reading = scanner.reading {
                     VStack(alignment: .trailing, spacing: 5) {
-                        SWTag(text: reading.isSteady ? "Steady" : "Hold still",
-                              style: reading.isSteady ? .accent : .neutral)
+                        SWTag(text: accepted != nil ? "Taken"
+                                                    : (reading.isSteady ? "Steady" : "Hold still"),
+                              style: accepted != nil || reading.isSteady ? .accent : .neutral)
                         // Confidence and steadiness are different questions and both matter: a
                         // rock-steady reading of a badly lit target is steady and wrong.
                         HStack(spacing: 6) {
@@ -149,12 +193,17 @@ struct ColorScanSheet: View {
 
             // At most one piece of advice at a time. A stack of four warnings on a mediocre shot
             // is a wall of text nobody reads; the first one is the one to fix first.
-            if let warning = scanner.reading?.warnings.first {
+            if accepted != nil {
+                Text("Taken — this colour is already in the form. Save to close, Re-measure to "
+                     + "take another, or Cancel to put back what was there.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let warning = scanner.reading?.warnings.first {
                 InlineFailure(text: warning.guidance)
             } else {
-                Text(scanner.reading?.isSteady == true
-                     ? "The last second of frames agree. Take it, or move to another part of the wrap and compare."
-                     : "Keep the box filled with filament until the corners turn green.")
+                Text("Keep the box filled with filament until the corners turn green — the reading "
+                     + "is taken for you as soon as it settles.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
@@ -199,39 +248,57 @@ struct ColorScanSheet: View {
             }
 
             if scanner.state == .running {
-                Button("Re-measure") { scanner.resetReading() }
+                Button("Re-measure") {
+                    accepted = nil
+                    scanner.resetReading()
+                }
                     .buttonStyle(.sw(.ghost))
                     .help("Throws away the last second of frames and starts the measurement again.")
             }
 
             Spacer(minLength: 0)
 
-            Button("Cancel") { dismiss() }
-                .buttonStyle(.sw(.ghost))
-                .keyboardShortcut(.cancelAction)
+            Button("Cancel") {
+                // Undoes an automatic acceptance. Taking a reading without being asked is only
+                // reasonable if leaving without saving puts back exactly what was there.
+                if let original { hex = original }
+                dismiss()
+            }
+            .buttonStyle(.sw(.ghost))
+            .keyboardShortcut(.cancelAction)
 
             Button(useTitle) {
-                guard let reading = scanner.reading else { return }
-                onUse(reading.color.hexString)
+                // Nothing to commit when a reading has already been taken — the binding wrote it
+                // the moment it settled. This only closes.
+                if accepted == nil, let reading = scanner.reading {
+                    hex = reading.color.hexString
+                }
                 dismiss()
             }
             .buttonStyle(.sw(.primary))
-            .disabled(scanner.reading == nil)
+            .disabled(scanner.reading == nil && accepted == nil)
             .keyboardShortcut(.defaultAction)
         }
         .padding(20)
     }
 
-    /// The button says which reading is being taken, because a steady one and a still-moving one
-    /// are not the same offer and the difference should not live only in a colour.
+    /// Says what the button will actually do, which is not the same in the two states: with a
+    /// reading taken it only closes, and without one it takes whatever is on screen first.
     private var useTitle: String {
-        guard let reading = scanner.reading else { return "Use this colour" }
-        return reading.isSteady ? "Use this colour" : "Use it anyway"
+        accepted != nil ? "Save" : "Use it anyway"
     }
 
     // MARK: Derived
 
-    private var hex: String { scanner.reading?.color.hexString ?? "" }
+    /// What the readout shows: the taken reading once there is one, the live one until then.
+    private var shownHex: String {
+        accepted ?? scanner.reading?.color.hexString ?? ""
+    }
+
+    private var shownName: String? {
+        guard let accepted else { return scanner.readingName }
+        return nameCache.name(forHex: accepted) ?? scanner.readingName
+    }
 
     private func dotLevel(_ confidence: FilamentColorEstimate.Confidence) -> StatusLevel {
         switch confidence {
@@ -243,9 +310,11 @@ struct ColorScanSheet: View {
 
     private var spokenReading: String {
         guard let reading = scanner.reading else { return "Waiting for the camera" }
-        let name = scanner.readingName.map { "\($0), " } ?? ""
-        return "Measured colour, \(name)hex \(reading.color.hexString), "
-            + "\(reading.confidence.title.lowercased()) confidence, "
-            + (reading.isSteady ? "steady" : "still settling")
+        let name = shownName.map { "\($0), " } ?? ""
+        guard accepted == nil else {
+            return "Colour taken, \(name)hex \(shownHex). Save to close."
+        }
+        return "Measured colour, \(name)hex \(shownHex), "
+            + "\(reading.confidence.title.lowercased()) confidence, still settling"
     }
 }
