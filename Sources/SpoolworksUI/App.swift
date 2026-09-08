@@ -54,10 +54,17 @@ final class AppEnvironment: ObservableObject {
         self.materialsModel = MaterialsViewModel(storage: storage)
         // The live SSH transport rather than the default stand-in: without it every printer
         // operation throws "not implemented", which is what the app shipped with.
-        // Keychain-backed, not in-memory: the default store kept passwords only for the
-        // lifetime of the process, so a printer had to be re-authenticated every launch and the
-        // CFS auto-poll could never run after a restart.
-        let credentials = KeychainPrinterCredentialStore(
+        // Persistent, not in-memory: the default store kept passwords only for the lifetime of the
+        // process, so a printer had to be re-authenticated every launch and the CFS auto-poll could
+        // never run after a restart.
+        //
+        // Same fallback reasoning as the material storage below — a broken Application Support must
+        // leave the app usable with the failure visible, not trap at launch. Here the degraded mode
+        // is a password that lasts the session, which is exactly what the adapter already does when
+        // an individual write fails.
+        let credentialFile = try? FileCredentialStore.applicationSupport()
+        let credentials = LocalPrinterCredentialStore(
+            backing: credentialFile ?? InMemoryCredentialStore(),
             onFailure: { [weak toasts] message in
                 Task { @MainActor in toasts?.error(message) }
             })

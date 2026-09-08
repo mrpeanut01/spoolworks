@@ -189,6 +189,41 @@ bundle now carries `NSCameraUsageDescription`, and `make-app.sh` **verifies** it
 not return an error when that key is missing, it terminates the process — so `CameraColorScanner`
 also checks for the key before touching a capture API, which is what keeps `swift run` working.
 
+## D-012 — The printer password moves out of the Keychain and into a file the app owns
+**Context:** User-entered root passwords went into the login Keychain (D-001-era design, documented
+in `Credentials.swift`). A Keychain item records which application may read it **by code
+signature**, and this app has no Apple Developer ID: ad-hoc signed, its identity changes on every
+build, so macOS asks the user to authorise it again each time. Even with the local self-signed
+certificate the README describes, a freshly downloaded unsigned app raising a system password prompt
+at launch is, to a user, indistinguishable from malware.
+
+**Alternatives:** (a) keep the Keychain and document the certificate workaround; (b) keep the
+Keychain but defer the first read until the user actually connects, so the prompt is at least
+attributable; (c) `UserDefaults`; (d) a file the app owns, `0600`.
+
+**Chosen:** (d), at the tool owner's explicit request, with (b)'s reasoning noted as the thing that
+would have been tried had the Keychain stayed.
+
+**Why:** The security control was costing more trust than it bought. `UserDefaults` was rejected as
+strictly worse than a file — a plist is world-readable within the account, is copied around by
+backup and sync tooling more casually, and gives no place to set permissions. The file is `0600` in
+a `0700` directory and excluded from Time Machine, so the plaintext does not fan out into backups.
+
+**What it costs, stated rather than buried:** the password is plaintext at rest and any process
+running as this user can read it. That is defensible *only* because of what the secret is — the root
+password of a 3D printer on a home LAN, which for most units is the vendor default printed on the
+printer's own touchscreen (`VendorDefaultPassword`). It would not be defensible for anything else,
+and `FileCredentialStore` should not be reused for anything else.
+
+**No migration.** Reading the old Keychain items would raise exactly the prompt this change removes,
+so a user who had saved a password enters it once more. Old items are left where they are rather
+than deleted — deleting them would also require the prompt.
+
+**Impact:** `KeychainCredentialStore` is gone and `FileCredentialStore` takes its place behind the
+same `CredentialStore` protocol, so the adapter, its host-keying and its failure reporting are
+unchanged. The README section explaining how to stop the Keychain prompt is replaced by one saying
+where the password now lives and what that means. `import Security` leaves the package.
+
 ## D-006 — Hardware safety: writes are explicit and reversible where possible
 **Context:** Writing a wrong payload to a real spool tag can brick a customer's spool data, and
 sector-trailer writes can permanently lock a tag.

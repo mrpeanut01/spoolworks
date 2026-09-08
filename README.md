@@ -107,7 +107,7 @@ No Xcode needed — Command Line Tools are enough.
 
 ```bash
 swift build
-swift run SpoolworksTests   # 556 tests, no reader or camera required
+swift run SpoolworksTests   # 587 tests, no reader or camera required
 Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
@@ -115,29 +115,24 @@ Tools/make-dmg.sh           # build the disk image into dist/
 The app is signed with a local certificate if you have one and ad-hoc otherwise; either way there
 is no Apple Developer ID, so the first launch needs a right-click ▸ **Open**.
 
-### Stop the app asking for keychain access on every build
+### Where the printer password is kept
 
-A keychain item records which application may read it, and an application is identified by its code
-signature. **An ad-hoc signature has no stable identity** — every rebuild looks like a different
-app, so Spoolworks has to be re-authorised for its own saved SSH password each time.
+In a file this app owns — `~/Library/Application Support/Spoolworks/printer-credentials.json`,
+`0600`, in a `0700` directory, excluded from Time Machine.
 
-Fix it once, with a local self-signed certificate:
+**It is plaintext, and that is a deliberate trade.** It used to be the login Keychain, which is the
+right place for a password. But a Keychain item records which application may read it *by code
+signature*, and Spoolworks has no Apple Developer ID — so with an ad-hoc signature it is a different
+app to the Keychain on every build, and macOS asks for authorisation again each time. For someone
+who has just downloaded an unsigned app, a system password prompt on launch is indistinguishable
+from the thing they were told to be suspicious of.
 
-1. Open **Keychain Access** ▸ menu **Keychain Access** ▸ **Certificate Assistant** ▸
-   **Create a Certificate…**
-2. Name: `Spoolworks Local Signing` · Identity Type: **Self Signed Root** ·
-   Certificate Type: **Code Signing**
-3. Create, then Continue past the self-signed warning.
+So the control was costing more trust than it bought, for a secret that is the root password of a
+3D printer on a home LAN — usually the vendor default, printed on the printer's own touchscreen.
+Anything running as your user account can read it. Do not reuse that file for anything else.
 
-`Tools/make-app.sh` picks it up automatically, and the signature becomes
-
-```
-designated => identifier "com.obsidiang.spoolworks" and certificate leaf = H"…"
-```
-
-which is identical for every build. Authorise once and it holds. Override the name with
-`SPOOLWORKS_SIGN_IDENTITY`; without a certificate the build falls back to ad-hoc and simply keeps
-asking.
+Upgrading from a version that used the Keychain? Enter the password once more. There is no
+migration on purpose: reading the old items back would raise exactly the prompt this removes.
 
 ### Diagnostics
 
@@ -160,7 +155,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 556 tests, runnable without hardware |
+| `SpoolworksTests` | 587 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.

@@ -50,6 +50,7 @@ let exitCode = TestDriver.run([
     printerUpdateTests,
     crealityCloudTests,
     credentialStoreTests,
+    fileCredentialStoreTests,
     integrityFixTests,
 
     // Reader robustness (code-review fixes)
