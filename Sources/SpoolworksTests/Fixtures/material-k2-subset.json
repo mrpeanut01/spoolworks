@@ -1,0 +1,140 @@
+{
+  "code": 0,
+  "msg": "ok",
+  "reqId": "0",
+  "result": {
+    "list": [
+      {
+        "engineVersion": "3.0.0",
+        "printerIntName": "F008",
+        "nozzleDiameter": [
+          "0.4"
+        ],
+        "kvParam": {
+          "filament_density": "1.24",
+          "filament_diameter": "1.75",
+          "filament_end_gcode": ";filament end gcode \n",
+          "filament_notes": "\"\"",
+          "filament_retraction_speed": "nil",
+          "filament_shrink": "100%",
+          "filament_type": "PLA",
+          "filament_vendor": "Creality",
+          "nozzle_temperature": "220"
+        },
+        "base": {
+          "id": "01001",
+          "brand": "Creality",
+          "name": "Hyper PLA",
+          "meterialType": "PLA",
+          "colors": [
+            "#ffffff"
+          ],
+          "density": 1.24,
+          "diameter": "1.75",
+          "costPerMeter": 0,
+          "weightPerMeter": 0,
+          "rank": 10000,
+          "minTemp": 190,
+          "maxTemp": 240,
+          "isSoluble": false,
+          "isSupport": false,
+          "shrinkageRate": 0,
+          "softeningTemp": 0,
+          "dryingTemp": 0,
+          "dryingTime": 0
+        }
+      },
+      {
+        "engineVersion": "3.0.0",
+        "printerIntName": "F008",
+        "nozzleDiameter": [
+          "0.4"
+        ],
+        "kvParam": {
+          "filament_cost": "20",
+          "filament_density": "1.25",
+          "filament_diameter": "1.75",
+          "filament_end_gcode": ";filament end gcode \n",
+          "filament_flow_ratio": "0.95",
+          "filament_notes": "\"\"",
+          "filament_retraction_speed": "nil",
+          "filament_shrink": "100%",
+          "filament_type": "PLA",
+          "filament_vendor": "Generic",
+          "hot_plate_temp": "50",
+          "nozzle_temperature": "220"
+        },
+        "base": {
+          "id": "00001",
+          "brand": "Generic",
+          "name": "Generic PLA",
+          "meterialType": "PLA",
+          "colors": [
+            "#ffffff"
+          ],
+          "density": 1.24,
+          "diameter": "1.75",
+          "costPerMeter": 0,
+          "weightPerMeter": 0,
+          "rank": 9100,
+          "minTemp": 190,
+          "maxTemp": 240,
+          "isSoluble": false,
+          "isSupport": false,
+          "shrinkageRate": 0,
+          "softeningTemp": 0,
+          "dryingTemp": 0,
+          "dryingTime": 0
+        }
+      },
+      {
+        "engineVersion": "3.0.0",
+        "printerIntName": "F008",
+        "nozzleDiameter": [
+          "0.4"
+        ],
+        "kvParam": {
+          "compatible_printers": "",
+          "filament_cost": "20",
+          "filament_density": "1.23",
+          "filament_diameter": "1.75",
+          "filament_end_gcode": ";filament end gcode \n",
+          "filament_flow_ratio": "0.98",
+          "filament_max_volumetric_speed": "10",
+          "filament_notes": "\"\"",
+          "filament_retraction_speed": "nil",
+          "filament_shrink": "100%",
+          "filament_type": "PLA",
+          "filament_vendor": "eSUN",
+          "hot_plate_temp": "55",
+          "nozzle_temperature": "220",
+          "pressure_advance": "0.04"
+        },
+        "base": {
+          "id": "E1001",
+          "brand": "eSUN",
+          "name": "PLA+",
+          "meterialType": "PLA",
+          "colors": [
+            "#000000"
+          ],
+          "density": 1.23,
+          "diameter": "1.75",
+          "costPerMeter": 0,
+          "weightPerMeter": 0,
+          "rank": 4860,
+          "minTemp": 210,
+          "maxTemp": 230,
+          "isSoluble": false,
+          "isSupport": false,
+          "shrinkageRate": 0,
+          "softeningTemp": 0,
+          "dryingTemp": 0,
+          "dryingTime": 0
+        }
+      }
+    ],
+    "count": 3,
+    "version": "1758907369"
+  }
+}

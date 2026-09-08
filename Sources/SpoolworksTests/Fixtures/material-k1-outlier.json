@@ -1,0 +1,57 @@
+{
+  "code": 0,
+  "msg": "ok",
+  "reqId": "0",
+  "result": {
+    "list": [
+      {
+        "engineVersion": "3.0.0",
+        "printerIntName": "CR-K1 Max",
+        "nozzleDiameter": [
+          "0.4"
+        ],
+        "kvParam": {
+          "customized_plate_temp": "0",
+          "customized_plate_temp_initial_layer": "0",
+          "dont_slow_down_outer_wall": "0",
+          "filament_density": "1.21",
+          "filament_diameter": "1.75",
+          "filament_long_retractions_when_cut": "nil",
+          "filament_retraction_distances_when_cut": "nil",
+          "filament_shrinkage_compensation_z": "100%",
+          "filament_stamping_distance": "0",
+          "filament_stamping_loading_speed": "0",
+          "filament_type": "PLA",
+          "filament_vendor": "Creality",
+          "idle_temperature": "0",
+          "nozzle_temperature": "220",
+          "pellet_flow_coefficient": "0.4157"
+        },
+        "base": {
+          "id": "01002",
+          "brand": "Creality",
+          "name": "Hyper L-W PLA",
+          "meterialType": "PLA",
+          "colors": [
+            "#ffffff"
+          ],
+          "density": 1.21,
+          "diameter": "1.75",
+          "costPerMeter": 0,
+          "weightPerMeter": 0,
+          "rank": 4910,
+          "minTemp": 200,
+          "maxTemp": 270,
+          "isSoluble": false,
+          "isSupport": false,
+          "shrinkageRate": 0,
+          "softeningTemp": 0,
+          "dryingTemp": 0,
+          "dryingTime": 0
+        }
+      }
+    ],
+    "count": 1,
+    "version": "1758907369"
+  }
+}

@@ -1,0 +1,173 @@
+import SwiftUI
+import AppKit
+import SpoolworksCore
+
+// MARK: - Shared state
+
+/// The objects every scene needs. One instance, owned by the `App`.
+///
+/// Held here rather than threaded through `@EnvironmentObject` because the menu-bar `Commands`
+/// need the same instances and command bodies are built outside the view hierarchy.
+@MainActor
+final class AppEnvironment: ObservableObject {
+    let monitor: ReaderMonitor
+    let toasts: ToastCenter
+    let settings: AppSettings
+    let tagModel: TagViewModel
+    // Owned here rather than created per-view so selections, edits and load state survive
+    // switching sidebar sections.
+    let materialsModel: MaterialsViewModel
+    let printerModel: PrinterViewModel
+
+    /// Which sidebar destination the detail column is showing.
+    ///
+    /// It used to be `@State` inside `RootView`, which made it unreachable from the menu bar — and
+    /// the Tag menu is global. ⇧⌘W pressed on the Materials screen built a write plan whose
+    /// confirmation sheet lives in `TagView`, a view that was not on screen: the tag was read, the
+    /// arming was spent, `pendingPlan` was set, nothing appeared, and auto-write was then blocked
+    /// for as long as that invisible plan stayed pending. A command that needs a screen has to be
+    /// able to bring that screen up.
+    @Published var sidebarSelection: SidebarItem = .tag
+
+    init() {
+        let monitor = ReaderMonitor()
+        let toasts = ToastCenter()
+        let settings = AppSettings()
+        self.monitor = monitor
+        self.toasts = toasts
+        self.settings = settings
+        // Settings are held by the tag model, not passed per-call, because the card subscription
+        // that drives auto-write now lives in the model and has no view to ask.
+        self.tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+        // Falling back to a temporary directory keeps the app usable (and the failure visible
+        // in the screens' own error states) rather than trapping at launch.
+        let storage = (try? MaterialStorage.applicationSupport())
+            ?? MaterialStorage(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("CFS-RFID/material_database", isDirectory: true))
+        self.materialsModel = MaterialsViewModel(storage: storage)
+        self.printerModel = PrinterViewModel(storage: storage)
+    }
+
+    static let tagMemoryWindowID = "tag-memory"
+}
+
+// MARK: - App
+
+/// The scene graph. `@main` lives in the `Spoolworks` executable target rather than here, because a
+/// target containing `@main` cannot be depended upon — and without a dependency the UI state
+/// machine could not be unit-tested at all. See Package.swift.
+public struct SpoolworksApp: App {
+    public init() {}
+
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var env = AppEnvironment()
+
+    public var body: some Scene {
+        WindowGroup("CFS RFID") {
+            RootView(env: env)
+                .frame(minWidth: Theme.windowMinWidth, minHeight: Theme.windowMinHeight)
+                .onAppear { delegate.environment = env }
+        }
+        // The Windows window is a fixed 383 × 657 with maximize disabled
+        // (`MainForm.Designer.cs:376,393-395`). §8.1: a fixed-pixel window reads as broken on
+        // macOS. Content-min-size resizability keeps a sensible floor and no ceiling.
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: Theme.windowIdealWidth, height: Theme.windowIdealHeight)
+        // The monitor and the tag model are observed individually as well as through `env`: the
+        // menu items' `disabled` state depends on *their* publishers, and observing only the
+        // environment would leave it frozen at whatever it was when the menu bar was built.
+        .commands { SpoolworksCommands(env: env, monitor: env.monitor, tagModel: env.tagModel) }
+
+        // Tag Memory is a reference view you keep open next to the main window, not a sheet.
+        // The Windows author gave `TagMemoryForm` its own taskbar entry — the same instinct.
+        Window("Tag Memory", id: AppEnvironment.tagMemoryWindowID) {
+            TagMemoryView(monitor: env.monitor, settings: env.settings)
+        }
+        .defaultSize(width: 680, height: 640)
+        .keyboardShortcut("m", modifiers: .command)
+
+        // There is deliberately no `Settings` scene. §8.1 required that *if* there are app
+        // preferences they must be the ⌘, scene rather than a modal dialog — and there are now no
+        // app preferences left to put there. The pane's two switches moved next to what they
+        // affect (see `ReaderPane`), and its reader diagnostics became a sidebar destination.
+        // Omitting the scene is also what removes "Settings…" from the app menu, so ⌘, no longer
+        // advertises a window that does not exist.
+    }
+}
+
+// MARK: - Menu bar
+
+/// The menu bar the Windows app does not have at all (`CFS-RFID.csproj:8`).
+///
+/// Every sidebar action is also a menu item, so the whole app is reachable from the keyboard.
+/// ⌘W is deliberately left to "Close Window"; the write command takes ⇧⌘W as §8.1 suggests.
+struct SpoolworksCommands: Commands {
+    @ObservedObject var env: AppEnvironment
+    @ObservedObject var monitor: ReaderMonitor
+    @ObservedObject var tagModel: TagViewModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        // Nothing in this app creates a document.
+        CommandGroup(replacing: .newItem) {}
+
+        CommandMenu("Tag") {
+            Button("Read Tag") {
+                env.sidebarSelection = .tag
+                Task { await tagModel.read() }
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(!tagModel.canRead)
+
+            Button("Write Tag…") {
+                // The sheet this raises lives in `TagView`, so bring `TagView` up first. Without
+                // this the plan was built against a screen that did not exist, and the pending
+                // plan then blocked auto-write until something else cleared it.
+                env.sidebarSelection = .tag
+                Task { await tagModel.prepareWrite() }
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .disabled(!tagModel.canWrite)
+
+            Divider()
+
+            Button("Read Tag Memory") {
+                openWindow(id: AppEnvironment.tagMemoryWindowID)
+            }
+            .keyboardShortcut("m", modifiers: .command)
+
+            Divider()
+
+            Button("Rescan for Readers") {
+                Task { await monitor.retry() }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .option])
+        }
+    }
+}
+
+// MARK: - Lifecycle
+
+/// Minimal delegate. Its only real job is releasing the PC/SC context on the way out.
+///
+/// The Windows app calls `Environment.Exit(0)` from `FormClosed` (`MainForm.cs:928-931`), a hard
+/// kill that bypasses every cleanup path — explicitly called out in §8.1 as something not to port.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by the root scene once the environment exists.
+    @MainActor var environment: AppEnvironment?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: false)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            environment?.monitor.stop()
+        }
+    }
+}

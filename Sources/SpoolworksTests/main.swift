@@ -1,0 +1,57 @@
+import Foundation
+
+// Test entry point. Add new suites here.
+let exitCode = TestDriver.run([
+    // Reader / PC/SC layer
+    hexTests,
+    mifareKeyTests,
+    cardTypeTests,
+    mifareGeometryTests,
+    mifareCardTests,
+    apduResponseTests,
+    readerDeviceTests,
+
+    // Tag codec
+    crealityCryptoTests,
+    spoolRecordTests,
+    spoolRecordValidationTests,
+    spoolRecordGoldenTests,
+    tagServiceTests,
+    writeSafetyTests,
+    integrityTests,
+    sshInvocationSafetyTests,
+
+    // Material database
+    materialDatabaseTests,
+    realPrinterDatabaseTests,
+
+    // Colour matching
+    colorTableTests,
+    colorMatcherTests,
+    colorHexTests,
+    colorTableIntegrityTests,
+
+    // Printer transport / upload
+    printerModelTests,
+    sshInvocationTests,
+    sshSecretHandlingTests,
+    sshErrorClassificationTests,
+    processRunnerTests,
+    printerUploadTests,
+    materialDatabaseDocumentTests,
+    printerUpdateTests,
+    crealityCloudTests,
+    credentialStoreTests,
+    integrityFixTests,
+
+    // Reader robustness (code-review fixes)
+    readerRobustnessTests,
+
+    // UI state machine (code-review fixes)
+    spoolDraftTests,
+    tagCascadeTests,
+    tagAutoWriteStateTests,
+    tagArrivalTests,
+    readerMonitorBusyTests,
+])
+exit(exitCode)

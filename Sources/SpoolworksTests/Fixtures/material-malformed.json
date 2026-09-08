@@ -1,0 +1,7 @@
+{
+  "code": 0,
+  "msg": "ok",
+  "reqId": "0",
+  "result": {
+    "list": [
+      { "engineVersion": "3.0.0", "printerIntName": "F008"

@@ -1,0 +1,468 @@
+// UI state-machine regression tests for the code-review fixes.
+//
+// These run for real: `K2App` was split into the `SpoolworksUI` library plus a two-line `Spoolworks`
+// executable, because SwiftPM will not let a test target depend on a target containing `@main`.
+// Without that split these tests could not be compiled at all, and the fixes below would have no
+// regression cover.
+//
+import Foundation
+@testable import SpoolworksUI
+import SpoolworksCore
+
+// MARK: - Bridging async, main-actor code into a synchronous harness
+
+/// `TestCase.run` is synchronous and `TagViewModel` is `@MainActor`, so the async work has to be
+/// pumped rather than awaited: blocking the main thread on a semaphore would starve the very
+/// executor the work needs.
+private final class Box<T> {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
+
+private func runOnMain(timeout: TimeInterval = 20,
+                       _ body: @escaping @MainActor () async -> Void) {
+    let done = Box(false)
+    Task { @MainActor in
+        await body()
+        done.value = true
+    }
+    let deadline = Date().addingTimeInterval(timeout)
+    while !done.value && Date() < deadline {
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.002))
+    }
+}
+
+// MARK: - Fixtures
+
+@MainActor
+private struct Harnessed {
+    let monitor: ReaderMonitor
+    let toasts: ToastCenter
+    let settings: AppSettings
+    let model: TagViewModel
+}
+
+@MainActor
+private func makeHarness() -> Harnessed {
+    let suite = "SpoolworksUIStateTests"
+    let defaults = UserDefaults(suiteName: suite) ?? .standard
+    defaults.removePersistentDomain(forName: suite)
+    let monitor = ReaderMonitor()          // never started: no polling, no PC/SC context
+    let toasts = ToastCenter()
+    let settings = AppSettings(defaults: defaults)
+    return Harnessed(monitor: monitor,
+                     toasts: toasts,
+                     settings: settings,
+                     model: TagViewModel(monitor: monitor,
+                                         toasts: toasts,
+                                         settings: settings,
+                                         defaults: defaults))
+}
+
+private func identity(_ uid: [UInt8], type: CardType = .mifareClassic1K) -> CardIdentity {
+    CardIdentity(readerName: "Mock Reader (1)",
+                 atr: [],
+                 type: type,
+                 uid: uid,
+                 uidFailure: nil,
+                 firmware: nil)
+}
+
+private let tagA = identity([0x70, 0x4E, 0x7C, 0x39])
+private let tagB = identity([0x3A, 0x63, 0x33, 0x03])
+/// A 4-byte UID on a card type the Creality layout cannot live on.
+private let unsupportedTag = identity([0x01, 0x02, 0x03, 0x04], type: .mifareUltralight)
+
+/// A real `TagReadResult` off the in-memory card simulator, so a real `WritePlan` can be built
+/// without a reader.
+private func blankTagRead() throws -> TagReadResult {
+    let service = TagService(card: MifareClassicCard(transport: MockTransport()),
+                             cardType: .mifareClassic1K)
+    return try service.readTag()
+}
+
+@MainActor
+private func samplePlan() throws -> WritePlan {
+    let current = try blankTagRead()
+    let record = try SpoolRecord(materialId: "12345",
+                                 colorRGB: "0000ff",
+                                 filamentLength: .kg1,
+                                 serialNumber: "000001")
+    return TagViewModel.makePlan(current: current,
+                                 record: record,
+                                 materialLabel: "Creality · Hyper PLA",
+                                 printerTypeString: "K2")
+}
+
+/// The form in a state that can produce a record, so `autoWriteState` gets past `.blocked`.
+@MainActor
+private func makeDraftWritable(_ model: TagViewModel) {
+    model.draft.materialID = "12345"
+}
+
+/// The form in a state that cannot, which is also how these tests keep a retried auto-write away
+/// from the (absent) hardware: `autoWriteIfNeeded` spends the arming and then stops on validation,
+/// which is the observable outcome without ever opening a card session.
+@MainActor
+private func makeDraftUnwritable(_ model: TagViewModel) {
+    model.draft.materialID = ""
+}
+
+// MARK: - SpoolDraft
+
+let spoolDraftTests = TestSuite(name: "Write form draft", cases: [
+
+    test("the material label participates in value equality") {
+        // Regression: `hasSameValues` compared everything except the label, so a cascade that
+        // swapped the label out from under an id counted as "the user has not touched this" and
+        // the next read silently overwrote the form.
+        var a = SpoolDraft()
+        a.materialID = "12345"
+        a.materialLabel = "Creality · Hyper PLA"
+        var b = a
+        b.materialLabel = "Polymaker · PolyTerra"
+        $0.expect(!a.hasSameValues(as: b),
+                  "two drafts naming different materials must not compare equal")
+        $0.expect(a.hasSameValues(as: a), "a draft equals itself")
+    },
+
+    test("a label change alone marks the form as edited") { t in
+        runOnMain {
+            let h = makeHarness()
+            t.expect(!h.model.draftIsEdited, "a freshly built form is not edited")
+            h.model.draft.materialLabel = "Someone Else · Something Else"
+            t.expect(h.model.draftIsEdited,
+                      "a form whose label no longer matches the baseline has been edited")
+        }
+    },
+
+    test("an empty material id is not writable and says so") {
+        let draft = SpoolDraft()
+        $0.expect(!draft.isValid)
+        $0.equal(draft.validationIssues.first, "Enter a material ID.")
+    },
+
+    test("a five-digit material id with the default serial is writable") {
+        var draft = SpoolDraft()
+        draft.materialID = "12345"
+        $0.equal(draft.validationIssues, [])
+        $0.expect(draft.isValid)
+    },
+])
+
+// MARK: - Material cascade
+
+let tagCascadeTests = TestSuite(name: "Tag screen material cascade", cases: [
+
+    test("a brand with no materials clears the id, not just the label") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.draft.materialID = "00001"
+            h.model.draft.materialLabel = "Creality · Hyper PLA"
+            // The catalogue is never loaded in these tests, so every brand is empty — which is
+            // exactly the case the cascade used to mishandle.
+            h.model.selectVendor("Polymaker")
+            t.equal(h.model.draft.materialLabel, "",
+                     "the label must not survive the material it named")
+            t.equal(h.model.draft.materialID, "",
+                     "nor may the id keep pointing at the previous brand's material")
+        }
+    },
+
+    test("an id the catalogue cannot name keeps the id and loses the label") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.draft.materialID = "99999"
+            h.model.draft.materialLabel = "Creality · Hyper PLA"
+            h.model.selectMaterial(id: "99999")
+            t.equal(h.model.draft.materialID, "99999",
+                     "a valid-looking id the catalogue does not carry is still the user's id")
+            t.equal(h.model.draft.materialLabel, "",
+                     "but nothing may claim to name it")
+            t.expect(h.model.manualMaterialEntry,
+                      "and the form falls back to manual entry rather than a dead picker")
+        }
+    },
+
+    test("selecting nothing clears both halves of the material") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.draft.materialID = "00001"
+            h.model.draft.materialLabel = "Creality · Hyper PLA"
+            h.model.selectMaterial(nil)
+            t.equal(h.model.draft.materialID, "")
+            t.equal(h.model.draft.materialLabel, "")
+        }
+    },
+])
+
+// MARK: - autoWriteState
+
+let tagAutoWriteStateTests = TestSuite(name: "Auto-write indicator", cases: [
+
+    test("Read mode is always off") { t in
+        runOnMain {
+            let h = makeHarness()
+            makeDraftWritable(h.model)
+            t.equal(h.model.mode, .read)
+            t.equal(h.model.autoWriteState, .off)
+        }
+    },
+
+    test("the toggle being off is off") { t in
+        runOnMain {
+            let h = makeHarness()
+            makeDraftWritable(h.model)
+            h.model.autoWriteEnabled = false
+            h.model.mode = .write
+            t.equal(h.model.autoWriteState, .off)
+        }
+    },
+
+    test("a form that cannot make a record is blocked, and names the problem") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            t.equal(h.model.autoWriteState, .blocked("Enter a material ID."))
+        }
+    },
+
+    test("a writable form with an empty reader is armed") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+            t.equal(h.model.autoWriteState, .armed)
+        }
+    },
+
+    test("a tag this app cannot write is not reported as armed") { t in
+        runOnMain {
+            let h = makeHarness()
+            // Regression: `guard let card = …, card.isUsable else { return .armed }` folded
+            // "no tag" and "a tag we can never write" into the same answer, so the panel said
+            // "Ready — writing the tag on the reader" about a tag it would never touch.
+            h.monitor.injectStateForTesting(.cardPresent(unsupportedTag))
+            await h.model.settle()
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+            await h.model.settle()
+            t.equal(h.model.autoWriteState, .unsupportedTag)
+        }
+    },
+
+    test("a tag whose arming has been spent is handled") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftUnwritable(h.model)      // keeps the arrival away from a card session
+            h.monitor.injectStateForTesting(.cardPresent(tagA))
+            await h.model.settle()
+            makeDraftWritable(h.model)
+            t.equal(h.model.autoWriteState, .handled)
+        }
+    },
+
+    test("an operation in flight is reported as busy, not as armed") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+            await h.model.withActivityForTesting(.reading) {
+                t.equal(h.model.autoWriteState, .busy("Reading tag…"))
+            }
+            t.equal(h.model.autoWriteState, .armed)
+        }
+    },
+])
+
+// MARK: - Arrivals: arming, deferral, retry
+
+let tagArrivalTests = TestSuite(name: "Tag arrivals", cases: [
+
+    test("an auto-read that cannot run keeps its arming") { t in
+        runOnMain {
+            let h = makeHarness()
+            t.equal(h.model.mode, .read)
+            await h.model.withActivityForTesting(.writing) {
+                await h.model.autoReadIfNeeded(card: tagA)
+                // Regression: `autoReadUID = card.uid` was assigned *before* `read()`, whose first
+                // line is the same busy guard. The arming was spent on a read that never
+                // happened, and because the arming is keyed on the UID that tag was then never
+                // read at all.
+                t.equal(h.model.autoReadArmingForTesting, nil,
+                         "the arming must not be spent by a read that did not happen")
+                t.equal(h.model.deferredArrival?.uid, tagA.uid,
+                         "and the arrival must be remembered rather than dropped")
+            }
+            // The reader is empty in this test, so the retry finds nothing and touches nothing.
+            await h.model.settle()
+        }
+    },
+
+    test("an auto-write that arrives mid-read is deferred, then written when the read ends") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+
+            await h.model.withActivityForTesting(.reading) {
+                h.monitor.injectStateForTesting(.cardPresent(tagA))
+                await h.model.settle()
+                t.equal(h.model.deferredArrival?.uid, tagA.uid,
+                         "the arrival is recorded, not discarded")
+                t.equal(h.model.autoWriteArmingForTesting, nil,
+                         "and its arming is untouched, because nothing was written")
+                t.equal(h.model.autoWriteState, .busy("Reading tag…"))
+            }
+
+            // Synchronous point: `activity` has fallen back to `.idle` and queued the retry, but
+            // the retry is a task and this actor has not suspended, so it has not run yet. This
+            // is the state the indicator used to render as "Ready — writing the tag on the
+            // reader" for ever.
+            t.equal(h.model.autoWriteState, .deferred("the read in progress finishes"))
+
+            // Stop the retry short of a card session; spending the arming and reporting a
+            // validation problem is the same observable "the retry ran".
+            makeDraftUnwritable(h.model)
+            await h.model.settle()
+
+            t.equal(h.model.autoWriteArmingForTesting, tagA.uid,
+                     "the deferred arrival was re-driven and its arming spent")
+            t.equal(h.model.deferredArrival, nil, "and the deferral was consumed")
+            t.expect(h.model.autoWriteSkipped != nil,
+                      "the retry got far enough to report why it stopped")
+        }
+    },
+
+    test("an open confirmation sheet defers an arrival instead of dropping it") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+            guard let plan = try? samplePlan() else {
+                t.expect(false, "could not build a plan from the card simulator")
+                return
+            }
+            h.model.pendingPlan = plan
+            await h.model.respondToCard(tagA)
+            t.equal(h.model.deferredArrival?.uid, tagA.uid)
+            t.equal(h.model.autoWriteArmingForTesting, nil,
+                     "an arrival the sheet blocked has not been dealt with")
+        }
+    },
+
+    test("card bookkeeping survives with no view on screen at all") { t in
+        runOnMain {
+            // The whole of finding 3: there is no `TagView` in this test and there never was, so
+            // the only thing that can be keeping the model's card bookkeeping straight is the
+            // model's own subscription. Selecting Materials in the real app is the same situation.
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftUnwritable(h.model)
+
+            h.monitor.injectStateForTesting(.cardPresent(tagA))
+            await h.model.settle()
+            t.equal(h.model.autoWriteArmingForTesting, tagA.uid, "the arrival was seen")
+
+            h.monitor.injectStateForTesting(.idle(devices: ["Mock Reader"], note: nil))
+            await h.model.settle()
+            t.equal(h.model.autoWriteArmingForTesting, nil, "the removal was seen")
+
+            h.monitor.injectStateForTesting(.cardPresent(tagB))
+            await h.model.settle()
+            t.equal(h.model.autoWriteArmingForTesting, tagB.uid,
+                     "and the next tag got an arming of its own rather than inheriting a stale one")
+        }
+    },
+
+    test("a swap straight from one tag to another re-arms") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.mode = .write
+            makeDraftUnwritable(h.model)
+            h.monitor.injectStateForTesting(.cardPresent(tagA))
+            await h.model.settle()
+            h.monitor.injectStateForTesting(.cardPresent(tagB))   // no empty state in between
+            await h.model.settle()
+            t.equal(h.model.autoWriteArmingForTesting, tagB.uid)
+        }
+    },
+
+    test("committing a write while the reader is held reports instead of doing nothing") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let plan = try? samplePlan() else {
+                t.expect(false, "could not build a plan from the card simulator")
+                return
+            }
+            await h.model.withActivityForTesting(.reading) {
+                await h.model.commitWrite(plan, allowTrailerWrite: false)
+            }
+            t.expect(h.toasts.current != nil,
+                      "a swallowed click is what made the sheet look dead; it must say something")
+            t.equal(h.model.writeOutcome, nil, "and it must not claim a write happened")
+        }
+    },
+
+    test("⇧⌘W with an unwritable form shows the form and says why, without a card session") { t in
+        runOnMain {
+            let h = makeHarness()
+            t.equal(h.model.mode, .read)
+            await h.model.prepareWrite()
+            t.equal(h.model.mode, .write, "the form the complaint is about has to be visible")
+            t.equal(h.model.pendingPlan, nil)
+            t.expect(h.toasts.current != nil)
+        }
+    },
+])
+
+// MARK: - ReaderMonitor
+
+let readerMonitorBusyTests = TestSuite(name: "Reader monitor", cases: [
+
+    test("overlapping card operations keep the reader claimed until the last one ends") { t in
+        runOnMain {
+            let monitor = ReaderMonitor()
+            t.equal(monitor.busyDepth, 0)
+            await monitor.withReaderClaimed {
+                t.equal(monitor.busyDepth, 1)
+                t.expect(monitor.isBusy)
+                await monitor.withReaderClaimed {
+                    t.equal(monitor.busyDepth, 2, "a second claim nests, it does not replace")
+                }
+                // Regression: `isBusy` was a plain `Bool`, so the inner operation finishing
+                // cleared it and let presence polling resume underneath the outer one.
+                t.equal(monitor.busyDepth, 1)
+                t.expect(monitor.isBusy, "the outer operation still holds the reader")
+            }
+            t.equal(monitor.busyDepth, 0)
+            t.expect(!monitor.isBusy)
+        }
+    },
+
+    test("an arrival raises the insertion count once, and a swap raises it again") { t in
+        runOnMain {
+            let monitor = ReaderMonitor()
+            let before = monitor.insertionCount
+            monitor.injectStateForTesting(.cardPresent(tagA))
+            t.equal(monitor.insertionCount, before + 1)
+            monitor.injectStateForTesting(.cardPresent(tagA))   // republished, same tag
+            t.equal(monitor.insertionCount, before + 1)
+            monitor.injectStateForTesting(.cardPresent(tagB))
+            t.equal(monitor.insertionCount, before + 2)
+        }
+    },
+
+    test("stopping releases the context synchronously and is safe to repeat") { t in
+        runOnMain {
+            // `stop()` used to end in `Task { await engine.shutdown() }`, which never runs when
+            // the caller is `applicationWillTerminate`. If the synchronous replacement could
+            // deadlock, this case would hang rather than fail — which is the point.
+            let monitor = ReaderMonitor()
+            monitor.stop()
+            monitor.stop()
+            t.expect(true, "stop() returned")
+        }
+    },
+])

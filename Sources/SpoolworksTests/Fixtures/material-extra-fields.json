@@ -1,0 +1,49 @@
+{
+  "code": 0,
+  "msg": "ok",
+  "reqId": "cl602024082916552939795681",
+  "result": {
+    "list": [
+      {
+        "engineVersion": "3.0.0",
+        "printerIntName": "F008",
+        "nozzleDiameter": ["0.4", "0.6"],
+        "futureEntryField": "keep me",
+        "futureEntryObject": { "nested": [1, 2.5, true, null, "x"] },
+        "kvParam": {
+          "filament_type": "PLA",
+          "filament_vendor": "Creality",
+          "filament_retraction_speed": "nil",
+          "filament_shrink": "100%",
+          "filament_notes": "\"\"",
+          "filament_end_gcode": ";filament end gcode \n"
+        },
+        "base": {
+          "id": "01001",
+          "brand": "Creality",
+          "name": "Hyper PLA",
+          "meterialType": "PLA",
+          "colors": ["#ffffff"],
+          "density": 1.24,
+          "diameter": "1.75",
+          "costPerMeter": 0,
+          "weightPerMeter": 0,
+          "rank": 10000,
+          "minTemp": 190,
+          "maxTemp": 240,
+          "isSoluble": false,
+          "isSupport": false,
+          "shrinkageRate": 0,
+          "softeningTemp": 0,
+          "dryingTemp": 0,
+          "dryingTime": 0,
+          "createTime": 1746005657,
+          "userInfo": { "uid": "abc", "nickName": "someone" },
+          "status": 1
+        }
+      }
+    ],
+    "count": 1,
+    "version": "1746005657"
+  }
+}

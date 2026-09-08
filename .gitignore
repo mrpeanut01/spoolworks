@@ -1,0 +1,16 @@
+# SwiftPM scratch space.
+.build/
+*.xcodeproj
+
+# Release artifacts: built on demand, never committed.
+dist/
+
+# macOS Finder metadata. It rides along with `git add -A` and is invisible in Finder,
+# so nothing warns you.
+.DS_Store
+
+# Claude Code. Machine- and user-specific state.
+# CLAUDE.md is deliberately NOT ignored — project instructions are worth sharing.
+.claude/
+CLAUDE.local.md
+.worktrees/
