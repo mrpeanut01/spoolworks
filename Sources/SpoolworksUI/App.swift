@@ -76,6 +76,13 @@ final class AppEnvironment: ObservableObject {
         self.cfsModel = CFSViewModel(transport: LivePrinterTransport(),
                                      printers: printerModel,
                                      inventory: inventoryModel)
+        // Every verified write logs its spool, whichever screen or path produced it.
+        self.tagModel.onWriteSucceeded = { [weak inventoryModel, weak settings] summary in
+            guard let inventoryModel, let settings else { return }
+            inventoryModel.logWrittenSpool(record: summary.record,
+                                           materialLabel: summary.materialLabel,
+                                           enabled: settings.addWrittenSpoolsToInventory)
+        }
         self.intakeModel = IntakeViewModel(monitor: monitor,
                                            inventory: inventoryModel,
                                            materials: self.materialsModel,

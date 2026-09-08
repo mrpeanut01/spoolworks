@@ -36,13 +36,14 @@ struct WriteTagView: View {
                         }
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model, settings: settings)
+                        WriteOptionsCard(settings: settings)
                         if let outcome = model.writeOutcome {
                             WriteOutcomeCard(outcome: outcome, model: model)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    WriteVerifyPanel(model: model, monitor: monitor)
+                    WriteVerifyPanel(model: model, monitor: monitor, settings: settings)
                         .frame(width: 420)
                 }
             }
@@ -78,6 +79,7 @@ struct WriteTagView: View {
 private struct WriteVerifyPanel: View {
     @ObservedObject var model: TagViewModel
     @ObservedObject var monitor: ReaderMonitor
+    @ObservedObject var settings: AppSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -107,6 +109,22 @@ private struct WriteVerifyPanel: View {
                     .textSelection(.enabled)
                     .lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                // The colour as the tag actually stores it. Worth showing on its own: the field is
+                // seven characters, not six, and the leading nibble is not part of the colour —
+                // every implementation writes '0' there and nobody has documented what it means
+                // (see SpoolRecord.color). Without this the extra digit looks like a bug.
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                    Text("Tag colour field").kicker()
+                    Text(tagColourField)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Theme.label)
+                        .textSelection(.enabled)
+                }
+                .padding(.top, 4)
+                Text("Seven hex digits — one flag nibble, then RRGGBB.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.secondaryLabel)
             }
             .padding(.top, 16)
             .overlay(alignment: .top) {
@@ -133,7 +151,7 @@ private struct WriteVerifyPanel: View {
             Step(what: "Read back and compare byte for byte",
                  state: wrote ? "done" : "waiting"),
             Step(what: "Add the spool to inventory",
-                 state: "on intake"),
+                 state: settings.addWrittenSpoolsToInventory ? (wrote ? "done" : "ready") : "off"),
         ]
     }
 
@@ -143,6 +161,12 @@ private struct WriteVerifyPanel: View {
         case "ready": return Theme.accent
         default: return Theme.kickerLabel
         }
+    }
+
+    /// `"0C12E1F"` — the colour exactly as it is written into the record.
+    private var tagColourField: String {
+        let hex = model.draft.colorHex
+        return hex.isEmpty ? "—" : "0" + hex.uppercased()
     }
 
     /// The 40 characters the current form would write, or why it cannot yet.
@@ -156,5 +180,49 @@ private struct WriteVerifyPanel: View {
             return model.draft.validationIssues.first ?? "— the form is not complete —"
         }
         return record.encoded
+    }
+}
+
+
+// MARK: - Options
+
+/// The three switches the design puts under the write form.
+///
+/// One is a setting, one is a statement of fact, and the third lives on the Auto-Write card above.
+///
+/// **Verify by read-back is not optional** — the design draws it as a checkbox, but making it one
+/// would let someone turn off the check that distinguishes "the reader returned 90 00" from "the
+/// bytes are on the tag", which is the guarantee this app is built on. It is shown, always on, and
+/// says why.
+private struct WriteOptionsCard: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
+            // The design's third switch here is "Write on scan". It is not repeated: the Auto-Write
+            // card above owns that value and surrounds it with the arming state and the sector-key
+            // gate, which a bare checkbox cannot carry. Two controls for one setting on one screen
+            // reads as a bug even when they stay in sync.
+            HStack(spacing: Theme.Spacing.s) {
+                Image(systemName: "checkmark.square.fill")
+                    .foregroundStyle(Theme.success)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Verify by read-back").font(.system(size: 13))
+                    Text("Always on. A reader answering 90 00 means the command was accepted, not that the bytes landed.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Verify by read-back, always on")
+
+            Toggle("Add to inventory", isOn: $settings.addWrittenSpoolsToInventory)
+                .help("Log the spool to stock after a verified write. Turn off when replacing a damaged tag on a spool that is already listed.")
+        }
+        .toggleStyle(.checkbox)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(padding: Theme.Spacing.l)
     }
 }

@@ -359,3 +359,84 @@ let cfsViewModelTests = TestSuite(name: "CFS view model", cases: [
         }
     },
 ])
+
+
+// MARK: - Logging a written spool
+
+let writtenSpoolLoggingTests = TestSuite(name: "Logging a written spool", cases: [
+
+    test("a verified write lands the spool in stock, unplaced") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else {
+                t.record("could not build a record", file: #file, line: #line); return
+            }
+
+            let logged = model.logWrittenSpool(record: record,
+                                               materialLabel: "Creality · Hyper PLA",
+                                               enabled: true)
+            guard let logged = t.unwrap(logged, "logged spool") else { return }
+            t.equal(model.inventory.active.count, 1, "in stock")
+            t.equal(logged.tagSource, .spoolworksWritten, "credited to this app, not the factory")
+            // The tag says nothing about where the spool is; asserting a shelf would invent a fact.
+            t.equal(logged.location, .unknown, "unplaced until something observes it")
+            t.equal(logged.brand, "Creality", "brand split out of the material label")
+            t.equal(logged.name, "Hyper PLA", "and the name")
+            t.equal(logged.remainingPercent, 100, "a freshly tagged spool is full")
+        }
+    },
+
+    // Replacing a damaged tag is not the acquisition of a new spool.
+    test("re-tagging a spool already in stock updates it rather than duplicating") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+
+            model.add(model.spool(from: record, brand: "Creality", name: "Hyper PLA",
+                                  location: .cfs(box: "T1", slot: "B")))
+            model.logWrittenSpool(record: record, materialLabel: "Creality · Hyper PLA",
+                                  enabled: true)
+
+            t.equal(model.inventory.active.count, 1, "still one spool, not two")
+            guard let after = t.unwrap(model.inventory.active.first, "spool") else { return }
+            t.equal(after.location, .cfs(box: "T1", slot: "B"), "where it was is not forgotten")
+            t.equal(after.tagSource, .spoolworksWritten, "but the tag source is updated")
+            t.expect(after.usage.contains { $0.detail.contains("rewritten") },
+                     "and the rewrite is on the record")
+        }
+    },
+
+    test("the preference being off logs nothing at all") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+            let logged = model.logWrittenSpool(record: record, materialLabel: "X · Y",
+                                               enabled: false)
+            t.expect(logged == nil, "nothing returned")
+            t.equal(model.inventory.active.count, 0, "and nothing stored")
+        }
+    },
+
+    // `bool(forKey:)` returns false for an absent key, which would make a default-on preference
+    // read as "the user turned it off" on first run.
+    test("the add-to-inventory preference defaults on, not off") { t in
+        onMain {
+            let suite = "sw-defaults-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            let fresh = AppSettings(defaults: defaults)
+            t.expect(fresh.addWrittenSpoolsToInventory, "on for a first run")
+
+            fresh.addWrittenSpoolsToInventory = false
+            let reloaded = AppSettings(defaults: defaults)
+            t.expect(!reloaded.addWrittenSpoolsToInventory, "and an explicit off survives")
+        }
+    },
+])

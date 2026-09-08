@@ -191,6 +191,48 @@ final class InventoryViewModel: ObservableObject {
         return spool
     }
 
+    /// Logs a spool whose tag this app has just written and verified.
+    ///
+    /// Lands **unplaced**. The tag carries no location and the write says nothing about where the
+    /// spool physically is, so asserting a shelf would be inventing a fact; the next CFS poll
+    /// claims it the moment it is loaded. Re-tagging a spool already in stock updates that record
+    /// rather than creating a second one — a replacement tag is not a new spool.
+    ///
+    /// Returns the spool it logged, or nil when the preference is off.
+    @discardableResult
+    func logWrittenSpool(record: SpoolRecord,
+                         materialLabel: String,
+                         enabled: Bool) -> Spool? {
+        guard enabled else { return nil }
+
+        if var existing = inventory.spool(matching: record) {
+            existing.tagSource = .spoolworksWritten
+            existing.note(kind: .movement, detail: "Tag rewritten and verified")
+            inventory.update(existing)
+            persist()
+            return existing
+        }
+
+        // "Creality · Hyper PLA" is how the write form labels a material; split it back out so the
+        // inventory row reads the way every other row does.
+        let parts = materialLabel.components(separatedBy: " · ")
+        let brand = parts.count > 1 ? parts[0] : ""
+        let name = parts.count > 1 ? parts.dropFirst().joined(separator: " · ") : materialLabel
+
+        var spool = spool(from: record,
+                          brand: brand,
+                          name: name,
+                          materialType: "",
+                          location: .unknown,
+                          tagSource: .spoolworksWritten,
+                          detail: "Intake · tag written by Spoolworks")
+        spool.remainingSource = "Tagged here · assumed full"
+        inventory.add(spool)
+        persist()
+        toasts.success("Added to stock — \(spool.label) · serial \(spool.serialLabel)")
+        return spool
+    }
+
     /// Whether a tag already belongs to a spool in stock — the Intake screen's duplicate guard.
     func existing(for record: SpoolRecord) -> Spool? {
         inventory.spool(matching: record)

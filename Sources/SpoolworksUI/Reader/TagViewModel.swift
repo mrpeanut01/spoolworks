@@ -466,6 +466,10 @@ final class TagViewModel: ObservableObject {
         }
     }
 
+    /// Called after a write that verified. Set by ``AppEnvironment`` to log the spool to stock;
+    /// nil in tests and previews, where nothing should be persisted.
+    var onWriteSucceeded: ((WriteSummary) -> Void)?
+
     @Published var draft = SpoolDraft()
 
     /// Nearest named colour for the draft swatch, resolved off the main actor.
@@ -1155,6 +1159,11 @@ final class TagViewModel: ObservableObject {
             writeOutcome = .succeeded(summary)
             rememberColor(plan.record.rgbHex)
             autoWriteSkipped = nil
+            // Fired here rather than from the confirmation sheet's completion handler, because a
+            // write can also happen through auto-write with no sheet involved — and a spool that
+            // reached stock or not depending on which path programmed it would be worse than
+            // either behaviour on its own.
+            onWriteSucceeded?(summary)
 
             switch readback {
             case let .success(fresh):

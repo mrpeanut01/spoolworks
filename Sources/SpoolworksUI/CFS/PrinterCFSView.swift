@@ -140,6 +140,13 @@ struct PrinterCFSView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Whether per-job consumption is actually running — the only remaining source of a remaining
+    /// figure when there is no CFS to measure one.
+    private var gcodeEstimateState: String {
+        guard let job = model.job else { return "printer not reachable" }
+        return job.state.isActive ? "active" : "idle"
+    }
+
     /// The inventory row a slot resolves to, so the cell can show the spool's own history rather
     /// than only the firmware's snapshot.
     private func matchedSpool(_ slot: CFSSlot) -> Spool? {
@@ -185,9 +192,10 @@ struct PrinterCFSView: View {
                 Text("Usage source · external spool").kicker()
                 VStack(spacing: 0) {
                     DataRow("CFS remainLen", "unavailable")
+                    DataRow("Gcode estimate", gcodeEstimateState)
                     DataRow("Auto refill", "not applicable")
                 }
-                Text("With no CFS attached there are no slots to group. Remaining comes from the last measurement or a manual correction.")
+                Text("With no CFS attached there are no slots to group. Remaining comes from what the printer reports it has extruded, corrected by weighing.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)

@@ -20,7 +20,7 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 | **Printer & CFS** | The printer's live slots, read from `material_box_info.json` over SSH every 30 s, folded into the inventory. |
 | **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. |
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
-| **Write tag** | Program a tag for a third-party spool, or replace a damaged one. |
+| **Write tag** | Program a tag for a third-party spool, or replace a damaged one — and log it to stock. |
 
 **Materials** and **Printers** are windows rather than sidebar entries — `Manage ▸ Materials`
 (⇧⌘1) and `Manage ▸ Printers` (⇧⌘2). The design's sidebar has exactly five entries, but both
@@ -174,9 +174,9 @@ meodai colour-name dataset; and Creality's material data.
   `SSHTransport` (it previously used a stand-in that threw "not implemented" from every method),
   and the transport itself is tested — but no database has been uploaded to, and no CFS polled
   from, a real printer since that wiring landed.
-- **The Intake screen's "write both tags" hands off to the Write screen** rather than writing
-  inline. Programming a blank tag rewrites its sector keys irreversibly, so it goes through the
-  confirmation and read-back verification that path already has.
+- **Verify by read-back cannot be switched off.** The design offers it as a checkbox; making it
+  one would let someone disable the check that distinguishes "the reader returned `90 00`" from
+  "the bytes are on the tag". It is shown as always-on instead.
 - The Creality Cloud profile download validates the CDN host against an allow-list that is an
   educated guess; it fails closed.
 - `Format Tag` and Spoolman integration from the Windows app are not implemented.
