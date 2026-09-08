@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `cd macOS && swift run SpoolworksTests` · Hardware: `cd macOS && swift run spooldiag <cmd>`
-Status at last update: **169 automated tests passing**, 0 failing.
+Status at last update: **523 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -24,6 +24,23 @@ Status at last update: **169 automated tests passing**, 0 failing.
 | Safety | allows trailer write with opt-in, preserving access bits | unit | pass |
 | Safety | full backup captured before the first write APDU | unit | pass |
 | Safety | non-1K card and non-4-byte UID refused before any APDU | unit | pass |
+| Colour scan | sRGB ↔ CIELAB round-trips exactly for primaries and neutrals | unit | pass |
+| Colour scan | white lands at L\* 100.0000039, as the standard matrix's row sums predict | unit | pass |
+| Colour scan | chromatic angle holds one material across shading (1.8°) where Lab a\*/b\* does not (35) | unit | pass |
+| Colour scan | patch means are taken in linear light, not on the encoded codes | unit | pass |
+| Colour scan | shaded wrap reads the lit filament: ΔE 1.3 vs mean 7.6, median 4.1 | synthetic | pass |
+| Colour scan | clipping specular highlight rejected: ΔE 2.9 vs mean 11.8 | synthetic | pass |
+| Colour scan | 25% spool core in frame excluded not diluted: ΔE 1.4 vs mean 21.1 | synthetic | pass |
+| Colour scan | shadow + highlight + contamination + noise together: ΔE 3.7 vs mean 35.9 | synthetic | pass |
+| Colour scan | white clips on every channel and is still read, with a too-bright warning | synthetic | pass |
+| Colour scan | black filament read to ΔE 0.8 — the weakest case for the angle metric | synthetic | pass |
+| Colour scan | patch averaging absorbs sensor noise entirely (ΔE < 0.5 vs the clean render) | synthetic | pass |
+| Colour scan | underexposed target warns and drops to low confidence rather than drifting | synthetic | pass |
+| Colour scan | an exact two-colour tie resolves identically on every run | regression | pass |
+| Colour scan | stabiliser: median ignores one ruined frame; steadiness needs a full window | unit | pass |
+| Colour scan | stabiliser reports the *worst* confidence in the window, not the average | unit | pass |
+| Colour scan | target square is centred and inside the frame at every aspect ratio | unit | pass |
+| Colour scan | a letterboxed preview targets the video rectangle, not the view | regression | pass |
 | Crypto | keys match Arduino `u_key` / `d_key` byte-for-byte | unit | pass |
 | Crypto | golden vectors vs. compiled Arduino reference (4 vectors) | golden | pass |
 | Crypto | ECB determinism; equal tails ⇒ equal block 6 | unit | pass |

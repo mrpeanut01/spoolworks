@@ -18,7 +18,7 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 |---|---|
 | **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. |
 | **Printer & CFS** | The printer's live slots, read from `material_box_info.json` over SSH every 30 s, folded into the inventory. |
-| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. |
+| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. Its colour can be read off the spool with a camera. |
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
 | **Write tag** | Program a tag for a third-party spool, or replace a damaged one — and log it to stock. |
 
@@ -47,6 +47,27 @@ on every poll.
 
 One other correction: **length code `0165` is 500 g, not 1 kg.** The design's decoded-field panel
 says 1 kg; `Utils.cs:172-188`, the ESP32 firmware and the printer dump all disagree. 1 kg is `0330`.
+
+## Reading a spool's colour with the camera
+
+Intake's Method B needs a colour for a spool that has no tag to read it from, and typing a hex code
+means guessing. **Intake ▸ Colour ▸ Scan…** opens the camera instead: fill the small box with
+filament, hold still until the corners turn green, take the reading.
+
+It does not average the pixels, because averaging them is wrong. Filament is a 1.75 mm cylinder
+wound in a spiral, so a close-up of a wrap is a corrugated surface — a specular highlight along
+every strand, deep shadow in every valley, and the spool's core showing through the gaps. Measured
+against a synthetic wrap of known colour, a plain average is **ΔE 7.6** out on shading alone and
+**ΔE 21** once a quarter of the target is core; this reads **ΔE 1.3** and **ΔE 1.4**. It samples 400
+points across the box, finds the dominant colour, and averages the best-lit slice of it — so shadow
+and shine are discarded rather than mixed in. `docs/DECISIONS.md` D-010 has the reasoning and the
+numbers.
+
+**It is not a colorimeter, and the camera's white balance is why.** A spool under a warm lamp reads
+warm, and auto white balance actively tries to neutralise a large field of one colour. The reading
+is a good way to pick a swatch; it is offered into a field you can still type over, never applied
+silently. An iPhone used as a Continuity Camera is much the better instrument — it focuses at a few
+centimetres, which a built-in Mac camera cannot.
 
 ## Requirements
 
@@ -83,7 +104,7 @@ No Xcode needed — Command Line Tools are enough.
 
 ```bash
 swift build
-swift run SpoolworksTests   # 409 tests, no reader required
+swift run SpoolworksTests   # 523 tests, no reader or camera required
 Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
@@ -136,7 +157,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 409 tests, runnable without hardware |
+| `SpoolworksTests` | 523 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
@@ -180,4 +201,8 @@ meodai colour-name dataset; and Creality's material data.
   "the bytes are on the tag". It is shown as always-on instead.
 - The Creality Cloud profile download validates the CDN host against an allow-list that is an
   educated guess; it fails closed.
+- **The colour scanner has not been checked against a reference.** Its accuracy is measured against
+  synthetic wraps with a known albedo, which validates the algorithm but not the camera in front of
+  it; no reading has been compared with a colorimeter, and the camera's own white balance is an
+  uncorrected error term. See D-010.
 - `Format Tag` and Spoolman integration from the Windows app are not implemented.

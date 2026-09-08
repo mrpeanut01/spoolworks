@@ -94,6 +94,9 @@ struct IntakeView: View {
     /// Which of the spool's two tags the open confirmation sheet belongs to.
     @State private var pendingSlot: IntakeViewModel.TagSlot?
 
+    /// Whether the camera colour scanner is open.
+    @State private var isScanningColour = false
+
     /// Puts the reader into the mode this screen currently needs.
     ///
     /// Method A reads. Method B **writes on presentation** — the draft is loaded and auto-write
@@ -298,8 +301,16 @@ struct IntakeView: View {
             .padding(.bottom, 16)
 
             HStack(alignment: .bottom, spacing: 18) {
-                FieldBox(label: "Colour") {
+                FieldBox(label: "Colour", note: model.isScan ? "from tag" : nil) {
                     TextField("", text: $model.colorHex).textFieldStyle(.plain).swInput()
+                }
+                // Method B only. In Method A the tag is the authority on colour, and colour is
+                // part of how a spool is identified (see the README on serial collisions) — a
+                // camera reading laid over a decoded one would quietly break that key.
+                if !model.isScan {
+                    Button("Scan…") { isScanningColour = true }
+                        .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
+                        .help("Read the colour off the spool with a camera.")
                 }
                 Swatch(hex: model.colorHex, size: 52, height: 44)
             }
@@ -327,6 +338,9 @@ struct IntakeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: 20)
+        .sheet(isPresented: $isScanningColour) {
+            ColorScanSheet { hex in model.colorHex = hex }
+        }
     }
 
     // MARK: Right column

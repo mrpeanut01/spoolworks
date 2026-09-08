@@ -31,6 +31,13 @@ let exitCode = TestDriver.run([
     colorHexTests,
     colorTableIntegrityTests,
 
+    // Camera colour scan
+    labColorTests,
+    pixelFieldTests,
+    filamentColorEstimatorTests,
+    filamentColorStabiliserTests,
+    scanTargetTests,
+
     // Printer transport / upload
     printerModelTests,
     sshInvocationTests,
