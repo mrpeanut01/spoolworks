@@ -114,7 +114,8 @@ struct RootView: View {
         case .printerCFS:
             PrinterCFSView(model: env.cfsModel, inventory: env.inventoryModel)
         case .intake:
-            IntakeView(model: env.intakeModel, inventory: env.inventoryModel, env: env)
+            IntakeView(model: env.intakeModel, inventory: env.inventoryModel,
+                       env: env, tagModel: env.tagModel)
         case .identify:
             IdentifyView(env: env)
         case .write:

@@ -6,6 +6,9 @@ struct IntakeView: View {
     @ObservedObject var model: IntakeViewModel
     @ObservedObject var inventory: InventoryViewModel
     @ObservedObject var env: AppEnvironment
+    /// Observed directly rather than reached through `env`: the confirmation sheet binds to
+    /// `pendingPlan`, and a binding cannot be projected through a `let` on the environment.
+    @ObservedObject var tagModel: TagViewModel
 
     var body: some View {
         ScrollView {
@@ -32,6 +35,39 @@ struct IntakeView: View {
             .padding(.horizontal, 26)
             .padding(.vertical, 22)
         }
+        // The same sheet the Write screen raises. A plan must be confirmed on whichever screen
+        // built it, or it is raised against a view that is not on screen — the defect documented
+        // in AppEnvironment.sidebarSelection.
+        .sheet(item: $tagModel.pendingPlan) { plan in
+            WriteConfirmationSheet(plan: plan, model: env.tagModel, settings: env.settings) { confirmed in
+                if confirmed {
+                    Task {
+                        await tagModel.commitWrite(
+                            plan, allowTrailerWrite: env.settings.advancedTagOperations)
+                        // Only a verified write counts. `writeOutcome` is set from the read-back,
+                        // so a tag that reported 90 00 without landing the bytes does not tick.
+                        if case .succeeded = tagModel.writeOutcome, let slot = pendingSlot {
+                            model.markTagWritten(slot)
+                        }
+                        pendingSlot = nil
+                    }
+                } else {
+                    tagModel.cancelPendingWrite()
+                    pendingSlot = nil
+                }
+            }
+        }
+    }
+
+    /// Which of the spool's two tags the open confirmation sheet belongs to.
+    @State private var pendingSlot: IntakeViewModel.TagSlot?
+
+    /// Loads the intake form into the tag draft and raises the standard write confirmation.
+    private func beginWrite(_ slot: IntakeViewModel.TagSlot) {
+        guard model.canWriteTags else { return }
+        pendingSlot = slot
+        model.loadDraft(into: env.tagModel)
+        Task { await tagModel.prepareWrite() }
     }
 
     // MARK: Step 1
@@ -103,17 +139,18 @@ struct IntakeView: View {
             ForEach(model.tags) { slot in
                 TagRow(slot: slot,
                        isScan: model.isScan,
-                       busy: model.busy,
+                       busy: model.busy || tagModel.activity.isRunning,
                        previousDone: slot.index == 0 || model.tags[0].isDone) {
                     if model.isScan {
                         Task { await model.readTag(slot) }
                     } else {
-                        // Writing a blank tag is irreversible, so it goes through the Write
-                        // screen's confirmation and read-back verification rather than happening
-                        // silently from here.
-                        env.sidebarSelection = .write
+                        beginWrite(slot)
                     }
                 }
+            }
+
+            if let blocker = model.writeBlocker {
+                InlineFailure(text: blocker).padding(.top, 12)
             }
 
             Text(model.tagNote)
@@ -143,21 +180,37 @@ struct IntakeView: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 18),
                                 GridItem(.flexible(), spacing: 18)],
                       alignment: .leading, spacing: 14) {
-                FieldBox(label: "Brand") {
-                    Picker("", selection: $model.brand) {
-                        Text("—").tag("")
-                        ForEach(IntakeViewModel.brands, id: \.self) { Text($0).tag($0) }
+                if model.isScan {
+                    // Method A: the tag is authoritative, so these are read-backs, not choices.
+                    FieldBox(label: "Brand") { ReadOnlyValue(model.brand.isEmpty ? "—" : model.brand) }
+                    FieldBox(label: "Name", note: "from the catalogue, editable") {
+                        TextField("", text: $model.name).textFieldStyle(.plain).swInput()
                     }
-                    .labelsHidden()
-                }
-                FieldBox(label: "Name", note: "auto from brand + material, editable") {
-                    TextField("", text: $model.name).textFieldStyle(.plain).swInput()
-                }
-                FieldBox(label: "Material") {
-                    Picker("", selection: $model.materialType) {
-                        ForEach(IntakeViewModel.materialTypes, id: \.self) { Text($0).tag($0) }
+                    FieldBox(label: "Material") {
+                        ReadOnlyValue(model.materialType.isEmpty ? "—" : model.materialType)
                     }
-                    .labelsHidden()
+                } else {
+                    // Method B: the form is authoritative, so the material must resolve to a real
+                    // catalogue entry — that is where the tag's filament ID comes from.
+                    FieldBox(label: "Brand", note: "from the catalogue") {
+                        Picker("", selection: $model.catalogueBrand) {
+                            Text("—").tag("")
+                            ForEach(model.catalogueBrands, id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden()
+                    }
+                    FieldBox(label: "Name", note: "auto from the material, editable") {
+                        TextField("", text: $model.name).textFieldStyle(.plain).swInput()
+                    }
+                    FieldBox(label: "Material", note: "decides the filament ID") {
+                        Picker("", selection: $model.materialID) {
+                            Text("—").tag("")
+                            ForEach(model.materials(for: model.catalogueBrand)) { row in
+                                Text("\(row.name) · \(row.materialType)").tag(row.id)
+                            }
+                        }
+                        .labelsHidden()
+                    }
                 }
                 FieldBox(label: "Net weight") {
                     Picker("", selection: $model.netWeightGrams) {

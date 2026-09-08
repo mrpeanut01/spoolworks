@@ -240,6 +240,67 @@ let intakeViewModelTests = TestSuite(name: "Intake view model", cases: [
         }
     },
 
+    // Method B writes a tag, and a tag stores a filament ID the printer looks up in its own
+    // database. Brand and material as free text produce a tag the printer reads and ignores.
+    test("Method B cannot write until a catalogue material is chosen") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: ToastCenter())
+            model.method = .manual
+
+            t.expect(!model.canWriteTags, "nothing chosen yet")
+            guard let blocker = t.unwrap(model.writeBlocker, "blocker") else { return }
+            // An empty catalogue and an unchosen material are different problems with different
+            // fixes, and the message has to say which.
+            t.expect(blocker.contains("catalogue") || blocker.contains("material"),
+                     "and it names the problem: \(blocker)")
+        }
+    },
+
+    test("scanning never asks for a catalogue material — the tag already carries one") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: ToastCenter())
+            t.expect(model.isScan, "method A")
+            t.expect(model.writeBlocker == nil, "no write blocker in scan mode")
+        }
+    },
+
+    test("the tag draft is loaded from the intake form, not composed twice") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let monitor = ReaderMonitor()
+            let toasts = ToastCenter()
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "sw-test-\(UUID())")!)
+            let tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+            let model = IntakeViewModel(monitor: monitor,
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            model.method = .manual
+            model.serial = "480880"
+            model.netWeightGrams = 750
+            model.colorHex = "E8A0B4"
+            model.brand = "Polymaker"
+            model.name = "PolyTerra PLA"
+
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.serialNumber, "480880", "serial")
+            t.equal(tagModel.draft.weight, .g750, "net weight becomes a length code")
+            t.equal(tagModel.draft.colorHex, "E8A0B4", "colour")
+            t.expect(tagModel.draft.materialLabel.contains("Polymaker"), "label carries the brand")
+        }
+    },
+
     test("a manually entered spool lands in stock as untagged") { t in
         onMain {
             let (inventory, _, dir) = makeInventory()

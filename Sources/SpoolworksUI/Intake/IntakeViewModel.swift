@@ -83,17 +83,33 @@ final class IntakeViewModel: ObservableObject {
     @Published var serial = ""
     @Published var filamentId = ""
 
-    static let brands = ["Creality", "Polymaker", "Prusament", "Bambu Lab",
-                         "Overture", "Sunlu", "eSun", "Generic"]
-    static let materialTypes = ["PLA", "PLA-CF", "PETG", "PETG-CF", "ABS",
-                                "ASA", "TPU", "PA-CF", "PC", "PVA"]
+    /// The 5-digit catalogue id the tag will carry. Empty until a material is chosen.
+    ///
+    /// This is the field that makes an app-written tag *work*. The tag stores a filament id, not a
+    /// description, and the printer looks that id up in its own `material_database.json`. An id
+    /// that is not in the printer's catalogue produces a tag the printer reads and then ignores —
+    /// so Method B picks from the catalogue rather than letting brand and material be free text.
+    @Published var materialID = "" {
+        didSet { adoptCatalogueMaterial() }
+    }
+    /// The brand filter above the material picker, also from the catalogue.
+    @Published var catalogueBrand = "" {
+        didSet {
+            guard oldValue != catalogueBrand else { return }
+            materialID = materials(for: catalogueBrand).first?.id ?? ""
+        }
+    }
     /// The five weights the tag's length code can express. There is no "other": a weight the tag
     /// cannot encode would be lost the moment the spool was written.
     static let weights: [Int] = [1000, 750, 600, 500, 250]
 
-    private unowned let monitor: ReaderMonitor
-    private unowned let inventory: InventoryViewModel
-    private unowned let materials: MaterialsViewModel
+    // Strong, not `unowned`. All three are owned by `AppEnvironment` for the app's lifetime
+    // and none of them references this model back, so there is no cycle to break — while
+    // `unowned` made a caller that passes a freshly-created collaborator crash the moment it
+    // was released, which is exactly what the tests do.
+    private let monitor: ReaderMonitor
+    private let inventory: InventoryViewModel
+    private let materials: MaterialsViewModel
     private let toasts: ToastCenter
 
     init(monitor: ReaderMonitor,
@@ -193,6 +209,40 @@ final class IntakeViewModel: ObservableObject {
         ]
     }
 
+    // MARK: The catalogue
+
+    /// Brands that actually exist in the printer's material database, in a stable order.
+    var catalogueBrands: [String] {
+        Array(Set(materials.rows.map(\.brand))).filter { !$0.isEmpty }.sorted()
+    }
+
+    /// The filaments the catalogue holds for a brand.
+    func materials(for brand: String) -> [FilamentRow] {
+        materials.rows.filter { $0.brand == brand }.sorted { $0.name < $1.name }
+    }
+
+    var selectedMaterial: FilamentRow? {
+        materials.rows.first { $0.id == materialID }
+    }
+
+    /// True when the catalogue has nothing to offer — a fresh install, or a load that failed.
+    var catalogueIsEmpty: Bool { materials.rows.isEmpty }
+
+    /// Pulls the description and the tag's filament id from the chosen catalogue entry.
+    private func adoptCatalogueMaterial() {
+        guard let row = selectedMaterial else {
+            filamentId = ""
+            return
+        }
+        // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
+        // Every implementation writes '1' for the class; see SpoolRecord.filamentClass.
+        filamentId = "1" + row.id
+        brand = row.brand
+        materialType = row.materialType
+        if name.isEmpty || name == row.name { name = row.name }
+        if let hex = row.colorHex.isEmpty ? nil : row.colorHex { colorHex = Spool.normaliseHex(hex) }
+    }
+
     // MARK: Actions
 
     /// Reads one of the spool's tags (method A).
@@ -249,12 +299,36 @@ final class IntakeViewModel: ObservableObject {
     /// verifies by read-back — the same guarantees the Write screen gives. See ``WriteModeView``.
     func composeRecord() -> SpoolRecord? {
         guard let length = FilamentLength.forGrams(netWeightGrams) else { return nil }
-        let materialId = filamentId.count == 6 ? String(filamentId.dropFirst()) : filamentId
-        return try? SpoolRecord(materialId: materialId,
+        let id = materialID.isEmpty
+            ? (filamentId.count == 6 ? String(filamentId.dropFirst()) : filamentId)
+            : materialID
+        guard !id.isEmpty else { return nil }
+        return try? SpoolRecord(materialId: id,
                                 colorRGB: Spool.normaliseHex(colorHex),
                                 filamentLength: length,
                                 serialNumber: serial)
     }
+
+    /// Why the tags cannot be written yet, in the user's terms. `nil` when they can.
+    var writeBlocker: String? {
+        guard !isScan else { return nil }
+        if catalogueIsEmpty {
+            return "The material catalogue is empty, so there is no filament ID to write. "
+                + "Load it in Manage ▸ Materials (⇧⌘1)."
+        }
+        if materialID.isEmpty {
+            return "Choose a material — the tag stores a filament ID from the catalogue, not a name."
+        }
+        if FilamentLength.forGrams(netWeightGrams) == nil {
+            return "That net weight has no code on the tag."
+        }
+        if composeRecord() == nil {
+            return "These details do not make a valid tag record."
+        }
+        return nil
+    }
+
+    var canWriteTags: Bool { writeBlocker == nil }
 
     func markTagWritten(_ slot: TagSlot) {
         tagsHandled = max(tagsHandled, slot.index + 1)
@@ -302,6 +376,19 @@ final class IntakeViewModel: ObservableObject {
         inventory.selectedID = duplicate.id
     }
 
+    /// Loads the tag draft from the intake form, so the shared write path can build a plan from it.
+    ///
+    /// Method B writes through exactly the same machinery as the Write screen — the confirmation
+    /// sheet, the pre-write sector dump, the read-back verification. Programming a blank tag
+    /// rewrites its sector keys irreversibly, and there should be one way to do that, not two.
+    func loadDraft(into tagModel: TagViewModel) {
+        tagModel.draft.materialID = materialID
+        tagModel.draft.materialLabel = [brand, name].filter { !$0.isEmpty }.joined(separator: " · ")
+        tagModel.draft.serialNumber = serial
+        tagModel.draft.weight = FilamentLength.forGrams(netWeightGrams) ?? .kg1
+        if let color = Color(tagHex: colorHex) { tagModel.draft.color = color }
+    }
+
     /// Clears the form for the next spool. The reader stays hot: the whole point of the screen is
     /// scanning spool after spool without touching anything between them.
     func reset(keepingMethod: Bool = true) {
@@ -317,6 +404,8 @@ final class IntakeViewModel: ObservableObject {
         netWeightGrams = 1000
         colorHex = "C12E1F"
         filamentId = ""
+        materialID = ""
+        catalogueBrand = catalogueBrands.first ?? ""
         serial = Self.allocateSerial()
     }
 

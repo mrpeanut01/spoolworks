@@ -38,8 +38,10 @@ final class CFSViewModel: ObservableObject {
     static let pollInterval: TimeInterval = 30
 
     private let transport: PrinterTransporting
-    private unowned let printers: PrinterViewModel
-    private unowned let inventory: InventoryViewModel
+    // Strong for the same reason as IntakeViewModel's collaborators: no cycle exists, and
+    // `unowned` only made short-lived callers crash.
+    private let printers: PrinterViewModel
+    private let inventory: InventoryViewModel
     private var timer: Task<Void, Never>?
 
     init(transport: PrinterTransporting,
