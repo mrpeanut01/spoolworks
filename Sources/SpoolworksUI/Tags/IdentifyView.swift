@@ -18,6 +18,27 @@ struct IdentifyView: View {
     private var model: TagViewModel { env.tagModel }
     private var monitor: ReaderMonitor { env.monitor }
 
+    /// The untagged spool waiting for this read, if the user asked for one from Inventory.
+    private var attachTarget: Spool? {
+        guard let id = env.inventoryModel.awaitingTagFor else { return nil }
+        return env.inventoryModel.inventory.spool(id: id)
+    }
+
+    /// Binds a freshly read tag to the spool that asked for it.
+    ///
+    /// The source is derived from the tag rather than assumed: `isProgrammed` means sector 1 opened
+    /// with the UID-derived key, which is only true of a tag something in this family wrote. A
+    /// factory tag opens with the default key, and calling it Spoolworks-written would be a claim
+    /// about provenance the app has no basis for.
+    private func attachIfRequested() {
+        guard env.inventoryModel.awaitingTagFor != nil,
+              let read = model.lastRead, let record = read.record else { return }
+        let type = env.materialsModel.rows.first { $0.id == record.materialId }?.materialType ?? ""
+        env.inventoryModel.attachTag(record: record,
+                                     materialType: type,
+                                     source: read.isProgrammed ? .spoolworksWritten : .crealityFactory)
+    }
+
     /// The inventory row this tag belongs to, if any.
     private var matched: Spool? {
         guard let record = model.lastRead?.record else { return nil }
@@ -41,6 +62,16 @@ struct IdentifyView: View {
                 .padding(.bottom, 18)
                 Rule().padding(.bottom, 20)
 
+                // Which spool this read is for, when it is for one. Without it the screen looks
+                // identical whether the next tag attaches to a record in stock or merely gets
+                // identified, and those are very different outcomes.
+                if let target = attachTarget {
+                    AttachBanner(spool: target, what: "read") {
+                        env.inventoryModel.cancelTagRequest()
+                    }
+                    .padding(.bottom, 18)
+                }
+
                 HStack(alignment: .top, spacing: 24) {
                     hero.frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 18) {
@@ -58,6 +89,10 @@ struct IdentifyView: View {
         // written is the main reason to come here, and the answer has to come from the tag rather
         // than from what the write left behind — see `beginIdentification`.
         .onAppear { model.beginIdentification() }
+        // A read asked for from Inventory attaches to the spool that asked. Keyed on the UID rather
+        // than the record, for the same reason Intake is: a spool's two tags carry the *same*
+        // payload, so watching the record would miss the second one entirely.
+        .onChange(of: model.lastRead?.uid ?? []) { _, _ in attachIfRequested() }
     }
 
     // MARK: Hero

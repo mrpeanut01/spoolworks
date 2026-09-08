@@ -589,3 +589,294 @@ let intakeNetWeightTests = TestSuite(name: "Intake net weight", cases: [
         }
     },
 ])
+
+// MARK: - How many tags a spool takes
+
+@MainActor
+private func makeIntake() async -> (IntakeViewModel, InventoryViewModel, () -> Void) {
+    let catalogue = FileManager.default.temporaryDirectory
+        .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+    let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+    await materials.load()
+    let (inventory, defaults, suite, dir) = makeInventory()
+    let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                inventory: inventory,
+                                materials: materials,
+                                toasts: ToastCenter())
+    return (model, inventory, {
+        try? FileManager.default.removeItem(at: catalogue)
+        try? FileManager.default.removeItem(at: dir)
+        defaults.removePersistentDomain(forName: suite)
+    })
+}
+
+let tagCountTests = TestSuite(name: "Tags required", cases: [
+
+    test("skipping the second tag finishes the spool at one") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            t.equal(model.tagsRequired, 2, "two by default")
+
+            model.setTagsRequired(1)
+            t.equal(model.tags.map(\.state), [.ready, .skipped], "the second slot says so")
+            t.equal(model.tags[0].name, "Tag 1 of 1", "and the first names the new total")
+            t.equal(model.tagSummary, "0 of 1 written and verified", "as does the summary")
+        }
+    },
+
+    test("no tag disarms the reader, which is the point of it") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.catalogueBrand = model.catalogueBrands.first ?? ""
+            t.expect(model.isArmedToWrite, "Method B arms a write by default")
+
+            model.setTagsRequired(0)
+            // The whole reason zero is a count rather than a flag: a spool being counted onto a
+            // shelf must not leave the reader armed to write at whatever tag wanders past it.
+            t.expect(!model.isArmedToWrite, "and nothing is armed with no tag to write")
+            t.equal(model.writeBlocker, nil, "nor is there a reason a write could not happen")
+        }
+    },
+
+    test("a spool counted onto the shelf lands untagged, not written") { t in
+        onMain {
+            let (model, inventory, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.name = "Unopened, still boxed"
+            model.setTagsRequired(0)
+
+            // `0 of 0` satisfies "finished", and taking that as "tagged" would put Custom in the
+            // Tag column of a spool nothing has been written to.
+            t.expect(!model.willBeTagged, "finished is not the same as tagged")
+            t.expect(model.canConfirm, "and it can still be added")
+            model.confirm()
+
+            guard let spool = t.unwrap(inventory.inventory.active.first, "the added spool") else { return }
+            t.equal(spool.tagSource, .untagged, "untagged")
+            t.expect(spool.isUntagged, "and reports itself so")
+            t.expect(spool.remainingSource.contains("shelf"), "with a source that says where it came from")
+        }
+    },
+
+    test("changing your mind does not lose a tag already handled") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4])
+            model.absorbWrite(uid: [5, 6, 7, 8])
+            t.equal(model.tagsHandled, 2, "both written")
+
+            model.setTagsRequired(1)
+            t.equal(model.tagsHandled, 1, "counted down, not read as 2 of 1")
+            model.setTagsRequired(2)
+            t.equal(model.tagsHandled, 2, "and back, re-derived from what actually happened")
+        }
+    },
+
+    test("starting over asks for both tags again") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.setTagsRequired(0)
+            model.reset()
+            t.equal(model.tagsRequired, 2, "the next spool is a normal one until told otherwise")
+        }
+    },
+])
+
+let attachTagTests = TestSuite(name: "Attaching a tag later", cases: [
+
+    test("a verified write attaches to the spool that asked for it") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = typedSpool(materialType: "PLA")
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+
+            guard let record = try? SpoolRecord(materialId: "01001",
+                                                colorRGB: "0087BE",
+                                                filamentLength: .kg1,
+                                                serialNumber: "004242") else {
+                t.expect(false, "could not build a record")
+                return
+            }
+
+            model.attachTag(to: shelf)
+            t.expect(model.attachTag(record: record, materialType: "PLA"), "attached")
+
+            t.equal(model.inventory.active.count, 1, "one spool, not a second beside it")
+            guard let after = t.unwrap(model.inventory.spool(id: shelf.id), "the spool") else { return }
+            t.equal(after.tagSource, .spoolworksWritten, "now carries a tag")
+            t.equal(after.identity?.serialNumber, "004242", "the one just written")
+            t.equal(after.colorHex, "0087BE",
+                    "and takes the tag's colour, because that is what every later read reports")
+            t.expect(after.usage.contains { $0.detail == "Tag written and verified" },
+                     "with a line in its history")
+        }
+    },
+
+    test("with no request pending it declines, so the write logs as a new spool") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "004243") else {
+                t.expect(false, "could not build a record"); return
+            }
+            t.expect(!model.attachTag(record: record, materialType: "PLA"),
+                     "nothing to attach to")
+        }
+    },
+
+    test("the request is one-shot, so a second write is not swallowed") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = typedSpool(materialType: "PLA")
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "004244") else {
+                t.expect(false, "could not build a record"); return
+            }
+            model.attachTag(to: shelf)
+            t.expect(model.attachTag(record: record, materialType: ""), "first attaches")
+            // The next tag written is a different spool's, and quietly overwriting this one's
+            // identity with it would be the worst possible outcome.
+            t.expect(!model.attachTag(record: record, materialType: ""), "second declines")
+            t.equal(model.awaitingTagFor, nil, "the request is spent")
+        }
+    },
+
+    test("cancelling the request leaves the spool alone") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = typedSpool(materialType: "PLA")
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+            model.attachTag(to: shelf)
+            model.cancelTagRequest()
+            t.equal(model.awaitingTagFor, nil, "no longer waiting")
+            t.equal(model.inventory.spool(id: shelf.id)?.tagSource, .untagged, "and still untagged")
+        }
+    },
+])
+
+// MARK: - Attaching by reading, not only by writing
+
+let attachByReadTests = TestSuite(name: "Attaching a factory tag", cases: [
+
+    test("a read factory tag attaches and is recorded as Creality, not as written here") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            // The case this exists for: a Creality spool counted onto the shelf still sealed,
+            // because the reader cannot see its tag through the mylar.
+            var sealed = typedSpool(materialType: "PLA")
+            sealed.identity = nil
+            sealed.tagSource = .untagged
+            model.add(sealed)
+
+            guard let record = try? SpoolRecord(materialId: "01001",
+                                                colorRGB: "DEE4E1",
+                                                filamentLength: .kg1,
+                                                serialNumber: "000001") else {
+                t.expect(false, "could not build a record"); return
+            }
+
+            model.attachTag(to: sealed)
+            t.expect(model.attachTag(record: record, materialType: "PLA", source: .crealityFactory),
+                     "attached")
+
+            guard let after = t.unwrap(model.inventory.spool(id: sealed.id), "spool") else { return }
+            t.equal(after.tagSource, .crealityFactory,
+                    "a factory tag is not something this app wrote")
+            t.equal(after.identity?.serialNumber, "000001", "and carries the tag's own serial")
+            t.expect(after.usage.contains { $0.detail == "Tag read and attached" },
+                     "with a line saying it was read, not written")
+            t.equal(model.inventory.active.count, 1, "still one spool")
+        }
+    },
+
+    test("a tag that already belongs to another spool is refused, not duplicated") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000777") else {
+                t.expect(false, "could not build a record"); return
+            }
+            // One spool already carries this payload.
+            var owner = typedSpool(materialType: "PLA")
+            owner.identity = SpoolIdentity(record: record)
+            owner.tagSource = .crealityFactory
+            model.add(owner)
+
+            var other = typedSpool(materialType: "PLA")
+            other.identity = nil
+            other.tagSource = .untagged
+            model.add(other)
+
+            model.attachTag(to: other)
+            // Two records with one identity is the state reconciliation cannot resolve: the CFS
+            // poll binds a slot to whichever it finds first, and their histories swap.
+            t.expect(!model.attachTag(record: record, materialType: "", source: .crealityFactory),
+                     "refused")
+            t.equal(model.inventory.spool(id: other.id)?.tagSource, .untagged, "and left untagged")
+            t.expect(model.awaitingTagFor != nil,
+                     "the request survives, so the user can present the right tag instead")
+        }
+    },
+
+    test("re-reading the tag a spool already owns is not a conflict with itself") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000778") else {
+                t.expect(false, "could not build a record"); return
+            }
+            var spool = typedSpool(materialType: "PLA")
+            spool.identity = SpoolIdentity(record: record)
+            spool.tagSource = .untagged
+            model.add(spool)
+
+            model.attachTag(to: spool)
+            t.expect(model.attachTag(record: record, materialType: "", source: .crealityFactory),
+                     "the owner check must not fire against the spool being attached to")
+        }
+    },
+])

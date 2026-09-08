@@ -63,6 +63,8 @@ final class IntakeViewModel: ObservableObject {
         case working(String)
         /// Written and read back byte for byte, or read and decoded.
         case done
+        /// Deliberately not being done. See ``IntakeViewModel/tagsRequired``.
+        case skipped
 
         var isWorking: Bool { if case .working = self { return true }; return false }
 
@@ -72,6 +74,7 @@ final class IntakeViewModel: ObservableObject {
             case .ready: return "ready"
             case let .working(what): return what
             case .done: return "verified"
+            case .skipped: return "skipped"
             }
         }
     }
@@ -80,8 +83,10 @@ final class IntakeViewModel: ObservableObject {
     struct TagSlot: Identifiable, Equatable {
         let index: Int
         var state: SlotState
+        /// How many tags this intake wants, so a row can name itself honestly.
         var id: Int { index }
-        var name: String { "Tag \(index + 1) of 2" }
+        let total: Int
+        var name: String { "Tag \(index + 1) of \(total)" }
         var isDone: Bool { state == .done }
     }
 
@@ -90,6 +95,24 @@ final class IntakeViewModel: ObservableObject {
     @Published var method: Method = .scan { didSet { reset(keepingMethod: true) } }
     /// How many of the two tags have been read (method A) or written (method B).
     @Published private(set) var tagsHandled = 0
+
+    /// How many of the spool's two tags this intake needs: two, one, or none.
+    ///
+    /// A Creality spool carries a tag on each side of the hub so the printer can read one whichever
+    /// way round it is loaded, and that is why everything here counted to two. Two other cases are
+    /// just as real:
+    ///
+    /// * **One.** A spool that will only ever sit on the external holder is read from the same side
+    ///   every time, and the user may be moving a single reusable tag between such spools rather
+    ///   than committing one to each.
+    /// * **None.** Unopened stock on a shelf. It is inventory before it is ever tagged, and making
+    ///   someone write a tag to admit they own a spool is the wrong shape entirely.
+    ///
+    /// Deliberately a count and not two flags. "How many tags is this waiting for" is one question,
+    /// and as a number every "have we finished" test stays a comparison against one value — as
+    /// zero, it also makes ``isArmedToWrite`` false for free, so the no-tag case cannot leave the
+    /// reader armed to write at a tag that wanders past.
+    @Published private(set) var tagsRequired = 2
     /// The record decoded from the tag, in method A.
     @Published private(set) var decoded: SpoolRecord?
     /// The tag UID, for the "decoded from tag" panel.
@@ -186,12 +209,15 @@ final class IntakeViewModel: ObservableObject {
 
     var tags: [TagSlot] {
         (0..<2).map { index in
-            if tagsHandled > index { return TagSlot(index: index, state: .done) }
+            // Shown, not hidden. A row that vanishes leaves nothing to say the second tag was a
+            // deliberate choice, and nothing to press to change your mind.
+            if index >= tagsRequired { return TagSlot(index: index, state: .skipped, total: tagsRequired) }
+            if tagsHandled > index { return TagSlot(index: index, state: .done, total: tagsRequired) }
             // Only the next undone slot can be in flight — the reader does one tag at a time.
             if index == tagsHandled, let activityLabel {
-                return TagSlot(index: index, state: .working(activityLabel))
+                return TagSlot(index: index, state: .working(activityLabel), total: tagsRequired)
             }
-            return TagSlot(index: index, state: index == tagsHandled ? .ready : .waiting)
+            return TagSlot(index: index, state: index == tagsHandled ? .ready : .waiting, total: tagsRequired)
         }
     }
 
@@ -199,17 +225,29 @@ final class IntakeViewModel: ObservableObject {
     /// claim — a write is only believed here once it has been read back.
     var tagSummary: String {
         let verb = isScan ? "read" : "written and verified"
-        return "\(tagsHandled) of 2 \(verb)"
+        return "\(tagsHandled) of \(tagsRequired) \(verb)"
     }
 
     /// Whether a tag presented now would be written without further asking.
-    var isArmedToWrite: Bool { !isScan && canWriteTags && tagsHandled < 2 }
+    var isArmedToWrite: Bool { !isScan && canWriteTags && tagsHandled < tagsRequired }
+
+    /// Whether this spool ends up with a tag on it at all.
+    ///
+    /// Not the same as "finished". A no-tag intake is finished the moment it starts — `0 of 0` —
+    /// and marking it `spoolworksWritten` on that basis would put "Custom" in the Tag column of a
+    /// spool nobody has written anything to.
+    var willBeTagged: Bool { tagsRequired > 0 && tagsHandled >= tagsRequired }
 
     var isScan: Bool { method == .scan }
 
     /// `"Step 2 · Read either tag"` / `"Step 3 · Write both tags"`.
     var tagPanelLabel: String {
-        isScan ? "Step 2 · Read either tag" : "Step 3 · Write both tags"
+        if isScan { return "Step 2 · Read either tag" }
+        switch tagsRequired {
+        case 0:  return "Step 3 · No tag"
+        case 1:  return "Step 3 · Write one tag"
+        default: return "Step 3 · Write both tags"
+        }
     }
 
     var formLabel: String {
@@ -221,7 +259,11 @@ final class IntakeViewModel: ObservableObject {
     var tagNote: String {
         isScan
             ? "Just present the tags — each is read as it lands and fills the next slot. A Creality spool carries two factory tags with the same payload, so reading either is enough; the second only confirms the pair."
-            : "A spool carries two tags. Both get the same payload, each verified by read-back — either one identifies the spool later. A spool tagged on one side only will fail to read half the time it is loaded."
+            : tagsRequired == 0
+              ? "Nothing is read or written and the reader stays idle. The spool goes into stock untagged; Inventory can write a tag for it whenever you get to it."
+              : tagsRequired == 1
+              ? "One tag only. That is right for a spool that will live on the external holder, where the same side is always presented — and for a reusable tag you move between spools. Loaded into a CFS, a spool tagged on one side reads only half the time."
+              : "A spool carries two tags. Both get the same payload, each verified by read-back — either one identifies the spool later. A spool tagged on one side only will fail to read half the time it is loaded."
     }
 
     var stateLabel: String {
@@ -246,7 +288,7 @@ final class IntakeViewModel: ObservableObject {
 
     var confirmTitle: String {
         if isScan { return "Confirm and add to stock" }
-        return tagsHandled >= 2 ? "Add to stock" : "Add to stock (tags pending)"
+        return tagsHandled >= tagsRequired ? "Add to stock" : "Add to stock (tags pending)"
     }
 
     var hint: String {
@@ -258,7 +300,15 @@ final class IntakeViewModel: ObservableObject {
                 ? "Place a spool tag on the reader."
                 : "Reader stays hot — the next spool starts a new record."
         }
-        return tagsHandled >= 2 ? "Both tags verified." : "Write both tags first, or add now and tag later."
+        if tagsRequired == 0 {
+            return "No tag. Add it to stock now and write one later from Inventory."
+        }
+        if tagsHandled >= tagsRequired {
+            return tagsRequired == 1 ? "Tag verified." : "Both tags verified."
+        }
+        return tagsRequired == 1
+            ? "Write the tag first, or add now and tag later."
+            : "Write both tags first, or add now and tag later."
     }
 
     /// The 40-character payload, for the "decoded from tag" panel.
@@ -357,8 +407,8 @@ final class IntakeViewModel: ObservableObject {
         failure = nil
         uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
         adopt(record)
-        tagsHandled = min(2, absorbedUIDs.count)
-        toasts.success(tagsHandled >= 2
+        tagsHandled = min(tagsRequired, absorbedUIDs.count)
+        toasts.success(tagsHandled >= tagsRequired
                        ? "Both tags read — \(record.filamentId) · \(record.rgbHex)"
                        : "Tag read — \(record.filamentId) · \(record.rgbHex)")
     }
@@ -411,6 +461,8 @@ final class IntakeViewModel: ObservableObject {
     /// Why the tags cannot be written yet, in the user's terms. `nil` when they can.
     var writeBlocker: String? {
         guard !isScan else { return nil }
+        // Nothing is going to be written, so a reason it could not be is not a reason for anything.
+        guard tagsRequired > 0 else { return nil }
         if catalogueIsEmpty {
             return "The material catalogue is empty, so there is no filament ID to write. "
                 + "Load it in Manage ▸ Materials (⇧⌘1)."
@@ -439,10 +491,24 @@ final class IntakeViewModel: ObservableObject {
         guard !isScan else { return }
         guard !writtenUIDs.contains(uid) else { return }
         writtenUIDs.insert(uid)
-        tagsHandled = min(2, writtenUIDs.count)
-        toasts.success(tagsHandled >= 2
-                       ? "Both tags written and verified"
-                       : "Tag \(tagsHandled) of 2 written and verified")
+        tagsHandled = min(tagsRequired, writtenUIDs.count)
+        toasts.success(tagsHandled >= tagsRequired
+                       ? (tagsRequired == 1 ? "Tag written and verified"
+                                            : "Both tags written and verified")
+                       : "Tag \(tagsHandled) of \(tagsRequired) written and verified")
+    }
+
+    /// How many tags this spool needs: two, one, or none.
+    ///
+    /// Reversible in both directions, and it never destroys work: a tag already read or written
+    /// stays that way, and going back up re-derives the count from the UID sets rather than from a
+    /// remembered number that could disagree with them. Going down simply stops counting the
+    /// surplus, which is what keeps "1 of 1" from reading as "2 of 1".
+    func setTagsRequired(_ count: Int) {
+        let wanted = min(2, max(0, count))
+        guard wanted != tagsRequired else { return }
+        tagsRequired = wanted
+        tagsHandled = min(wanted, isScan ? absorbedUIDs.count : writtenUIDs.count)
     }
 
     func markTagWritten(_ slot: TagSlot) {
@@ -475,12 +541,17 @@ final class IntakeViewModel: ObservableObject {
                              netWeightGrams: netWeightGrams,
                              remainingPercent: 100,
                              location: .shelf("Shelf"),
-                             remainingSource: tagsHandled >= 2
+                             remainingSource: willBeTagged
                                  ? "Intake · tagged, assumed full"
-                                 : "Manual record · tag pending",
-                             tagSource: tagsHandled >= 2 ? .spoolworksWritten : .untagged)
+                                 : tagsRequired == 0 ? "Counted onto the shelf, assumed full"
+                                                     : "Manual record · tag pending",
+                             tagSource: willBeTagged ? .spoolworksWritten : .untagged)
             made.note(kind: .intake,
-                      detail: tagsHandled >= 2 ? "Intake · both tags written" : "Intake · manual entry")
+                      detail: willBeTagged
+                          ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
+                                               : "Intake · both tags written")
+                          : tagsRequired == 0 ? "Intake · counted onto the shelf, no tag"
+                                              : "Intake · manual entry")
             spool = made
         }
 
@@ -522,6 +593,7 @@ final class IntakeViewModel: ObservableObject {
     /// scanning spool after spool without touching anything between them.
     func reset(keepingMethod: Bool = true) {
         tagsHandled = 0
+        tagsRequired = 2
         decoded = nil
         duplicate = nil
         failure = nil

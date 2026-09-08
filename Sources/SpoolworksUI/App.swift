@@ -101,11 +101,39 @@ final class AppEnvironment: ObservableObject {
             // it does not know genuinely has no type to report.
             let materialType = materials?.rows.first { $0.id == summary.record.materialId }?
                 .materialType ?? ""
+            // A write the user asked for *on behalf of* an existing untagged spool attaches to it.
+            // Only if that fails — no request, or the spool has gone — is it a new record.
+            if inventoryModel.attachTag(record: summary.record,
+                                        materialType: materialType,
+                                        source: .spoolworksWritten) { return }
             inventoryModel.logWrittenSpool(record: summary.record,
                                            materialLabel: summary.materialLabel,
                                            materialType: materialType,
                                            enabled: settings.addWrittenSpoolsToInventory)
         }
+    }
+
+    /// Fills the Write screen from an untagged spool that is about to be given a tag.
+    ///
+    /// Everything the tag stores comes from the spool: the filament id, the colour and the weight.
+    /// The **serial is allocated fresh** rather than reused — an untagged spool has none, and the
+    /// one it will carry has to be unique to it, because serial plus filament plus colour is how a
+    /// tag is matched back to a record (see `SpoolIdentity`). Copying a serial from anywhere would
+    /// be the one way to make two spools indistinguishable.
+    ///
+    /// The binding to the spool itself lives in `InventoryViewModel.awaitingTagFor`; this only
+    /// composes the draft.
+    @MainActor
+    func loadForTagging(_ spool: Spool) {
+        let id = spool.identity?.filamentId ?? ""
+        // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
+        tagModel.draft.materialID = id.count == 6 ? String(id.dropFirst()) : id
+        tagModel.draft.materialLabel = [spool.brand, spool.name]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+        tagModel.draft.serialNumber = SpoolRecord.randomSerialNumber()
+        tagModel.draft.weight = FilamentLength.forGrams(spool.netWeightGrams) ?? .kg1
+        if let colour = Color(tagHex: spool.colorHex) { tagModel.draft.color = colour }
     }
 
     static let tagMemoryWindowID = "tag-memory"

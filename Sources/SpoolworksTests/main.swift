@@ -106,6 +106,9 @@ let exitCode = TestDriver.run([
     weightLadderTests,
     remainingOptionTests,
     intakeNetWeightTests,
+    tagCountTests,
+    attachTagTests,
+    attachByReadTests,
     inventoryLayoutTests,
 ])
 exit(exitCode)

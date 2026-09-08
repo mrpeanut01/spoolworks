@@ -20,6 +20,13 @@ struct WriteTagView: View {
     @ObservedObject var monitor: ReaderMonitor
     @ObservedObject var model: TagViewModel
     @ObservedObject var settings: AppSettings
+    @ObservedObject var env: AppEnvironment
+
+    /// The untagged spool this write is for, if the user asked for one from Inventory.
+    private var taggingTarget: Spool? {
+        guard let id = env.inventoryModel.awaitingTagFor else { return nil }
+        return env.inventoryModel.inventory.spool(id: id)
+    }
 
     var body: some View {
         ScrollView {
@@ -33,6 +40,14 @@ struct WriteTagView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         if let notice = HardwareNotice(monitor: monitor) {
                             HardwareNoticeBanner(notice: notice, monitor: monitor)
+                        }
+                        // Which spool this write belongs to, when it belongs to one. Without it the
+                        // screen looks identical whether the next verified write attaches to a
+                        // spool in stock or creates a new record, and those are very different.
+                        if let target = taggingTarget {
+                            AttachBanner(spool: target, what: "written") {
+                                env.inventoryModel.cancelTagRequest()
+                            }
                         }
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)

@@ -126,7 +126,7 @@ struct RootView: View {
         case .identify:
             IdentifyView(env: env)
         case .write:
-            WriteTagView(monitor: env.monitor, model: env.tagModel, settings: env.settings)
+            WriteTagView(monitor: env.monitor, model: env.tagModel, settings: env.settings, env: env)
         }
     }
 }

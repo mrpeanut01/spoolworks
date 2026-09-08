@@ -378,8 +378,33 @@ private struct InventoryDetailRail: View {
         // No "Read tag to verify" here. It only switched screens, which the sidebar already does,
         // and it read as though it would verify *this* spool when Read / identify simply reads
         // whatever tag is presented.
-        Button("Retire spool") { model.retireTarget = spool }
-            .buttonStyle(.sw(.ghost, block: true))
+        VStack(spacing: Theme.Spacing.s) {
+            // Only for a spool that has no tag. For one that already carries a payload the Write
+            // screen's own flow applies, and offering this would invite writing a second identity
+            // onto a spool that already has one.
+            if spool.isUntagged {
+                // Two directions, because the spool got here untagged for two different reasons.
+                // A Creality spool arrives already tagged and sealed in mylar the reader cannot
+                // see through, so it is counted onto the shelf and its factory tag is *read* when
+                // the bag is opened. A third-party spool has no tag at all and needs one written.
+                Button("Read its tag") {
+                    model.attachTag(to: spool)
+                    env.sidebarSelection = .identify
+                }
+                .buttonStyle(.sw(.secondary, block: true))
+                .help("Reads the tag already on this spool and attaches it to this record.")
+
+                Button("Write a tag for it") {
+                    model.attachTag(to: spool)
+                    env.loadForTagging(spool)
+                    env.sidebarSelection = .write
+                }
+                .buttonStyle(.sw(.ghost, block: true))
+                .help("Fills the Write screen from this spool and attaches the tag once verified.")
+            }
+            Button("Retire spool") { model.retireTarget = spool }
+                .buttonStyle(.sw(.ghost, block: true))
+        }
     }
 }
 

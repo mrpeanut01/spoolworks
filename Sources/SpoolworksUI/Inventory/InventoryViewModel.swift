@@ -114,6 +114,73 @@ final class InventoryViewModel: ObservableObject {
     /// second source of truth with no way to keep the two honest.
     @Published private(set) var places: SpoolPlaces
 
+    /// The untagged spool a tag is being written *for*, if any.
+    ///
+    /// Without this, a write has no way to say which spool it belongs to. `logWrittenSpool` matches
+    /// a finished write against the inventory by the record's own identity, which works for a spool
+    /// that already carries that payload and cannot work for one that carries nothing — an untagged
+    /// spool has no identity to match on, so the write would create a *second* record beside the
+    /// one the user was trying to tag.
+    ///
+    /// Set when the user asks to tag a specific spool, cleared when the write lands or the request
+    /// is abandoned. Deliberately an id rather than a `Spool`: the record can change underneath
+    /// this — a CFS poll can move it — and a stale copy written back would undo that.
+    @Published private(set) var awaitingTagFor: Spool.ID?
+
+    /// Asks for the next tag — read *or* written — to be attached to `spool` rather than logged as
+    /// a new record.
+    ///
+    /// Both directions are real, and reading is the commoner one. A Creality spool arrives already
+    /// tagged and sealed in mylar the reader cannot see through, so it goes onto the shelf untagged
+    /// and its factory tag is read whenever the bag is opened. Writing is for a spool that genuinely
+    /// has no tag yet.
+    func attachTag(to spool: Spool) {
+        awaitingTagFor = spool.id
+    }
+
+    func cancelTagRequest() {
+        awaitingTagFor = nil
+    }
+
+    /// Attaches a tag's record to the spool that was waiting for one.
+    ///
+    /// Returns false when there was no request, when the spool has since gone, or when the tag
+    /// already belongs to a *different* spool — so a caller can fall back to its own handling.
+    @discardableResult
+    func attachTag(record: SpoolRecord,
+                   materialType: String,
+                   source: TagSource = .spoolworksWritten) -> Bool {
+        guard let id = awaitingTagFor, var spool = inventory.spool(id: id) else { return false }
+
+        // A tag that already identifies another spool must not be made to identify this one too.
+        // Two records with one identity is the state reconciliation cannot resolve — the CFS poll
+        // would bind slots to whichever it found first and their histories would swap. Refused
+        // loudly rather than quietly, because the user has a real spool in their hand and needs to
+        // know why nothing happened.
+        if let owner = inventory.spool(matching: record), owner.id != spool.id {
+            toasts.error("That tag already belongs to \(owner.label). Nothing was changed.")
+            return false
+        }
+
+        awaitingTagFor = nil
+        spool.identity = SpoolIdentity(record: record)
+        spool.tagSource = source
+        if !materialType.isEmpty { spool.materialType = materialType }
+        // The colour comes from the tag now, because the tag is what the printer and every later
+        // read will report. Leaving the two to disagree would make the spool fail to match itself.
+        spool.colorHex = record.rgbHex
+        spool.colorName = colorName(forHex: record.rgbHex)
+        spool.note(kind: .movement,
+                   detail: source == .crealityFactory ? "Tag read and attached"
+                                                      : "Tag written and verified")
+        inventory.update(spool)
+        persist()
+        toasts.success(source == .crealityFactory
+                       ? "Tag attached to \(spool.label)"
+                       : "Tag written for \(spool.label)")
+        return true
+    }
+
     private let store: InventoryStore
     private let toasts: ToastCenter
     private let defaults: UserDefaults

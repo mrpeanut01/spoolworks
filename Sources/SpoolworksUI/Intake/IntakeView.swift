@@ -196,6 +196,8 @@ struct IntakeView: View {
             }
             .padding(.bottom, 12)
 
+            TagCountControl(model: model).padding(.bottom, 12)
+
             if model.isArmedToWrite {
                 HStack(spacing: 7) {
                     StatusDot(level: .ready, size: 8)
@@ -206,17 +208,20 @@ struct IntakeView: View {
                 .padding(.bottom, 10)
             }
 
-            ForEach(model.tags) { slot in
+            if model.tagsRequired > 0 {
+                ForEach(model.tags) { slot in
                 TagRow(slot: slot,
                        isScan: model.isScan,
-                       busy: tagModel.activity.isRunning) {
-                    if model.isScan {
-                        // The one shared reader path. `onChange(of: lastRead.uid)` files the
-                        // result in the next slot, exactly as an untouched tag would be.
-                        Task { await tagModel.read() }
-                    } else {
-                        beginWrite(slot)
-                    }
+                       busy: tagModel.activity.isRunning,
+                       action: {
+                           if model.isScan {
+                               // The one shared reader path. `onChange(of: lastRead.uid)` files
+                               // the result in the next slot, exactly as an untouched tag would.
+                               Task { await tagModel.read() }
+                           } else {
+                               beginWrite(slot)
+                           }
+                       })
                 }
             }
 
@@ -459,6 +464,55 @@ private struct MethodButton: View {
     }
 }
 
+/// How many tags this spool takes: both sides, one, or none at all.
+///
+/// Above the rows rather than on them, because it is one decision about the spool and not a
+/// property of a slot — and because "none" is not a thing you can express by skipping rows one at
+/// a time. Each option is a real case: both sides is a spool going into a CFS, one is a spool that
+/// will only ever sit on the external holder (read from the same side every time, often with a
+/// reusable tag), and none is unopened stock you are counting onto a shelf.
+private struct TagCountControl: View {
+    @ObservedObject var model: IntakeViewModel
+
+    private struct Option: Hashable, Identifiable {
+        let count: Int
+        let title: String
+        var id: Int { count }
+    }
+
+    private var options: [Option] {
+        var offered = [Option(count: 2, title: model.isScan ? "Read both" : "Write both"),
+                       Option(count: 1, title: model.isScan ? "Read one" : "Write one")]
+        // Method A cannot finish without a decoded tag, so "no tag" there would be a button that
+        // makes the screen impossible to complete.
+        if !model.isScan { offered.append(Option(count: 0, title: "No tag")) }
+        return offered
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.m) {
+            SegmentedFilter(options: options,
+                            title: \.title,
+                            selection: Binding(get: { options.first { $0.count == model.tagsRequired }
+                                                        ?? options[0] },
+                                               set: { model.setTagsRequired($0.count) }))
+            Text(note)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.secondaryLabel)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var note: String {
+        switch model.tagsRequired {
+        case 0: return "Counted onto the shelf. Nothing is read or written, and the reader stays idle."
+        case 1: return "For a spool that lives on the external holder, or a tag you reuse."
+        default: return "Both sides of the hub, so it reads whichever way it is loaded."
+        }
+    }
+}
+
 private struct TagRow: View {
     let slot: IntakeViewModel.TagSlot
     let isScan: Bool
@@ -496,10 +550,14 @@ private struct TagRow: View {
                 .foregroundStyle(captionColour)
                 .frame(minWidth: 62, alignment: .trailing)
 
-            Button(cta, action: action)
-                .buttonStyle(.sw(.primary, size: 11.5, h: 16, v: 8))
-                .disabled(busy || slot.state == .waiting)
-                .opacity(slot.state == .done ? 0.6 : 1)
+            // A skipped row keeps its shape but has nothing to press: how many tags this spool
+            // takes is decided once, above the rows, not per row.
+            if slot.state != .skipped {
+                Button(cta, action: action)
+                    .buttonStyle(.sw(.primary, size: 11.5, h: 16, v: 8))
+                    .disabled(busy || slot.state == .waiting)
+                    .opacity(slot.state == .done ? 0.6 : 1)
+            }
         }
         .padding(.vertical, 11)
         .overlay(alignment: .bottom) { Hairline() }
@@ -513,6 +571,7 @@ private struct TagRow: View {
         case .working: return Theme.busy
         case .ready: return Theme.accent
         case .waiting: return Theme.kickerLabel
+        case .skipped: return Theme.kickerLabel
         }
     }
 
@@ -528,6 +587,9 @@ private struct TagRow: View {
                           : "present a blank MIFARE Classic 1K tag"
         case .waiting:
             return isScan ? "waiting for the first tag" : "waiting for tag 1"
+        case .skipped:
+            return isScan ? "not needed — one tag is enough for this spool"
+                          : "not needed — this spool gets one tag"
         }
     }
 
