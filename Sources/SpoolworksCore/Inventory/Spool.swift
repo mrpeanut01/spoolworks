@@ -106,10 +106,12 @@ public enum TagSource: String, Codable, Sendable, CaseIterable, CustomStringConv
     /// Typed in. There may be no tag at all, or one that was never read.
     case untagged
 
+    /// Only the *labels* change here, never the cases or their raw values — those are the encoded
+    /// form in `inventory.json`, so renaming one would orphan every spool already recorded under it.
     public var description: String {
         switch self {
-        case .crealityFactory: return "Creality factory"
-        case .spoolworksWritten: return "Spoolworks-written"
+        case .crealityFactory: return "Creality"
+        case .spoolworksWritten: return "Custom"
         case .untagged: return "Untagged · manual"
         }
     }

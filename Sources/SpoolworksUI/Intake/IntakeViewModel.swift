@@ -231,7 +231,7 @@ final class IntakeViewModel: ObservableObject {
 
     private var sourceLabel: String {
         guard let decoded else { return "" }
-        return decoded.vendorId == "0276" ? "Creality factory" : "vendor \(decoded.vendorId)"
+        return decoded.vendorId == "0276" ? "Creality" : "vendor \(decoded.vendorId)"
     }
 
     /// Method A cannot add a spool it has not read. Method B can add before tagging — the design

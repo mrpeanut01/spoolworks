@@ -82,13 +82,21 @@ final class AppEnvironment: ObservableObject {
                                           materials: self.materialsModel,
                                           toasts: toasts)
         self.intakeModel = intakeModel
-        self.tagModel.onWriteSucceeded = { [weak inventoryModel, weak settings, weak intakeModel] summary in
+        self.tagModel.onWriteSucceeded = {
+            [weak inventoryModel, weak settings, weak intakeModel,
+             weak materials = self.materialsModel] summary in
             guard let inventoryModel, let settings else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
             // verified before committing, so a write made there logs nothing on its own.
             guard intakeModel?.isActive != true else { return }
+            // Resolved here rather than inside the inventory, which holds no catalogue. The tag
+            // stores a filament *id*; the type is whatever the catalogue calls that id, and an id
+            // it does not know genuinely has no type to report.
+            let materialType = materials?.rows.first { $0.id == summary.record.materialId }?
+                .materialType ?? ""
             inventoryModel.logWrittenSpool(record: summary.record,
                                            materialLabel: summary.materialLabel,
+                                           materialType: materialType,
                                            enabled: settings.addWrittenSpoolsToInventory)
         }
     }
@@ -96,6 +104,7 @@ final class AppEnvironment: ObservableObject {
     static let tagMemoryWindowID = "tag-memory"
     static let materialsWindowID = "materials"
     static let printersWindowID = "printers"
+    static let locationsWindowID = "locations"
 }
 
 // MARK: - App
@@ -143,6 +152,14 @@ public struct SpoolworksApp: App {
         }
         .defaultSize(width: 820, height: 600)
 
+        // Locations is a window for the same reason as the two above: it is a list you sit down and
+        // edit, not a switch. It began as a panel inside the Inventory detail rail, which put
+        // renaming a shelf behind first selecting a spool you did not care about.
+        Window("Locations", id: AppEnvironment.locationsWindowID) {
+            LocationsView(model: env.inventoryModel).nonRestorableWindow()
+        }
+        .defaultSize(width: 540, height: 640)
+
         // Tag Memory is a reference view you keep open next to the main window, not a sheet.
         // The Windows author gave `TagMemoryForm` its own taskbar entry — the same instinct.
         Window("Tag Memory", id: AppEnvironment.tagMemoryWindowID) {
@@ -181,6 +198,8 @@ struct SpoolworksCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .shift])
             Button("Printers…") { openWindow(id: AppEnvironment.printersWindowID) }
                 .keyboardShortcut("2", modifiers: [.command, .shift])
+            Button("Locations…") { openWindow(id: AppEnvironment.locationsWindowID) }
+                .keyboardShortcut("3", modifiers: [.command, .shift])
         }
 
         CommandMenu("Tag") {

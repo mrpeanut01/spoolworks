@@ -251,6 +251,7 @@ private struct InventoryDetailRail: View {
         LocationControl(spool: spool, model: model).padding(.bottom, 14)
 
         VStack(spacing: 0) {
+            TypeRow(spool: spool, model: model, materials: env.materialsModel)
             DataRow("Serial", spool.serialLabel, mono: true)
             DataRow("Filament ID", spool.filamentIdLabel, mono: true)
             DataRow("Vendor ID", spool.vendorIdLabel, mono: true)
@@ -517,6 +518,76 @@ private struct RemainingControl: View {
     }
 }
 
+// MARK: - Type
+
+/// The spool's material type, chosen from what the catalogue actually knows.
+///
+/// It has to be editable because it is the one descriptive field with no authority behind it. The
+/// tag stores a filament *id*, not a type; the type is whatever the catalogue calls that id, so a
+/// tag written for an id the catalogue does not know arrives with the field blank. Before this it
+/// was written once at intake and never again, so a spool that landed as `—` stayed `—` for ever —
+/// which is how one got into this repository's own inventory.
+///
+/// **A picker, not a text field.** The first version was a field, and it was wrong twice over. The
+/// options are a closed set in practice — the catalogue is the vocabulary, and typing `PETG ` or
+/// `petg` by hand makes a type that sorts and filters as its own thing. And a free field had to
+/// commit on losing focus, which meant deciding what happens when the rail switches spools
+/// mid-edit; a picker commits on the choice and the question does not arise.
+///
+/// The `—` row exists only while the type is unset. Once a real type is chosen the row disappears,
+/// so the field is *effectively* mandatory from the first edit onward without ever refusing to
+/// represent a state a spool is genuinely in. A type the catalogue does not list — an older spool,
+/// or a database since unloaded — is offered too, so opening the picker can never silently rewrite
+/// a value just by being opened.
+private struct TypeRow: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+    @ObservedObject var materials: MaterialsViewModel
+
+    /// Sentinel for "no type recorded". Empty string is the stored form; a `Picker` tag has to be
+    /// something the row can display, and `—` is what every other unset value in this app shows.
+    private static let unset = ""
+
+    var body: some View {
+        // Not `DataRow`, which collapses its contents with `.accessibilityElement(children:
+        // .combine)`. That is right for a key and a static value and wrong for a control: it makes
+        // the picker unreachable — an accessibility probe of this rail found no focusable element
+        // here at all while the row was built that way.
+        HStack(alignment: .firstTextBaseline) {
+            Text("Type")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryLabel)
+            Spacer(minLength: Theme.Spacing.s)
+            Picker("", selection: selection) {
+                if spool.materialType.isEmpty {
+                    Text("—").tag(Self.unset)
+                }
+                ForEach(options, id: \.self) { type in
+                    Text(type).tag(type)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 150)
+            .accessibilityLabel("Material type of \(spool.label)")
+        }
+        .padding(.vertical, Theme.Spacing.s)
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var selection: Binding<String> {
+        Binding(get: { spool.materialType },
+                set: { model.setMaterialType($0, for: spool) })
+    }
+
+    /// Every type the catalogue knows, plus this spool's own if the catalogue has never heard of it.
+    private var options: [String] {
+        var found = Set(materials.rows.map(\.materialType).filter { !$0.isEmpty })
+        if !spool.materialType.isEmpty { found.insert(spool.materialType) }
+        return found.sorted()
+    }
+}
+
 // MARK: - Location
 
 /// Where the spool is: a picker over the user's own places, plus the list editor.
@@ -527,15 +598,16 @@ private struct RemainingControl: View {
 /// the printer is currently holding the spool its position is shown as the selected row, labelled
 /// with where it came from, and the note underneath says plainly that the poll will take it back.
 ///
-/// The list editor lives here, under the control it configures, rather than in a preferences
-/// window — the app has none, on purpose, and ``AppSettings`` gives the reasoning: a switch is
-/// rendered next to what it affects. Places are only ever wanted while looking at a spool's
-/// location, which is exactly here.
+/// The list of locations is edited in its own window (``LocationsView``), not here. It began inline
+/// under this control, on the reasoning that a setting belongs next to what it affects; that holds
+/// for a switch and not for a list, and the window's own comment carries the argument. What matters
+/// here is that there is exactly **one** editor — an inline copy left alongside it would be two
+/// places to do one thing, with two chances to disagree.
 private struct LocationControl: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
-    @State private var managing = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
@@ -553,13 +625,14 @@ private struct LocationControl: View {
             }
 
             HStack(spacing: Theme.Spacing.s) {
-                Button(managing ? "Done" : "Manage places") { managing.toggle() }
-                    .buttonStyle(.sw(.ghost, size: 11, h: 0, v: 2))
-                    .accessibilityLabel(managing ? "Finish editing places" : "Manage the list of places")
+                Button("Manage locations…") {
+                    openWindow(id: AppEnvironment.locationsWindowID)
+                }
+                .buttonStyle(.sw(.ghost, size: 11, h: 0, v: 2))
+                .accessibilityLabel("Manage the list of locations")
+                .accessibilityHint("Opens the Locations window.")
                 Spacer(minLength: 0)
             }
-
-            if managing { PlaceEditor(model: model) }
         }
     }
 
@@ -575,113 +648,3 @@ private struct LocationControl: View {
     }
 }
 
-/// Add, rename and remove the places the picker offers.
-///
-/// Renaming is a plain text field committed with Return rather than a Rename button that swaps the
-/// row into an edit state: the row is already a field, the commit is already a keystroke, and the
-/// swap only added a mode the user has to notice they are in. The count beside each place is there
-/// so removing one is never a surprise — the spools move to `Unplaced` and each gets a line in its
-/// own history saying why, but a removal that quietly shuffles eleven spools should say eleven
-/// before it happens, not after.
-private struct PlaceEditor: View {
-    @ObservedObject var model: InventoryViewModel
-
-    @State private var newName = ""
-    @State private var problem: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            Text("Places").kicker()
-
-            ForEach(model.places.names, id: \.self) { name in
-                PlaceRow(name: name,
-                         count: model.spoolCount(atPlace: name),
-                         rename: { rename(name, to: $0) },
-                         remove: { report(model.removePlace(name)) })
-                    // Keyed by the name so a rename rebuilds the row from the new value rather
-                    // than leaving the field showing the old draft.
-                    .id(name)
-            }
-
-            Hairline()
-
-            HStack(spacing: Theme.Spacing.s) {
-                TextField("New place", text: $newName)
-                    .textFieldStyle(.plain)
-                    .swInput()
-                    .onSubmit(add)
-                    .accessibilityLabel("Name of a new place")
-                Button("Add", action: add)
-                    .buttonStyle(.sw(.secondary, size: 11, h: 10, v: 5))
-                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .accessibilityLabel("Add this place to the list")
-            }
-
-            if let problem {
-                Text(problem)
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.danger)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Not applied. \(problem)")
-            }
-        }
-        .padding(Theme.Spacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.surface)
-        .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
-    }
-
-    private func add() {
-        report(model.addPlace(newName))
-        if problem == nil { newName = "" }
-    }
-
-    private func rename(_ old: String, to new: String) {
-        guard new.trimmingCharacters(in: .whitespaces) != old else { return }
-        report(model.renamePlace(old, to: new))
-    }
-
-    /// Rejections are shown, not swallowed — the list refuses an edit for four different reasons
-    /// and a button that silently does nothing is the worst of them.
-    private func report(_ result: PlaceEditResult) {
-        problem = result.problem
-    }
-}
-
-private struct PlaceRow: View {
-    let name: String
-    let count: Int
-    let rename: (String) -> Void
-    let remove: () -> Void
-
-    @State private var draft = ""
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.s) {
-            if SpoolPlaces.isUnplaced(name) {
-                // Reserved: it is where `reconcile` puts a spool the printer has stopped
-                // reporting, so the list cannot be allowed to lose it.
-                ReadOnlyValue(name)
-                SWTag(text: "always", style: .neutral)
-            } else {
-                TextField("", text: $draft)
-                    .textFieldStyle(.plain)
-                    .swInput()
-                    .onSubmit { rename(draft) }
-                    .accessibilityLabel("Name of the place \(name)")
-                    .accessibilityHint("Press Return to rename it.")
-                if count > 0 {
-                    SWTag(text: "\(count)", style: .neutral)
-                        .accessibilityLabel("\(count) spool\(count == 1 ? "" : "s") here")
-                }
-                Button("Remove", action: remove)
-                    .buttonStyle(.sw(.ghost, size: 11, h: 8, v: 4))
-                    .accessibilityLabel("Remove the place \(name)")
-                    .accessibilityHint(count == 0
-                        ? "Nothing is kept here."
-                        : "\(count) spool\(count == 1 ? "" : "s") will move to \(SpoolPlaces.unplaced).")
-            }
-        }
-        .onAppear { draft = name }
-    }
-}

@@ -276,6 +276,26 @@ final class InventoryViewModel: ObservableObject {
         persist()
     }
 
+    /// Sets a spool's material type by hand.
+    ///
+    /// The type is not on the tag — a record carries a filament *id*, and the type is whatever the
+    /// catalogue says that id is. So a spool tagged for an id the catalogue does not know arrives
+    /// with no type at all, and before this there was no way to say what it was: the field was
+    /// written once at intake and never again.
+    ///
+    /// Deliberately **not** a usage entry. The usage log exists to explain
+    /// ``Spool/remainingPercent`` and nothing else — every line in it carries a gram delta — and a
+    /// metadata correction that logged `0 g` would be noise in the one place this app promises is
+    /// never noise. Nothing is lost: the type is either right or it is not, and it is on screen.
+    func setMaterialType(_ raw: String, for spool: Spool) {
+        guard var current = inventory.spool(id: spool.id) else { return }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value != current.materialType else { return }
+        current.materialType = value
+        inventory.update(current)
+        persist()
+    }
+
     /// Applies a picker choice.
     ///
     /// **A `.printer` row is ignored, and that is the CFS conflict rule.** `.cfs(box:slot:)` and
@@ -446,9 +466,14 @@ final class InventoryViewModel: ObservableObject {
     /// rather than creating a second one — a replacement tag is not a new spool.
     ///
     /// Returns the spool it logged, or nil when the preference is off.
+    /// `materialType` is resolved by the caller, which is the only layer holding the material
+    /// catalogue. It is left empty rather than guessed when the tag's filament id is not in the
+    /// catalogue: a spool of unknown type is a fact, and writing "PLA" over it would be a
+    /// plausible-looking invention. The rail lets the user set it — see ``setMaterialType(_:for:)``.
     @discardableResult
     func logWrittenSpool(record: SpoolRecord,
                          materialLabel: String,
+                         materialType: String = "",
                          enabled: Bool) -> Spool? {
         guard enabled else { return nil }
 
@@ -469,7 +494,7 @@ final class InventoryViewModel: ObservableObject {
         var spool = spool(from: record,
                           brand: brand,
                           name: name,
-                          materialType: "",
+                          materialType: materialType,
                           location: .unknown,
                           tagSource: .spoolworksWritten,
                           detail: "Intake · tag written by Spoolworks")
