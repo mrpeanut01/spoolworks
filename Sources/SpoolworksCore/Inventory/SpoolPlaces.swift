@@ -74,13 +74,24 @@ public struct SpoolPlaces: Hashable, Sendable {
     /// Ordered as the picker shows them, ``unplaced`` always first.
     public private(set) var names: [String]
 
+    /// Where a spool goes when the printer stops reporting it. Always one of ``names``.
+    ///
+    /// `Unplaced` unless the user says otherwise, which is the honest answer before anyone has
+    /// told the app where their spools live. Once they have, "back on the shelf" is almost always
+    /// right and saying so once beats correcting it after every print.
+    ///
+    /// Kept normalised by the same rules as the list itself: a rename carries it, and removing the
+    /// place it names puts it back to ``unplaced`` rather than leaving it pointing at nothing.
+    public private(set) var unloadDestination: String = SpoolPlaces.unplaced
+
     /// Normalises whatever it is handed: trims, drops blanks, removes case-insensitive duplicates
     /// keeping the first spelling, and puts ``unplaced`` back at the front if it is missing.
     ///
     /// Normalising in the initialiser rather than only in the mutators is what makes a corrupted
     /// or hand-edited `UserDefaults` array harmless — the app has one code path for "a list of
     /// names" and it always produces a usable one.
-    public init(names: [String] = SpoolPlaces.seeded) {
+    public init(names: [String] = SpoolPlaces.seeded,
+                unloadDestination: String = SpoolPlaces.unplaced) {
         var out: [String] = [Self.unplaced]
         var seen: Set<String> = [Self.unplaced.lowercased()]
         for raw in names {
@@ -92,6 +103,21 @@ public struct SpoolPlaces: Hashable, Sendable {
             out.append(trimmed)
         }
         self.names = out
+        // Normalised against the list that was actually kept, so a destination naming a place the
+        // list does not contain — a hand-edited plist, a name that failed validation — cannot leave
+        // spools being sent somewhere the picker has never heard of.
+        let wanted = unloadDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.unloadDestination = out.first { $0.caseInsensitiveCompare(wanted) == .orderedSame }
+            ?? Self.unplaced
+    }
+
+    /// Sets where unloaded spools go. Rejected if the place is not in the list.
+    public mutating func setUnloadDestination(_ raw: String) -> PlaceEditResult {
+        let wanted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let match = names.first(where: { $0.caseInsensitiveCompare(wanted) == .orderedSame })
+        else { return .rejected("There is no place called “\(wanted)”.") }
+        unloadDestination = match
+        return .applied(match)
     }
 
     // MARK: Mapping to and from a location
@@ -151,7 +177,13 @@ public struct SpoolPlaces: Hashable, Sendable {
         switch validate(raw, ignoring: index) {
         case let .rejected(why): return .rejected(why)
         case let .applied(name):
+            let previous = names[index]
             names[index] = name
+            // The destination is stored as a name, so a rename has to carry it — otherwise it
+            // would quietly fall back to Unplaced the next time a spool came off the printer.
+            if unloadDestination.caseInsensitiveCompare(previous) == .orderedSame {
+                unloadDestination = name
+            }
             return .applied(name)
         }
     }
@@ -166,6 +198,11 @@ public struct SpoolPlaces: Hashable, Sendable {
         guard let index = names.firstIndex(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
         else { return .rejected("There is no place called “\(name)”.") }
         let removed = names.remove(at: index)
+        // Removing the place unloaded spools were going to sends them back to Unplaced rather than
+        // to a name nothing answers to.
+        if unloadDestination.caseInsensitiveCompare(removed) == .orderedSame {
+            unloadDestination = Self.unplaced
+        }
         return .applied(removed)
     }
 

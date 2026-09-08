@@ -17,6 +17,7 @@ import SpoolworksCore
 enum SpoolPlacesStore {
 
     static let key = "SpoolworksSpoolPlaces"
+    static let unloadKey = "SpoolworksUnloadDestination"
 
     /// The stored list, or the seeded one on a first run.
     ///
@@ -26,13 +27,18 @@ enum SpoolPlacesStore {
     /// leave the list at just `Unplaced`. `object(forKey:)` is the only read that can tell them
     /// apart — the same trap ``AppSettings/addWrittenSpoolsToInventory`` documents for `Bool`.
     static func load(from defaults: UserDefaults = .standard) -> SpoolPlaces {
-        guard let stored = defaults.object(forKey: key) as? [String] else { return SpoolPlaces() }
+        let destination = defaults.string(forKey: unloadKey) ?? SpoolPlaces.unplaced
+        guard let stored = defaults.object(forKey: key) as? [String] else {
+            return SpoolPlaces(unloadDestination: destination)
+        }
         // `SpoolPlaces.init` re-normalises, so a hand-edited or truncated array cannot produce a
-        // list with duplicates, blanks, or no `Unplaced`.
-        return SpoolPlaces(names: stored)
+        // list with duplicates, blanks, no `Unplaced`, or a destination naming a place the list
+        // does not contain.
+        return SpoolPlaces(names: stored, unloadDestination: destination)
     }
 
     static func save(_ places: SpoolPlaces, to defaults: UserDefaults = .standard) {
         defaults.set(places.names, forKey: key)
+        defaults.set(places.unloadDestination, forKey: unloadKey)
     }
 }

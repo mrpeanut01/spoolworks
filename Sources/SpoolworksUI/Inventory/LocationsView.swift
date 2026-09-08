@@ -74,6 +74,8 @@ struct LocationsView: View {
                 .cardSurface(padding: 20)
                 .padding(.bottom, 18)
 
+                unloadDestination.padding(.bottom, 18)
+
                 explanation
             }
             .padding(.horizontal, 26)
@@ -81,6 +83,36 @@ struct LocationsView: View {
         }
         .background(Theme.background)
         .frame(minWidth: 460, minHeight: 380)
+    }
+
+    /// Where a spool lands when it comes off the printer.
+    ///
+    /// The poll used to send it to `Unplaced` and nothing could change that, which is right only
+    /// until the user has told the app where their spools live. After that "back on the shelf" is
+    /// almost always the truth, and saying so once beats correcting it after every print.
+    private var unloadDestination: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            Text("When a spool leaves the printer").kicker()
+            HStack(spacing: Theme.Spacing.m) {
+                Picker("", selection: Binding(get: { model.places.unloadDestination },
+                                              set: { model.setUnloadDestination($0) })) {
+                    ForEach(model.places.names, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+                .accessibilityLabel("Where a spool goes when it leaves the printer")
+                Text("Applied by the 30-second poll, the moment the printer stops reporting it. "
+                     + "Each spool gets a line in its history saying which slot it came off.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(padding: 20)
     }
 
     private var explanation: some View {

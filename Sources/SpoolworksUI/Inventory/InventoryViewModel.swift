@@ -494,6 +494,17 @@ final class InventoryViewModel: ObservableObject {
         return result
     }
 
+    /// Sets where a spool goes when the printer stops reporting it.
+    @discardableResult
+    func setUnloadDestination(_ name: String) -> PlaceEditResult {
+        var updated = places
+        let result = updated.setUnloadDestination(name)
+        guard result.isApplied else { return result }
+        places = updated
+        SpoolPlacesStore.save(places, to: defaults)
+        return result
+    }
+
     /// Removes a place, moving anything on it to `Unplaced`.
     ///
     /// Removal is allowed even when spools are on it. Refusing would be the other obvious answer
@@ -528,7 +539,10 @@ final class InventoryViewModel: ObservableObject {
     /// Folds a printer poll into the inventory and reports what moved.
     @discardableResult
     func reconcile(with info: MaterialBoxInfo) -> SpoolInventory.ReconcileReport {
-        let report = inventory.reconcile(with: info)
+        // Where a spool goes when the printer stops reporting it — the user's choice, resolved
+        // here because `SpoolInventory` deliberately knows nothing about the place list.
+        let report = inventory.reconcile(with: info,
+                                         unloadTo: places.location(for: places.unloadDestination))
         if !report.isEmpty {
             persist()
             if !report.discovered.isEmpty {

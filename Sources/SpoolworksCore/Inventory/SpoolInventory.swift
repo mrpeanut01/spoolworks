@@ -191,9 +191,19 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
     ///
     /// A slot with no identity (unoccupied, or configured by hand with no serial) is skipped.
     @discardableResult
+    /// `unloadTo` is where a spool goes when the printer stops reporting it.
+    ///
+    /// A parameter rather than the constant `.unknown` it used to be, because "off the printer" and
+    /// "nowhere in particular" are not the same claim. A spool you unload almost always goes back
+    /// to the same shelf, and defaulting it there is the difference between an inventory that stays
+    /// true on its own and one that needs correcting after every print.
+    ///
+    /// Still `.unknown` by default: that is the honest answer when nobody has said otherwise, and
+    /// it keeps every existing caller — the tests especially — meaning exactly what it did.
     public mutating func reconcile(with info: MaterialBoxInfo,
                                    at date: Date = .now,
-                                   addingUnknown: Bool = true) -> ReconcileReport {
+                                   addingUnknown: Bool = true,
+                                   unloadTo: SpoolLocation = .unknown) -> ReconcileReport {
         var report = ReconcileReport()
         var seen = Set<UUID>()
 
@@ -311,7 +321,7 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         where spools[index].location.isOnPrinter && !seen.contains(spools[index].id)
                 && !spools[index].isRetired {
             let previous = spools[index].location.description
-            spools[index].location = .unknown
+            spools[index].location = unloadTo
             spools[index].remainingSource = "Last reading from \(previous)"
             spools[index].note(kind: .movement, detail: "Unloaded from \(previous)", date: date)
             report.unloaded.append(spools[index].id)

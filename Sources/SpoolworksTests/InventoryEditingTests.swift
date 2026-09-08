@@ -587,3 +587,98 @@ let inventoryFilterOptionTests = TestSuite(name: "Inventory filter options", cas
         }
     },
 ])
+
+// MARK: - Where a spool goes when it leaves the printer
+
+let unloadDestinationTests = TestSuite(name: "Unload destination", cases: [
+
+    test("unplaced by default, which is the honest answer before anyone has said otherwise") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            t.equal(model.places.unloadDestination, SpoolPlaces.unplaced, "default")
+        }
+    },
+
+    test("a spool the printer stops reporting goes where the user chose") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.setUnloadDestination("Shelf")
+            model.add(makeSpool(serial: "000123", location: .cfs(box: "T1", slot: "A")))
+
+            // The slot is reported, then it is not.
+            _ = model.reconcile(with: boxInfo([slot("T1A", serial: "000123")]))
+            _ = model.reconcile(with: boxInfo([]))
+
+            guard let after = t.unwrap(model.inventory.active.first, "the spool") else { return }
+            t.equal(after.location, .shelf("Shelf"), "back on the shelf, not Unplaced")
+            t.expect(after.usage.contains { $0.detail.hasPrefix("Unloaded from") },
+                     "and its history still says which slot it came off")
+        }
+    },
+
+    test("renaming the chosen place carries the choice with it") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.setUnloadDestination("Shelf")
+            _ = model.renamePlace("Shelf", to: "Cabinet")
+            // Stored as a name, so without carrying it this would silently revert to Unplaced the
+            // next time a spool came off the printer.
+            t.equal(model.places.unloadDestination, "Cabinet", "followed the rename")
+        }
+    },
+
+    test("removing the chosen place sends spools back to Unplaced, not to nothing") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.setUnloadDestination("CFS")
+            _ = model.removePlace("CFS")
+            t.equal(model.places.unloadDestination, SpoolPlaces.unplaced, "fell back")
+        }
+    },
+
+    test("a destination naming a place that does not exist is refused, and cannot be loaded") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            t.expect(!model.setUnloadDestination("Nowhere").isApplied, "refused")
+            t.equal(model.places.unloadDestination, SpoolPlaces.unplaced, "and unchanged")
+
+            // A hand-edited plist is the other way in, and the initialiser has to close it too —
+            // spools sent to a place the picker has never heard of would be unreachable by filter
+            // and unexplainable in the rail.
+            let hostile = SpoolPlaces(names: ["Unplaced", "Shelf"], unloadDestination: "Nowhere")
+            t.equal(hostile.unloadDestination, SpoolPlaces.unplaced, "normalised on the way in")
+        }
+    },
+
+    test("the choice survives a relaunch") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.setUnloadDestination("Ext…")
+            t.equal(SpoolPlacesStore.load(from: defaults).unloadDestination, "Ext…", "persisted")
+        }
+    },
+])
