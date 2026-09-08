@@ -231,7 +231,8 @@ struct TagFormCard: View {
             FilamentColorField(color: $model.draft.color,
                                isEditable: true,
                                catalogue: catalogueSwatch,
-                               recents: recentSwatches)
+                               recents: recentSwatches,
+                               brand: model.selectedVendor)
         } else if let hex = record?.rgbHex, let colour = Color(tagHex: hex) {
             FilamentColorField(color: .constant(colour),
                                isEditable: false,

@@ -35,6 +35,21 @@ The 31,861-entry colour-name dataset inside `reference/colors.db`, compiled by
 `Tools/build-color-table.sh` into `Sources/SpoolworksCore/Resources/colors.bin`. This is what turns
 a filament's `RRGGBB` into "Sakura" or "Galaxy Black" on screen.
 
+## filamentcolors.xyz
+
+<https://filamentcolors.xyz> — MIT licensed, by Joe Kaufeld
+(<https://github.com/itsthejoker/filamentcolors.xyz>). Credit is requested for reuse; this is it.
+
+`Sources/SpoolworksCore/Resources/filament-swatches.json` — 2,258 filament colours across 150
+manufacturers, used for the colour picker's manufacturer lists. **The hex values are colorimeter
+readings of physical printed swatches**, published alongside their LAB values, rather than
+marketing images. Cached locally as the project asks; `reference/filamentcolors-swatches.json`
+keeps the fetch with its database version so it can be validated against theirs later.
+
+Worth stating plainly: a measurement of *printed* filament is a shade off the raw spool and further
+off whatever a factory tag encodes. These are for **choosing** a colour, not for deciding what a
+Creality tag says.
+
 ## Creality
 
 Material databases and printer files produced by Creality, read from devices the owner of this

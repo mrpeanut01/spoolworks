@@ -461,3 +461,67 @@ let serialAllocationTests = TestSuite(name: "Serial allocation", cases: [
         t.equal(record.encoded.count, 40, "and the record is still 40 characters")
     },
 ])
+
+
+// MARK: - Filament swatch library
+
+let filamentSwatchLibraryTests = TestSuite(name: "Filament swatch library", cases: [
+
+    test("the bundled library loads and indexes by manufacturer") { t in
+        let library = FilamentSwatchLibrary.bundled()
+        t.expect(!library.isEmpty, "bundled resource present")
+        t.expect(library.swatches.count > 2_000, "got \(library.swatches.count) swatches")
+        t.expect(library.manufacturers.count > 100, "many makers")
+        t.expect(library.swatches.allSatisfy { $0.hex.count == 6 },
+                 "every hex is RRGGBB with no '#' and no flag nibble")
+    },
+
+    // The app's brand list and the dataset's names disagree on case and spacing — "eSun" vs
+    // "eSUN". An exact match would show an empty list for a maker that is plainly there.
+    test("brand names match loosely across the two vocabularies") { t in
+        let library = FilamentSwatchLibrary.bundled()
+        for brand in ["Creality", "eSun", "bambu lab", "PRUSAMENT", "Polymaker"] {
+            t.expect(library.manufacturer(matching: brand) != nil,
+                     "\(brand) resolves to a manufacturer")
+        }
+        t.expect(library.manufacturer(matching: "") == nil, "an empty brand matches nothing")
+        t.expect(library.manufacturer(matching: "Nonexistent Filament Co") == nil,
+                 "and a real miss stays a miss")
+    },
+
+    test("a manufacturer's colours can be narrowed to a basic colour") { t in
+        let library = FilamentSwatchLibrary.bundled()
+        guard let creality = t.unwrap(library.manufacturer(matching: "Creality"), "Creality")
+        else { return }
+        let all = library.swatches(for: creality)
+        t.expect(!all.isEmpty, "Creality has swatches")
+
+        let blacks = library.swatches(for: creality, basic: .black)
+        t.expect(!blacks.isEmpty, "and some of them are black")
+        t.expect(blacks.allSatisfy { $0.parent == BasicColor.black.rawValue }, "only black")
+        t.expect(blacks.count < all.count, "a subset")
+    },
+
+    // The measured data independently corroborates four of the six curated Creality values that
+    // were in the app before this dataset existed — from an unrelated source.
+    test("the measured data agrees with the curated Creality palette") { t in
+        let library = FilamentSwatchLibrary.bundled()
+        guard let creality = t.unwrap(library.manufacturer(matching: "Creality"), "Creality")
+        else { return }
+        let hexes = Set(library.swatches(for: creality).map(\.hex))
+        for expected in ["3C3C3D", "838484", "0087BE", "C63D44"] {
+            t.expect(hexes.contains(expected),
+                     "\(expected) is corroborated by an independent measurement")
+        }
+        // And the one it cannot corroborate, which is why that swatch stays marked UNVERIFIED.
+        t.expect(library.swatches(for: creality, basic: .yellow).isEmpty,
+                 "no Creality yellow has been measured")
+    },
+
+    test("the six primary basics are the ones the picker offers first") { t in
+        t.equal(BasicColor.primary.map(\.title),
+                ["Black", "White", "Grey", "Red", "Blue", "Yellow"])
+        t.expect(BasicColor.allCases.count > BasicColor.primary.count,
+                 "the rest stay reachable through a maker's list")
+    },
+])

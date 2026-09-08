@@ -53,6 +53,7 @@ let exitCode = TestDriver.run([
     moonrakerTests,
     spoolConsumptionTests,
     serialAllocationTests,
+    filamentSwatchLibraryTests,
     cfsVersusJobTests,
 
     // Spool inventory

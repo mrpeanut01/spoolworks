@@ -182,6 +182,8 @@ struct FilamentColorField: View {
     /// Most recent first, already de-duplicated and capped by ``TagViewModel``.
     var recents: [PaletteSwatch]
     var creality: [PaletteSwatch] = PaletteSwatch.creality
+    /// The brand currently chosen on the form, so the manufacturer list opens on it.
+    var brand: String = ""
 
     @ObservedObject private var nameCache = ColorNameCache.shared
     @State private var isShowingPalette = false
@@ -211,6 +213,7 @@ struct FilamentColorField: View {
                 .accessibilityAddTraits(.isButton)
                 .popover(isPresented: $isShowingPalette, arrowEdge: .bottom) {
                     FilamentPalettePopover(color: $color,
+                                           brand: brand,
                                            catalogue: catalogue,
                                            recents: recents,
                                            creality: creality)
@@ -274,6 +277,8 @@ struct FilamentPalettePopover: View {
     /// Optional so nothing is shown as selected before a choice is made — a highlighted swatch on
     /// first open would claim the user had already picked it.
     @Binding var color: Color?
+    /// The brand chosen on the form, so the manufacturer list opens on it.
+    var brand: String = ""
     var catalogue: PaletteSwatch?
     var recents: [PaletteSwatch]
     var creality: [PaletteSwatch] = PaletteSwatch.creality
@@ -338,6 +343,13 @@ struct FilamentPalettePopover: View {
 
             Divider()
 
+            ManufacturerSwatchPicker(brand: brand, currentHex: currentHex) { hex in
+                color = Color(tagHex: hex)
+                dismiss()
+            }
+
+            Divider()
+
             // The escape hatch: the system colour panel — wheel, sliders, eyedropper — exactly the
             // control that used to sit on the main form. It stays open behind the popover, so the
             // popover is not dismissed when it is used.
@@ -349,7 +361,7 @@ struct FilamentPalettePopover: View {
                 .accessibilityHint("Opens the system colour wheel")
         }
         .padding(Theme.Spacing.l)
-        .frame(minWidth: 260)
+        .frame(minWidth: 300)
         .task(id: lookupHexes.joined()) {
             await nameCache.resolve(lookupHexes)
         }
@@ -409,5 +421,107 @@ private struct SwatchButton: View {
     private var accessibilityLabel: String {
         let named = name ?? "Unnamed colour"
         return "\(swatch.source.accessibilityPrefix)\(named), hex \(swatch.hex)"
+    }
+}
+
+
+// MARK: - Manufacturer colours
+
+/// The colours a given maker actually sells, from measured swatches.
+///
+/// Two levels, because 2,258 swatches will not fit in a popover and a flat list of one maker's 80
+/// is still a wall. The basic colour narrows it first — which is also how people ask for filament
+/// ("a grey PETG"), rather than by the maker's name for it.
+private struct ManufacturerSwatchPicker: View {
+
+    let brand: String
+    let currentHex: String
+    let pick: (String) -> Void
+
+    /// Loaded once for the process. 2,258 records is a fraction of a millisecond to index, but
+    /// re-reading a 210 KB file every time a popover opens would be silly.
+    private static let library = FilamentSwatchLibrary.bundled()
+
+    @State private var manufacturer: String = ""
+    @State private var basic: BasicColor = .black
+
+    private var swatches: [FilamentSwatch] {
+        Self.library.swatches(for: manufacturer, basic: basic)
+    }
+
+    var body: some View {
+        if Self.library.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                Text("Manufacturer colours")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryLabel)
+
+                HStack(spacing: Theme.Spacing.s) {
+                    Picker("", selection: $manufacturer) {
+                        ForEach(Self.library.manufacturers, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 170)
+
+                    Picker("", selection: $basic) {
+                        ForEach(BasicColor.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 110)
+                }
+
+                if swatches.isEmpty {
+                    Text("No \(basic.title.lowercased()) swatch measured for \(manufacturer).")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .padding(.vertical, Theme.Spacing.xs)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(swatches) { swatch in
+                                Button { pick(swatch.hex) } label: {
+                                    HStack(spacing: Theme.Spacing.s) {
+                                        Swatch(hex: swatch.hex, size: 16)
+                                        Text(swatch.label)
+                                            .font(.system(size: 12))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 0)
+                                        if swatch.hex == currentHex {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(Theme.accent)
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(swatch.hex)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+
+                // Provenance, because these are measurements and the number matters: they are
+                // readings of printed swatches, so they are a shade off the raw spool and further
+                // off whatever a factory tag encodes.
+                Text("Measured swatches from filamentcolors.xyz")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.tertiaryLabel)
+            }
+            .onAppear {
+                if manufacturer.isEmpty {
+                    manufacturer = Self.library.manufacturer(matching: brand)
+                        ?? Self.library.manufacturer(matching: "Creality")
+                        ?? Self.library.manufacturers.first ?? ""
+                }
+            }
+            .onChange(of: brand) { _, new in
+                if let match = Self.library.manufacturer(matching: new) { manufacturer = match }
+            }
+        }
     }
 }
