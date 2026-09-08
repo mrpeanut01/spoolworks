@@ -80,7 +80,14 @@ struct TagFormCard: View {
                 TagFormRow(label: "Material ID") { materialID }
                 TagFormRow(label: "Weight") { weight }
                 TagFormRow(label: "Colour") { colour }
-                TagFormRow(label: "Serial number") { serial }
+                // The serial is deliberately not editable and not a form field. It is generated
+                // per draft and regenerated after every write, because a serial the user can set
+                // is a serial two spools can share — and 000001, the value the Windows app writes,
+                // is already shared by the entire Creality catalogue. It is shown read-only beside
+                // the payload, where it belongs with the other derived values.
+                if !isEditable {
+                    TagFormRow(label: "Serial number") { serial }
+                }
 
                 footer
             }

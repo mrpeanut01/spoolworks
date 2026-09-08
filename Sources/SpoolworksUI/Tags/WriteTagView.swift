@@ -115,6 +115,15 @@ private struct WriteVerifyPanel: View {
                 // every implementation writes '0' there and nobody has documented what it means
                 // (see SpoolRecord.color). Without this the extra digit looks like a bug.
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                    Text("Serial · generated").kicker()
+                    Text(model.draft.serialNumber)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Theme.label)
+                        .textSelection(.enabled)
+                }
+                .padding(.top, 4)
+
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
                     Text("Tag colour field").kicker()
                     Text(tagColourField)
                         .font(.system(size: 14, weight: .bold, design: .monospaced))
@@ -163,7 +172,8 @@ private struct WriteVerifyPanel: View {
         }
     }
 
-    /// `"0C12E1F"` — the colour exactly as it is written into the record.
+    /// `"0C12E1F"` — the colour exactly as it is written into the record, or an em dash before
+    /// one has been chosen.
     private var tagColourField: String {
         let hex = model.draft.colorHex
         return hex.isEmpty ? "—" : "0" + hex.uppercased()

@@ -6,6 +6,8 @@
 // regression cover.
 //
 import Foundation
+import SwiftUI
+import AppKit
 @testable import SpoolworksUI
 import SpoolworksCore
 
@@ -95,9 +97,13 @@ private func samplePlan() throws -> WritePlan {
 }
 
 /// The form in a state that can produce a record, so `autoWriteState` gets past `.blocked`.
+///
+/// A colour is now part of that: the draft no longer defaults to the Windows blue, because a
+/// pre-filled swatch on a screen that has read nothing looks like a value that came off a tag.
 @MainActor
 private func makeDraftWritable(_ model: TagViewModel) {
     model.draft.materialID = "12345"
+    model.draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
 }
 
 /// The form in a state that cannot, which is also how these tests keep a retried auto-write away
@@ -142,11 +148,22 @@ let spoolDraftTests = TestSuite(name: "Write form draft", cases: [
         $0.equal(draft.validationIssues.first, "Enter a material ID.")
     },
 
-    test("a five-digit material id with the default serial is writable") {
+    test("a five-digit material id with a colour is writable") {
         var draft = SpoolDraft()
         draft.materialID = "12345"
+        draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
         $0.equal(draft.validationIssues, [])
         $0.expect(draft.isValid)
+    },
+
+    // Colour has no default any more, so a form that has never been touched cannot be written —
+    // which is the point: a spool's colour is not something to guess.
+    test("a draft with no colour chosen is not writable, and says so") {
+        var draft = SpoolDraft()
+        draft.materialID = "12345"
+        $0.expect(!draft.isValid, "no colour yet")
+        $0.expect(draft.validationIssues.contains("Choose a colour."),
+                  "and the reason is named")
     },
 ])
 

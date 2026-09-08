@@ -75,7 +75,6 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
 struct RootView: View {
     @ObservedObject var env: AppEnvironment
 
-    @SceneStorage("sidebarSelection") private var storedSelection: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,10 +90,12 @@ struct RootView: View {
         }
         .background(Theme.background)
         .toast(env.toasts)
+        // The screen is deliberately **not** restored between launches. Spoolworks is a stock app,
+        // and Inventory is the answer to "what do I have?" — the question the user actually opened
+        // it with. Reopening on Write tag, as scene restoration did, presented an irreversible
+        // operation to someone who had not asked for one.
         .onAppear {
-            if let stored = storedSelection, let item = SidebarItem(rawValue: stored) {
-                env.sidebarSelection = item
-            }
+            env.sidebarSelection = .inventory
             env.monitor.start()
             env.inventoryModel.load()
             Task { await env.printerModel.refresh() }
@@ -104,7 +105,6 @@ struct RootView: View {
             // filament id to a name. It is app-wide state; it loads with the app.
             Task { await env.materialsModel.load() }
         }
-        .onChange(of: env.sidebarSelection) { _, new in storedSelection = new.rawValue }
     }
 
     @ViewBuilder

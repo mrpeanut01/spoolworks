@@ -130,19 +130,19 @@ public struct SpoolworksApp: App {
         // from the sidebar without rehousing them made the Printer & CFS screen tell users to
         // "add one on the Printers screen" while offering no way to reach it.
         Window("Materials", id: AppEnvironment.materialsWindowID) {
-            MaterialsView(model: env.materialsModel)
+            MaterialsView(model: env.materialsModel).nonRestorableWindow()
         }
         .defaultSize(width: 900, height: 640)
 
         Window("Printers", id: AppEnvironment.printersWindowID) {
-            PrintersView(model: env.printerModel)
+            PrintersView(model: env.printerModel).nonRestorableWindow()
         }
         .defaultSize(width: 820, height: 600)
 
         // Tag Memory is a reference view you keep open next to the main window, not a sheet.
         // The Windows author gave `TagMemoryForm` its own taskbar entry — the same instinct.
         Window("Tag Memory", id: AppEnvironment.tagMemoryWindowID) {
-            TagMemoryView(monitor: env.monitor, settings: env.settings)
+            TagMemoryView(monitor: env.monitor, settings: env.settings).nonRestorableWindow()
         }
         .defaultSize(width: 680, height: 640)
         .keyboardShortcut("m", modifiers: .command)
@@ -228,6 +228,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: false)
     }
+
+    // NOTE: do not give this class a custom `init()`.
+    //
+    // An `override init()` here — added to register a defaults value before the scenes were
+    // built — stopped the app initialising at all: the header showed "none configured", the
+    // reader stayed at "starting…" and the catalogue reported 0 materials, because every async
+    // task kicked off from `RootView.onAppear` silently never ran. No crash, nothing on stderr.
+    // `@NSApplicationDelegateAdaptor` owns this type's lifetime and does not expect to share it.
+    // Window restoration is handled per-window by `nonRestorableWindow()` instead.
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true

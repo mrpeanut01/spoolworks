@@ -173,7 +173,9 @@ final class ColorNameCache: ObservableObject {
 /// so the form does not change geometry when the mode switch is flipped.
 struct FilamentColorField: View {
 
-    @Binding var color: Color
+    /// Optional so "not chosen yet" is representable. A placeholder colour here would read as one
+    /// that came off a tag.
+    @Binding var color: Color?
     var isEditable: Bool
     /// The selected filament's own colour, when the database carries a real one.
     var catalogue: PaletteSwatch?
@@ -184,8 +186,8 @@ struct FilamentColorField: View {
     @ObservedObject private var nameCache = ColorNameCache.shared
     @State private var isShowingPalette = false
 
-    private var hex: String { color.rgb8.hexString }
-    private var name: String? { nameCache.name(forHex: hex) }
+    private var hex: String { color?.rgb8.hexString ?? "" }
+    private var name: String? { hex.isEmpty ? nil : nameCache.name(forHex: hex) }
 
     var body: some View {
         Group {
@@ -219,24 +221,38 @@ struct FilamentColorField: View {
                     .accessibilityLabel("Colour, \(spokenValue)")
             }
         }
-        .task(id: hex) { await nameCache.resolve([hex]) }
+        .task(id: hex) { if !hex.isEmpty { await nameCache.resolve([hex]) } }
     }
 
     private var summary: some View {
         HStack(spacing: Theme.Spacing.s) {
-            ColorSwatch(color: color, hex: hex)
-                .accessibilityHidden(true)
-            if let name {
-                Text(name)
+            if let color {
+                ColorSwatch(color: color, hex: hex)
+                    .accessibilityHidden(true)
+                if let name {
+                    Text(name)
+                        .font(.callout)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .lineLimit(1)
+                }
+            } else {
+                // An empty well, not a colour. The distinction is the whole point: a filled swatch
+                // on a screen that has read nothing looks like a value that came off a tag.
+                Rectangle()
+                    .fill(Theme.surfaceSunken)
+                    .frame(width: 22, height: 22)
+                    .overlay(Rectangle().strokeBorder(Theme.separator, lineWidth: 1))
+                    .accessibilityHidden(true)
+                Text("Not set")
                     .font(.callout)
                     .foregroundStyle(Theme.secondaryLabel)
-                    .lineLimit(1)
             }
         }
     }
 
     /// Never the swatch alone: the hex is always spoken, and the name when one is known.
     private var spokenValue: String {
+        guard color != nil else { return "not set" }
         guard let name else { return "hex \(hex)" }
         return "\(name), hex \(hex)"
     }
@@ -255,7 +271,9 @@ struct FilamentColorField: View {
 /// down rather than beside the swatches, so the common case is not competing with the rare one.
 struct FilamentPalettePopover: View {
 
-    @Binding var color: Color
+    /// Optional so nothing is shown as selected before a choice is made — a highlighted swatch on
+    /// first open would claim the user had already picked it.
+    @Binding var color: Color?
     var catalogue: PaletteSwatch?
     var recents: [PaletteSwatch]
     var creality: [PaletteSwatch] = PaletteSwatch.creality
@@ -265,7 +283,8 @@ struct FilamentPalettePopover: View {
 
     /// The draft colour as the bytes that would be written — via `rgb8`, so the comparison against
     /// a swatch is made on the same sRGB quantisation the tag receives.
-    private var currentHex: String { color.rgb8.hexString }
+    /// Empty until a colour is chosen, so no swatch matches and none is marked selected.
+    private var currentHex: String { color?.rgb8.hexString ?? "" }
 
     private var groups: [(source: PaletteSwatch.Source, swatches: [PaletteSwatch])] {
         var result: [(PaletteSwatch.Source, [PaletteSwatch])] = []
@@ -322,7 +341,10 @@ struct FilamentPalettePopover: View {
             // The escape hatch: the system colour panel — wheel, sliders, eyedropper — exactly the
             // control that used to sit on the main form. It stays open behind the popover, so the
             // popover is not dismissed when it is used.
-            ColorPicker("Custom…", selection: $color, supportsOpacity: false)
+            ColorPicker("Custom…",
+                        selection: Binding(get: { color ?? Color(nsColor: .white) },
+                                           set: { color = $0 }),
+                        supportsOpacity: false)
                 .help("Opens the macOS colour wheel for any colour at all")
                 .accessibilityHint("Opens the system colour wheel")
         }

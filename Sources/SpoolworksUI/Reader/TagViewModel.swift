@@ -52,7 +52,13 @@ struct SpoolDraft: Equatable {
     var materialID: String = ""
     /// Human label for `materialID`, e.g. `Creality · Hyper PLA`. Display only.
     var materialLabel: String = ""
-    var color: Color = Color(nsColor: NSColor(rgbHex: 0x0000FF))   // `MainForm.cs:60` default
+    /// Optional because "no colour yet" is a real state and blue is not it.
+    ///
+    /// The Windows app defaults to `0x0000FF` (`MainForm.cs:60`). Carried over literally, the form
+    /// opened showing a blue swatch — which reads as a colour that came off a tag, on a screen
+    /// that has not read one. An unset colour cannot be written, which is correct: a spool's
+    /// colour is not something to guess.
+    var color: Color?
     var weight: FilamentLength = .kg1
     /// Written to sector 2 in plaintext. Advisory — the Arduino firmware writes a constant there.
     var printerType: PrinterType? = .k2
@@ -61,7 +67,8 @@ struct SpoolDraft: Equatable {
     /// ``SpoolworksCore/SpoolRecord/randomSerialNumber()`` for why `000001` is actively harmful.
     var serialNumber: String = SpoolRecord.randomSerialNumber()
 
-    var colorHex: String { color.rgb8.hexString }
+    /// `RRGGBB`, or empty when no colour has been chosen.
+    var colorHex: String { color?.rgb8.hexString ?? "" }
 
     /// The sector-2 string. `nil` printer type writes 48 spaces, matching a tag whose printer
     /// field was never set.
@@ -78,6 +85,12 @@ struct SpoolDraft: Equatable {
             issues.append("Material ID must be exactly 5 characters (it is \(id.utf8.count)).")
         } else if !id.allSatisfy(\.isNumber) {
             issues.append("Material ID must be digits only.")
+        }
+        // Reported after the material ID because that is the order the form reads in: the ID row
+        // sits above the colour row, and a complaint that skips ahead sends the user to the wrong
+        // field.
+        if color == nil {
+            issues.append("Choose a colour.")
         }
         let serial = serialNumber.trimmingCharacters(in: .whitespaces)
         if serial.utf8.count != 6 || !serial.allSatisfy(\.isNumber) {

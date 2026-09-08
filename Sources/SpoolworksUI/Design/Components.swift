@@ -315,3 +315,35 @@ struct EmptyPanel: View {
         .cardSurface(padding: Theme.Spacing.xl)
     }
 }
+
+// MARK: - Window restoration
+
+/// Marks the hosting window as not restorable.
+///
+/// Materials, Printers and Tag Memory are windows you open to do a job and close again. macOS
+/// state restoration reopened whichever was last on screen, so quitting with Printers open meant
+/// the app started up showing its own settings, with the main window buried behind them.
+///
+/// Done per-window rather than by disabling restoration app-wide: the main window's size and
+/// position are worth remembering, and `NSQuitAlwaysKeepsWindows` would have thrown that away
+/// too. The obvious alternative — registering that default from the app delegate's initialiser —
+/// is actively harmful; see the note in `AppDelegate`.
+private struct NonRestorableWindow: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        // The window is not attached yet when this is called.
+        DispatchQueue.main.async { view.window?.isRestorable = false }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        view.window?.isRestorable = false
+    }
+}
+
+extension View {
+    /// Stops this window being reopened by macOS at the next launch.
+    func nonRestorableWindow() -> some View {
+        background(NonRestorableWindow().frame(width: 0, height: 0).accessibilityHidden(true))
+    }
+}

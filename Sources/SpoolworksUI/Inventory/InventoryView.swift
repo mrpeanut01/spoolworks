@@ -96,7 +96,10 @@ private enum Column {
 private struct InventoryHeaderRow: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
-            Color.clear.frame(width: Column.swatch)
+            // A fixed height as well as a width. `Color` is a flexible view: constrained on one
+            // axis only it expands on the other, which stretched this header row to fill the pane
+            // and pushed the table halfway down the screen.
+            Color.clear.frame(width: Column.swatch, height: 1)
             Text("Filament").frame(maxWidth: .infinity, alignment: .leading)
             Text("Type").frame(width: Column.type, alignment: .leading)
             Text("Serial").frame(width: Column.serial, alignment: .leading)
