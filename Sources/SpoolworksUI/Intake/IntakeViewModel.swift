@@ -459,6 +459,10 @@ final class IntakeViewModel: ObservableObject {
                                     brand: brand,
                                     name: name,
                                     materialType: materialType,
+                                    // What is on the form, not what was on the tag. The picker is
+                                    // editable in Method A too, and an edit that the confirm
+                                    // silently threw away is worse than not offering it.
+                                    netWeightGrams: netWeightGrams,
                                     tagSource: .crealityFactory,
                                     detail: "Intake · tag read")
         } else {

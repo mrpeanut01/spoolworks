@@ -63,7 +63,7 @@ enum AdjustmentMethod: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    /// The segmented control's label.
+    /// The segmented control's label. Kept for anywhere that still offers the choice.
     var title: String {
         switch self {
         case .weighed: return "By weight"
@@ -133,6 +133,31 @@ final class InventoryViewModel: ObservableObject {
     // MARK: Derived
 
     var rows: [Spool] { inventory.filtered(by: filter) }
+
+    /// The figures the "what's left" picker offers for one spool, fullest first.
+    ///
+    /// A 100 g ladder, the same step the net-weight picker uses, each rung labelled in **both**
+    /// units — `700 g · 70%` — because the two answer different questions and neither is the
+    /// obvious one. Grams is what a set of scales says; percent is what the inventory stores and
+    /// what the bar shows. Making the user pick a unit first, then type a number in it, was two
+    /// decisions for a value most people are eyeballing to the nearest tenth of a spool.
+    ///
+    /// The spool's own net weight is always the top rung even when it is not a multiple of 100 —
+    /// a 750 g spool has to be able to say "full".
+    ///
+    /// Nothing here is precise to the gram any more. That is the trade: a picker cannot express
+    /// 437 g. It is the right one for a list you scroll past, and the wrong one for a scale, so
+    /// this is the place to look if weighing to the gram is ever wanted back.
+    nonisolated func remainingOptions(for spool: Spool) -> [(grams: Int, percent: Double, label: String)] {
+        let net = spool.netWeightGrams
+        guard net > 0 else { return [] }
+        var rungs = stride(from: (net / 100) * 100, through: 0, by: -100).map { $0 }
+        if rungs.first != net { rungs.insert(net, at: 0) }
+        return rungs.map { grams in
+            let percent = Double(grams) / Double(net) * 100
+            return (grams, percent, "\(grams) g · \(Int(percent.rounded()))%")
+        }
+    }
 
     /// The filter row: the two states that are not places, then every place the user has
     /// configured, then the two conditions.
@@ -461,10 +486,18 @@ final class InventoryViewModel: ObservableObject {
     /// description — so a caller that has resolved the id against the material catalogue passes
     /// them in. Left blank, the spool is still valid and still identifiable; it simply shows its
     /// filament id where a name would go.
+    /// `netWeightGrams` overrides the record's own figure.
+    ///
+    /// The tag's length code is the *nominal* weight and the user can see the spool. A 250 g sample
+    /// wound onto a 1 kg-coded tag is a real thing, and so is a tag whose code no Creality client
+    /// recognises — those all report 1 KG. Intake lets the figure be corrected before the spool is
+    /// added, and this is what makes that correction survive: it used to be discarded, because this
+    /// took the weight from the record and nothing else.
     func spool(from record: SpoolRecord,
                brand: String = "",
                name: String = "",
                materialType: String = "",
+               netWeightGrams: Int? = nil,
                location: SpoolLocation = .unknown,
                tagSource: TagSource = .crealityFactory,
                detail: String = "Intake · tag read") -> Spool {
@@ -474,7 +507,7 @@ final class InventoryViewModel: ObservableObject {
                           materialType: materialType,
                           colorHex: record.rgbHex,
                           colorName: colorName(forHex: record.rgbHex),
-                          netWeightGrams: record.weightGrams,
+                          netWeightGrams: netWeightGrams ?? record.weightGrams,
                           remainingPercent: 100,
                           location: location,
                           remainingSource: "Intake · assumed full",

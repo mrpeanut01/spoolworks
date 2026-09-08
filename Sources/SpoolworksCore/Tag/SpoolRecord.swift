@@ -17,7 +17,9 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     case g250 = "0082"
     // -- beyond Creality's set ------------------------------------------------------------------
     //
-    // Sample and small spools, which the five documented values do not reach. The codes are
+    // The rest of a 100 g ladder, so the weight picker steps evenly instead of jumping
+    // 250 → 500 → 600 → 750 → 1000. Sample and small spools live here too, which the five
+    // documented values do not reach at all. The codes are
     // derived at the ratio the documented ones use — `floor(grams × 0.33)` metres, which
     // reproduces all five of them exactly — so the encoding is right even though Creality never
     // published these.
@@ -26,6 +28,11 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     // unrecognised length to 1 kg, so the printer, the Windows app and the Android app will all
     // call a 100 g spool a kilo. Spoolworks reads it correctly. See ``isCrealityStandard``, which
     // is what the write form uses to warn before this is committed to a tag.
+    case g900 = "0297"
+    case g800 = "0264"
+    case g700 = "0231"
+    case g400 = "0132"
+    case g300 = "0099"
     case g200 = "0066"
     case g100 = "0033"
 
@@ -37,6 +44,11 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
         case .g600: return 600
         case .g500: return 500
         case .g250: return 250
+        case .g900: return 900
+        case .g800: return 800
+        case .g700: return 700
+        case .g400: return 400
+        case .g300: return 300
         case .g200: return 200
         case .g100: return 100
         }
@@ -51,21 +63,17 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     public var isCrealityStandard: Bool {
         switch self {
         case .kg1, .g750, .g600, .g500, .g250: return true
-        case .g200, .g100: return false
+        case .g900, .g800, .g700, .g400, .g300, .g200, .g100: return false
         }
     }
 
     /// The label the Windows UI shows for this length (`Utils.cs:136-170`).
+    ///
+    /// Derived rather than listed. The five Windows labels are exactly `1 KG` and `<n> G`, so a
+    /// per-case switch was one more place to forget a weight — which is what happened the moment
+    /// the ladder was filled in.
     public var label: String {
-        switch self {
-        case .kg1:  return "1 KG"
-        case .g750: return "750 G"
-        case .g600: return "600 G"
-        case .g500: return "500 G"
-        case .g250: return "250 G"
-        case .g200: return "200 G"
-        case .g100: return "100 G"
-        }
+        grams >= 1000 && grams % 1000 == 0 ? "\(grams / 1000) KG" : "\(grams) G"
     }
 
     public static func forGrams(_ grams: Int) -> FilamentLength? {

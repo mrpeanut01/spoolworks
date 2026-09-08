@@ -428,3 +428,164 @@ let intakeReturnsToScanTests = TestSuite(name: "Intake returns to Method A", cas
         }
     },
 ])
+
+// MARK: - Weights, in one hundred gram steps
+
+let weightLadderTests = TestSuite(name: "Weight ladder", cases: [
+
+    test("every hundred grams from 100 to 1000 has a code") { t in
+        for grams in stride(from: 100, through: 1000, by: 100) {
+            guard let length = t.unwrap(FilamentLength.forGrams(grams), "\(grams) g") else { continue }
+            t.equal(length.grams, grams, "\(grams) g round-trips")
+            // The codes are not published for the new rungs; they are derived at the ratio the
+            // documented ones use, and that derivation has to keep reproducing the published ones.
+            t.equal(length.rawValue, String(format: "%04d", Int(Double(grams) * 0.33)),
+                    "\(grams) g derives its own code")
+            t.equal(FilamentLength(rawValue: length.rawValue)?.grams, grams, "and decodes back")
+        }
+    },
+
+    test("only Creality's own five are flagged as standard") { t in
+        let standard = Set(FilamentLength.allCases.filter(\.isCrealityStandard).map(\.grams))
+        t.equal(standard, [1000, 750, 600, 500, 250],
+                "the added rungs stay flagged, because every Creality client reads them as 1 KG")
+    },
+
+    test("the label is derived, so a new rung cannot be forgotten") { t in
+        t.equal(FilamentLength.kg1.label, "1 KG", "the Windows form for a kilo")
+        t.equal(FilamentLength.g750.label, "750 G", "and for grams")
+        t.equal(FilamentLength.g300.label, "300 G", "including one Windows never had")
+        for length in FilamentLength.allCases {
+            t.expect(!length.label.isEmpty, "\(length.grams) g has a label")
+        }
+    },
+])
+
+let remainingOptionTests = TestSuite(name: "Remaining options", cases: [
+
+    test("a 1 kg spool steps in hundreds, fullest first, in both units") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let spool = typedSpool(materialType: "PLA")
+            let options = model.remainingOptions(for: spool)
+            t.equal(options.map(\.grams), [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100, 0],
+                    "eleven rungs, fullest first")
+            t.equal(options.first?.label, "1000 g · 100%", "full")
+            t.equal(options.last?.label, "0 g · 0%", "empty")
+            t.expect(options.contains { $0.label == "100 g · 10%" },
+                     "and the rung the request named")
+        }
+    },
+
+    test("a spool whose net weight is not a multiple of 100 can still say full") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var spool = typedSpool(materialType: "PLA")
+            spool.netWeightGrams = 750
+            let options = model.remainingOptions(for: spool)
+            t.equal(options.first?.grams, 750, "its own weight is the top rung")
+            t.equal(options.first?.label, "750 g · 100%", "and reads as full")
+            t.equal(options.dropFirst().first?.grams, 700, "then the ladder resumes")
+            t.equal(options.last?.grams, 0, "down to empty")
+        }
+    },
+
+    test("a spool with no net weight offers nothing rather than dividing by zero") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var spool = typedSpool(materialType: "PLA")
+            spool.netWeightGrams = 0
+            t.equal(model.remainingOptions(for: spool).count, 0, "no rungs")
+        }
+    },
+
+    test("every rung is accepted, so the picker can never offer a refused value") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let spool = typedSpool(materialType: "PLA")
+            model.add(spool)
+            for option in model.remainingOptions(for: spool) {
+                // Re-applying the figure already on record is a no-op by design, so start each
+                // rung from a different one.
+                _ = model.adjust(spool, toGrams: option.grams == 0 ? 100 : 0)
+                t.expect(model.adjust(spool, toGrams: option.grams),
+                         "\(option.label) is accepted")
+            }
+        }
+    },
+])
+
+// MARK: - An edited net weight survives Method A
+
+let intakeNetWeightTests = TestSuite(name: "Intake net weight", cases: [
+
+    test("a net weight corrected after reading a tag is what gets added to stock") { t in
+        onMain {
+            let catalogue = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: catalogue) }
+            let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+            await materials.load()
+            let (inventory, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+
+            // A tag that says 1 kg, on a spool the user can see is a 250 g sample. The tag's length
+            // code is nominal — and every Creality client reports an unrecognised code as 1 KG —
+            // so the figure on the form has to win.
+            guard let record = try? SpoolRecord(materialId: "01001",
+                                                colorRGB: "C12E1F",
+                                                filamentLength: .kg1,
+                                                serialNumber: "000321") else {
+                t.expect(false, "could not build a record")
+                return
+            }
+            let spool = inventory.spool(from: record,
+                                        brand: "Creality",
+                                        name: "Hyper PLA",
+                                        materialType: "PLA",
+                                        netWeightGrams: 250,
+                                        tagSource: .crealityFactory,
+                                        detail: "Intake · tag read")
+            t.equal(spool.netWeightGrams, 250, "the corrected figure, not the tag's 1000")
+            t.equal(record.weightGrams, 1000, "and the tag itself is unchanged")
+        }
+    },
+
+    test("without a correction the tag's own weight is still used") { t in
+        onMain {
+            let (inventory, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            guard let record = try? SpoolRecord(materialId: "01001",
+                                                colorRGB: "C12E1F",
+                                                filamentLength: .g500,
+                                                serialNumber: "000322") else {
+                t.expect(false, "could not build a record")
+                return
+            }
+            let spool = inventory.spool(from: record, tagSource: .crealityFactory)
+            t.equal(spool.netWeightGrams, 500, "the tag decides when nothing overrides it")
+        }
+    },
+])

@@ -520,16 +520,13 @@ private struct RemainingControl: View {
     @ObservedObject var model: InventoryViewModel
 
     @State private var isOpen = false
-    @State private var method: AdjustmentMethod = .weighed
-    @State private var entry = ""
-    @State private var problem: String?
+    @State private var chosen: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             Button(isOpen ? "Cancel correction" : "Correct what's left") {
                 isOpen.toggle()
-                entry = ""
-                problem = nil
+                chosen = nil
             }
             .buttonStyle(.sw(.secondary, block: true))
             .accessibilityLabel(isOpen
@@ -538,92 +535,52 @@ private struct RemainingControl: View {
 
             if isOpen {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-                    SegmentedFilter(options: AdjustmentMethod.allCases,
-                                    title: \.title,
-                                    selection: $method)
-
-                    FieldBox(label: fieldLabel, note: fieldNote) {
-                        TextField("", text: $entry)
-                            .textFieldStyle(.plain)
-                            .swInput()
-                            .onSubmit(apply)
-                            .accessibilityLabel(fieldLabel + ", " + fieldNote)
+                    // One picker, not a unit switch and a field. See
+                    // `InventoryViewModel.remainingOptions(for:)` for why both units are on every
+                    // rung and what this trades away.
+                    FieldBox(label: "How much is left", note: "nearest 100 g") {
+                        Picker("", selection: $chosen) {
+                            Text("—").tag(Int?.none)
+                            ForEach(options, id: \.grams) { option in
+                                Text(option.label).tag(Int?.some(option.grams))
+                            }
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("How much is left of \(spool.label)")
                     }
 
                     HStack(spacing: Theme.Spacing.s) {
                         Button("Apply", action: apply)
                             .buttonStyle(.sw(.primary, size: 12, h: 14, v: 8))
-                            .disabled(entry.isEmpty)
-                        Text(scaleNote)
+                            .disabled(chosen == nil)
+                        Text("of \(spool.netWeightGrams) g net")
                             .font(Theme.caption)
                             .foregroundStyle(Theme.secondaryLabel)
-                    }
-
-                    if let problem {
-                        Text(problem)
-                            .font(Theme.caption)
-                            .foregroundStyle(Theme.danger)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityLabel("Not applied. \(problem)")
                     }
                 }
                 .padding(Theme.Spacing.m)
                 .background(Theme.surface)
                 .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
-                // Switching units mid-edit must not carry the number across: 640 g and 640 % are
-                // not the same claim, and the second would simply be refused with no explanation
-                // of where the figure came from.
-                .onChange(of: method) { _, _ in
-                    entry = ""
-                    problem = nil
-                }
             }
+        }
+        // Selecting another spool must not carry a half-made choice across to it.
+        .onChange(of: spool.id) { _, _ in
+            isOpen = false
+            chosen = nil
         }
     }
 
-    private var fieldLabel: String {
-        method == .weighed ? "Filament remaining" : "Remaining"
+    private var options: [(grams: Int, percent: Double, label: String)] {
+        model.remainingOptions(for: spool)
     }
 
-    private var fieldNote: String {
-        method == .weighed ? "grams, not including the spool" : "percent, 0 to 100"
-    }
-
-    private var scaleNote: String {
-        method == .weighed
-            ? "of \(spool.netWeightGrams) g net"
-            : "currently \(spool.remainingLabel) · \(spool.remainingGramsLabel)"
-    }
-
+    /// Every rung is in range by construction, so there is nothing here to refuse — unlike the
+    /// typed field this replaced, where 130 % and a gross weight were both reachable.
     private func apply() {
-        let text = entry.trimmingCharacters(in: .whitespaces)
-        switch method {
-        case .weighed:
-            guard let grams = Int(text) else {
-                problem = "Enter a whole number of grams."
-                return
-            }
-            guard model.adjust(spool, toGrams: grams) else {
-                problem = "That is more than this spool holds (\(spool.netWeightGrams) g). "
-                    + "Weigh the filament only, without the spool it is wound on."
-                return
-            }
-        case .byHand:
-            // Accepts a decimal: the CFS reports whole percent but a user reading a half-empty
-            // spool off a chart has no reason to be forced to an integer.
-            guard let percent = Double(text) else {
-                problem = "Enter a percentage."
-                return
-            }
-            guard model.adjust(spool, toPercent: percent, method: .byHand) else {
-                problem = "A spool is somewhere between 0 % and 100 % full. "
-                    + "For a figure in grams, switch to By weight."
-                return
-            }
-        }
+        guard let chosen else { return }
+        _ = model.adjust(spool, toGrams: chosen)
         isOpen = false
-        entry = ""
-        problem = nil
+        self.chosen = nil
     }
 }
 
