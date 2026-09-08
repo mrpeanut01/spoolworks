@@ -82,7 +82,7 @@ struct UploadSheet: View {
             didPrepare = true
             host = printer.host
             password = model.password(for: printer.family)
-            prevent = printer.preventDatabaseUpdates
+            prevent = !printer.allowDatabaseUpdates
             reboot = printer.rebootAfterUpload
         }
         .onDisappear { work?.cancel() }
@@ -181,14 +181,17 @@ struct UploadSheet: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    Toggle(isOn: $prevent) {
-                        Text("Prevent database updates on the printer")
-                        Text("Stamps the upload with version \(MaterialVersion.preventUpdateSentinel) so the printer's own updater never replaces it.")
+                    Toggle(isOn: Binding(get: { !prevent }, set: { prevent = !$0 })) {
+                        Text("Allow printer database updates")
+                        Text("Off stamps the upload with version \(MaterialVersion.preventUpdateSentinel), so the printer's own updater never replaces it.")
                     }
                     Toggle(isOn: $reboot) {
                         Text("Reboot the printer afterwards")
-                        Text("The printer only reads the database at start-up.")
+                        Text(prevent
+                             ? "Unavailable while updates are blocked — a restart is when the printer's updater runs."
+                             : "The printer only reads the database at start-up.")
                     }
+                    .disabled(prevent)
                 }
             }
 
@@ -338,13 +341,16 @@ struct UploadSheet: View {
         didAttemptRun = true
         guard canRun else { return }
 
-        // Persist the non-secret settings the way the Windows dialog does (`UploadForm.cs:137`),
-        // but never the password — that goes to the session-scoped credential store only.
+        // Persist the non-secret settings the way the Windows dialog does (`UploadForm.cs:137`).
+        // The password goes to the Keychain-backed credential store, never to defaults.
         model.setHost(host, for: printer.family)
         model.setPassword(password, for: printer.family)
         if !isResetMode {
-            model.setPreventDatabaseUpdates(prevent, for: printer.family)
-            model.setRebootAfterUpload(reboot, for: printer.family)
+            // `prevent` is the sheet's own local sense; the stored preference is its inverse.
+            // Reboot is written *after*, and only when updates are allowed — otherwise
+            // setAllowDatabaseUpdates's own clearing of it would be undone on the next line.
+            model.setAllowDatabaseUpdates(!prevent, for: printer.family)
+            if !prevent { model.setRebootAfterUpload(reboot, for: printer.family) }
         }
 
         let credentials = model.makeCredentials(host: host, password: password)

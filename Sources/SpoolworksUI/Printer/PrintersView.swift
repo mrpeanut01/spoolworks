@@ -233,8 +233,15 @@ struct PrintersView: View {
                                                   for: printer.family)
                             }
                             .help("Fills in the password Creality prints on this model's touchscreen")
+
                             if printer.hasStoredPassword {
-                                Label("Kept for this session only", systemImage: "clock")
+                                Label("Saved in your keychain", systemImage: "key.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button("Forget") { model.forgetPassword(for: printer.family) }
+                                    .help("Removes this printer's password from your keychain. The CFS poll and uploads stop until it is entered again.")
+                            } else {
+                                Label("Not saved", systemImage: "key.slash")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -244,13 +251,14 @@ struct PrintersView: View {
             } header: {
                 Text("Connection")
             } footer: {
-                // TODO(wire): once SpoolworksCore ships a Keychain-backed credential store, replace the
-                // in-memory store in PrinterViewModel and soften this footer to "Stored in your
-                // keychain". Until then the honest statement is that it is not stored at all.
                 Text("""
                 The app connects as **root** on port 22, which is what the printer's SSH service \
-                expects. The password is held in memory for this session only — it is never written \
-                to disk. Root access must be switched on from the printer's touchscreen first.
+                expects. Root access must be switched on from the printer's touchscreen first.
+
+                The password is saved to your **keychain** as you type it, and read back \
+                automatically on launch — there is nothing to press. It is stored against the \
+                address, so re-addressing a printer correctly stops finding the old machine's \
+                password. It is never written to preferences, a file, or a log.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -258,11 +266,11 @@ struct PrintersView: View {
 
             Section {
                 Toggle(isOn: Binding(
-                    get: { printer.preventDatabaseUpdates },
-                    set: { model.setPreventDatabaseUpdates($0, for: printer.family) }
+                    get: { printer.allowDatabaseUpdates },
+                    set: { model.setAllowDatabaseUpdates($0, for: printer.family) }
                 )) {
-                    Text("Prevent database updates on the printer")
-                    Text("Stamps the uploaded database with an impossibly high version so the printer's own updater leaves your filaments alone.")
+                    Text("Allow printer database updates")
+                    Text("Off stamps the uploaded database with an impossibly high version, so the printer's own updater leaves your filaments alone. On lets the printer manage its database again — which can overwrite what you upload.")
                 }
 
                 Toggle(isOn: Binding(
@@ -270,8 +278,11 @@ struct PrintersView: View {
                     set: { model.setRebootAfterUpload($0, for: printer.family) }
                 )) {
                     Text("Reboot the printer after uploading")
-                    Text("The printer only reads a new database at start-up, so without this the change takes effect on its next restart.")
+                    Text(printer.allowDatabaseUpdates
+                         ? "The printer only reads a database at start-up, so without this the change takes effect on its next restart."
+                         : "Unavailable while updates are blocked — a restart is when the printer's updater runs, which is the thing blocking is there to prevent.")
                 }
+                .disabled(!printer.allowDatabaseUpdates)
             } header: {
                 Text("Upload Defaults")
             }

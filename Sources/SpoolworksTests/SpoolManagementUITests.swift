@@ -440,3 +440,80 @@ let writtenSpoolLoggingTests = TestSuite(name: "Logging a written spool", cases:
         }
     },
 ])
+
+
+// MARK: - Upload defaults
+
+let uploadDefaultsTests = TestSuite(name: "Upload defaults", cases: [
+
+    // The setting was inverted from "prevent" to "allow". A printer configured before the rename
+    // must keep the behaviour its owner chose rather than silently flipping to the opposite.
+    test("an existing prevent_ preference migrates to its inverse") { t in
+        onMain {
+            let suite = "sw-upload-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            // Someone who had deliberately allowed updates under the old spelling.
+            defaults.set(false, forKey: "prevent_K2")
+            t.expect(PrinterSettings.allowDatabaseUpdates(for: .k2, in: defaults),
+                     "prevent=false becomes allow=true")
+
+            defaults.removeObject(forKey: "prevent_K2")
+            defaults.set(true, forKey: "prevent_K1")
+            t.expect(!PrinterSettings.allowDatabaseUpdates(for: .k1, in: defaults),
+                     "prevent=true becomes allow=false")
+        }
+    },
+
+    // Blocking updates is the safe answer: leaving them on lets the printer's updater overwrite
+    // the filaments you just pushed.
+    test("updates are disallowed by default") { t in
+        onMain {
+            let suite = "sw-upload-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+            t.expect(!PrinterSettings.allowDatabaseUpdates(for: .k2, in: defaults),
+                     "off for a fresh printer")
+        }
+    },
+
+    test("writing the new preference retires the old key") { t in
+        onMain {
+            let suite = "sw-upload-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            defaults.set(true, forKey: "prevent_K2")
+            PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
+            t.expect(defaults.object(forKey: "prevent_K2") == nil, "old key removed")
+            t.expect(PrinterSettings.allowDatabaseUpdates(for: .k2, in: defaults),
+                     "and the new one stands")
+        }
+    },
+
+    // Reboot is only offered while updates are allowed, so blocking them must clear it — otherwise
+    // a hidden "yes" springs back when they are re-enabled and the upload honours a choice the
+    // user can no longer see.
+    test("blocking updates clears the reboot preference") { t in
+        onMain {
+            let suite = "sw-upload-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
+            PrinterSettings.setRebootAfterUpload(true, for: .k2, in: defaults)
+            t.expect(PrinterSettings.rebootAfterUpload(for: .k2, in: defaults), "reboot is on")
+
+            // The interlock lives in PrinterSettings, so no caller can bypass it.
+            PrinterSettings.setAllowDatabaseUpdates(false, for: .k2, in: defaults)
+            t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
+                     "and blocking updates turned it off")
+
+            // Re-enabling must not resurrect the old "yes".
+            PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
+            t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
+                     "it stays off until the user asks for it again")
+        }
+    },
+])

@@ -77,5 +77,6 @@ let exitCode = TestDriver.run([
     cfsViewModelTests,
     keychainCredentialAdapterTests,
     writtenSpoolLoggingTests,
+    uploadDefaultsTests,
 ])
 exit(exitCode)

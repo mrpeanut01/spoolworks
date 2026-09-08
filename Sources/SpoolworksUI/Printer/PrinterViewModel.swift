@@ -96,9 +96,9 @@ struct UnimplementedPrinterTransport: PrinterTransporting {
 
 /// SSH password storage.
 ///
-/// TODO(wire): replace with SpoolworksCore's Keychain-backed credential store once it exists. There is no
-/// Keychain wrapper anywhere in SpoolworksCore in this worktree, so the default implementation below keeps
-/// passwords **in memory for the lifetime of the process only**.
+/// ``KeychainPrinterCredentialStore`` is the real conformer and what the app uses;
+/// ``InMemoryPrinterCredentialStore`` below remains for tests and previews, where nothing should
+/// touch the user's Keychain.
 ///
 /// What must never happen, and does not happen here: the Windows app writes the printer's *root*
 /// password to `HKCU\CFS RFID\Settings\psw_<printer>` in cleartext (SPEC/04 §1.4) and renders it in
@@ -167,24 +167,45 @@ enum PrinterSettings {
 
     /// Windows default is `true` (SPEC/03-ui.md §2), so a missing key must read as `true`, not as
     /// `UserDefaults`' implicit `false`.
-    static func preventDatabaseUpdates(for family: PrinterType) -> Bool {
-        defaults.object(forKey: "prevent_\(suffix(family))") as? Bool ?? true
+    /// Whether the printer may keep updating its own material database after an upload.
+    ///
+    /// Stored as `allow_`, and **off by default** — the safe answer, because leaving it on means
+    /// the printer's updater can overwrite the filaments you just pushed. It replaces an earlier
+    /// `prevent_` key that held the same fact inverted; that value is migrated on first read so a
+    /// printer configured before the rename keeps the behaviour its owner chose rather than
+    /// silently flipping to the opposite.
+    static func allowDatabaseUpdates(for family: PrinterType,
+                                     in store: UserDefaults = defaults) -> Bool {
+        if let allow = store.object(forKey: "allow_\(suffix(family))") as? Bool { return allow }
+        if let prevent = store.object(forKey: "prevent_\(suffix(family))") as? Bool {
+            return !prevent
+        }
+        return false
     }
 
-    static func setPreventDatabaseUpdates(_ value: Bool, for family: PrinterType) {
-        defaults.set(value, forKey: "prevent_\(suffix(family))")
+    static func setAllowDatabaseUpdates(_ value: Bool, for family: PrinterType,
+                                        in store: UserDefaults = defaults) {
+        store.set(value, forKey: "allow_\(suffix(family))")
+        // Drop the superseded key so a later read cannot resurrect the old answer.
+        store.removeObject(forKey: "prevent_\(suffix(family))")
+        // The interlock lives here rather than in the view model so no other caller can bypass
+        // it: rebooting is only offered while updates are allowed, and a hidden "yes" that sprang
+        // back on re-enabling would make the upload honour a choice the user can no longer see.
+        if !value { setRebootAfterUpload(false, for: family, in: store) }
     }
 
-    static func rebootAfterUpload(for family: PrinterType) -> Bool {
-        defaults.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
+    static func rebootAfterUpload(for family: PrinterType,
+                                  in store: UserDefaults = defaults) -> Bool {
+        store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
     }
 
-    static func setRebootAfterUpload(_ value: Bool, for family: PrinterType) {
-        defaults.set(value, forKey: "reboot_\(suffix(family))")
+    static func setRebootAfterUpload(_ value: Bool, for family: PrinterType,
+                                     in store: UserDefaults = defaults) {
+        store.set(value, forKey: "reboot_\(suffix(family))")
     }
 
     static func forget(_ family: PrinterType) {
-        for prefix in ["host_", "prevent_", "reboot_"] {
+        for prefix in ["host_", "prevent_", "allow_", "reboot_"] {
             defaults.removeObject(forKey: prefix + suffix(family))
         }
     }
@@ -223,7 +244,7 @@ enum PrinterSettings {
 struct PrinterConfiguration: Identifiable, Hashable {
     var family: PrinterType
     var host: String
-    var preventDatabaseUpdates: Bool
+    var allowDatabaseUpdates: Bool
     var rebootAfterUpload: Bool
     var hasStoredPassword: Bool
     var databaseVersion: String
@@ -332,7 +353,7 @@ final class PrinterViewModel: ObservableObject {
         return PrinterConfiguration(
             family: family,
             host: PrinterSettings.host(for: family),
-            preventDatabaseUpdates: PrinterSettings.preventDatabaseUpdates(for: family),
+            allowDatabaseUpdates: PrinterSettings.allowDatabaseUpdates(for: family),
             rebootAfterUpload: PrinterSettings.rebootAfterUpload(for: family),
             hasStoredPassword: credentials.hasPassword(for: family),
             databaseVersion: version,
@@ -395,9 +416,16 @@ final class PrinterViewModel: ObservableObject {
         apply(family) { $0.host = host }
     }
 
-    func setPreventDatabaseUpdates(_ value: Bool, for family: PrinterType) {
-        PrinterSettings.setPreventDatabaseUpdates(value, for: family)
-        apply(family) { $0.preventDatabaseUpdates = value }
+    func setAllowDatabaseUpdates(_ value: Bool, for family: PrinterType) {
+        PrinterSettings.setAllowDatabaseUpdates(value, for: family)
+        // Rebooting is only offered while updates are allowed, so turning them off must also clear
+        // the reboot preference — otherwise a hidden "yes" springs back the next time they are
+        // re-enabled, and the upload sheet would honour a choice the user can no longer see.
+        if !value {
+            PrinterSettings.setRebootAfterUpload(false, for: family)
+            apply(family) { $0.rebootAfterUpload = false }
+        }
+        apply(family) { $0.allowDatabaseUpdates = value }
     }
 
     func setRebootAfterUpload(_ value: Bool, for family: PrinterType) {
@@ -408,6 +436,12 @@ final class PrinterViewModel: ObservableObject {
     func setPassword(_ password: String?, for family: PrinterType) {
         credentials.setPassword(password, for: family)
         apply(family) { $0.hasStoredPassword = self.credentials.hasPassword(for: family) }
+    }
+
+    /// Removes a printer's password from the Keychain.
+    func forgetPassword(for family: PrinterType) {
+        credentials.setPassword(nil, for: family)
+        apply(family) { $0.hasStoredPassword = false }
     }
 
     func password(for family: PrinterType) -> String {
