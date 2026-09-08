@@ -79,7 +79,8 @@ struct RootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar(env: env)
+            HeaderBar(env: env, cfs: env.cfsModel,
+                      printers: env.printerModel, monitor: env.monitor)
             Rule()
             HStack(spacing: 0) {
                 Sidebar(env: env)
@@ -132,6 +133,13 @@ struct RootView: View {
 /// while a poll is actually in flight, so it means "working" rather than being decoration.
 private struct HeaderBar: View {
     @ObservedObject var env: AppEnvironment
+    // Observed individually, not reached through `env`. `AppEnvironment` holds these as plain
+    // `let`s, and a nested ObservableObject does not republish through its owner — so the header
+    // showed "none configured" indefinitely while the screen behind it polled the printer
+    // successfully.
+    @ObservedObject var cfs: CFSViewModel
+    @ObservedObject var printers: PrinterViewModel
+    @ObservedObject var monitor: ReaderMonitor
 
     var body: some View {
         HStack(spacing: 0) {
@@ -152,7 +160,7 @@ private struct HeaderBar: View {
             HStack(spacing: Theme.Spacing.xl) {
                 StatusCell(title: "Printer", value: printerLabel)
                 VRule()
-                StatusCell(title: "CFS state", value: cfsLabel, pulsing: env.cfsModel.state.isPolling)
+                StatusCell(title: "CFS state", value: cfsLabel, pulsing: cfs.state.isPolling)
                 VRule()
                 StatusCell(title: "Reader", value: readerLabel)
                 Spacer(minLength: 0)
@@ -166,23 +174,23 @@ private struct HeaderBar: View {
     }
 
     private var printerLabel: String {
-        guard let target = env.cfsModel.target else { return "none configured" }
+        guard let target = cfs.target else { return "none configured" }
         return target.host.isEmpty
             ? target.displayName
             : "\(target.displayName) · \(target.host)"
     }
 
     private var cfsLabel: String {
-        guard env.cfsModel.canPoll else { return "not connected" }
-        if let info = env.cfsModel.info {
+        guard cfs.canPoll else { return "not connected" }
+        if let info = cfs.info {
             let head = info.hasNoCFS ? "external only" : info.material.state
-            return "\(head) · \(env.cfsModel.freshness)"
+            return "\(head) · \(cfs.freshness)"
         }
-        return env.cfsModel.freshness
+        return cfs.freshness
     }
 
     private var readerLabel: String {
-        let state = env.monitor.state
+        let state = monitor.state
         switch state {
         case .starting: return "starting…"
         case let .subsystemUnavailable(detail): return detail

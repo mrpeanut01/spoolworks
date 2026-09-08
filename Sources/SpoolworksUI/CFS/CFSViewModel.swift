@@ -35,9 +35,32 @@ final class CFSViewModel: ObservableObject {
     /// The last reconciliation, so the screen can say what a poll changed.
     @Published private(set) var lastReport: SpoolInventory.ReconcileReport?
 
+    /// The printer's current job, if any.
+    @Published private(set) var job: PrintJobSnapshot?
+    /// Grams charged to spools since the screen opened, for the job banner.
+    @Published private(set) var chargedThisSession: Double = 0
+    /// Grams drawn from a slot that has no spool in stock **yet**, held per slot.
+    ///
+    /// The job poll runs every 5 s and the CFS poll every 30 s, so on a cold start the printer is
+    /// seen drawing filament before the inventory knows which spool is in the slot. Dropping that
+    /// would lose real consumption; reporting it forever would be noise. It is held and flushed
+    /// the moment the spool appears.
+    @Published private(set) var pendingGrams: [String: Double] = [:]
+
+    var unattributedGrams: Double { pendingGrams.values.reduce(0, +) }
+
     static let pollInterval: TimeInterval = 30
+    /// Jobs are polled far more often than the CFS: it is a plain HTTP GET rather than an `ssh`
+    /// process, and `filament_used` moves continuously where `remainLen` moves in 1 % steps —
+    /// 10 g at a time on a 1 kg spool.
+    static let jobPollInterval: TimeInterval = 5
 
     private let transport: PrinterTransporting
+    private let jobReader: PrintJobReading
+    /// Turns the stream of job snapshots into chargeable consumption. See ``PrintJobTracker`` for
+    /// the three things that make this harder than subtracting two numbers.
+    private var tracker = PrintJobTracker()
+    private var jobTimer: Task<Void, Never>?
     // Strong for the same reason as IntakeViewModel's collaborators: no cycle exists, and
     // `unowned` only made short-lived callers crash.
     private let printers: PrinterViewModel
@@ -46,13 +69,18 @@ final class CFSViewModel: ObservableObject {
 
     init(transport: PrinterTransporting,
          printers: PrinterViewModel,
-         inventory: InventoryViewModel) {
+         inventory: InventoryViewModel,
+         jobReader: PrintJobReading = MoonrakerClient()) {
         self.transport = transport
         self.printers = printers
         self.inventory = inventory
+        self.jobReader = jobReader
     }
 
-    deinit { timer?.cancel() }
+    deinit {
+        timer?.cancel()
+        jobTimer?.cancel()
+    }
 
     // MARK: Target
 
@@ -105,6 +133,11 @@ final class CFSViewModel: ObservableObject {
             info = snapshot
             state = .loaded(.now)
             lastReport = inventory.reconcile(with: snapshot)
+            // Reconciliation is what puts a spool in a slot, so anything the job poll had to hold
+            // can be placed now.
+            if !pendingGrams.isEmpty {
+                flushPending(jobName: job?.filename ?? "an earlier job")
+            }
         } catch {
             // The previous snapshot is kept: a dropped poll should not blank a screen the user is
             // reading. The state carries the failure so the header can say the data is stale.
@@ -113,6 +146,7 @@ final class CFSViewModel: ObservableObject {
     }
 
     func startAutoPoll() {
+        startJobPoll()
         guard timer == nil else { return }
         timer = Task { [weak self] in
             while !Task.isCancelled {
@@ -126,6 +160,109 @@ final class CFSViewModel: ObservableObject {
     func stopAutoPoll() {
         timer?.cancel()
         timer = nil
+        jobTimer?.cancel()
+        jobTimer = nil
+    }
+
+    // MARK: Job consumption
+
+    /// Reads the printer's job state and charges what it drew to the spool that gave it up.
+    ///
+    /// Needs no password: Moonraker is plain HTTP on the LAN. It only needs an address, so this
+    /// runs even when the CFS poll cannot (no stored SSH password) — the job is still worth
+    /// tracking for a spool on the external holder.
+    func pollJob() async {
+        guard let target, target.isReachableOnPaper else { return }
+        do {
+            let snapshot = try await jobReader.snapshot(host: target.host)
+            job = snapshot
+            guard let charge = tracker.accept(snapshot) else { return }
+            apply(charge)
+        } catch {
+            // Deliberately quiet. A printer that is off, or one with no Moonraker, must not raise
+            // an error every five seconds behind a screen the user is reading. The CFS poll is the
+            // one that reports connectivity.
+            job = nil
+        }
+    }
+
+    /// Charges one slot's draw to the spool sitting in it.
+    private func apply(_ charge: PrintJobTracker.Charge) {
+        guard let (boxID, slotID) = Self.splitSlotLabel(charge.slot) else { return }
+
+        // Diameter and density come from the slot the printer reports, not from a constant: a
+        // 2.85 mm spool would be out by a factor of 2.65 on cross-section alone.
+        let slot = info?.boxes.first { $0.boxID == boxID }?.list.first { $0.materialId == slotID }
+        let grams = FilamentGeometry.grams(
+            forMillimetres: charge.millimetres,
+            diameterMillimetres: Double(slot?.diameter ?? "") ?? FilamentGeometry.defaultDiameter,
+            densityGramsPerCubicCentimetre: (slot?.density ?? 0) > 0
+                ? slot!.density : FilamentGeometry.defaultDensity)
+        guard grams > 0 else { return }
+
+        applyCharge(grams: grams, toSlot: charge.slot, boxID: boxID, slotID: slotID,
+                    jobName: charge.jobName)
+    }
+
+    /// Charges grams to the spool in a slot, or holds them until one is known.
+    private func applyCharge(grams: Double, toSlot label: String,
+                             boxID: String, slotID: String, jobName: String) {
+        let location = SpoolLocation.cfs(box: boxID, slot: slotID)
+        guard let spool = inventory.inventory.active.first(where: { $0.location == location })
+        else {
+            pendingGrams[label, default: 0] += grams
+            return
+        }
+        let held = pendingGrams.removeValue(forKey: label) ?? 0
+        let total = grams + held
+        chargedThisSession += total
+        inventory.consume(spool, grams: total, detail: "job \(jobName)")
+    }
+
+    /// Tries to place consumption held while a slot had no spool in stock. Called after a CFS poll,
+    /// which is what puts the spool there.
+    private func flushPending(jobName: String) {
+        for (label, grams) in pendingGrams {
+            guard let (boxID, slotID) = Self.splitSlotLabel(label) else {
+                pendingGrams.removeValue(forKey: label)
+                continue
+            }
+            _ = grams   // the held amount is read back inside applyCharge
+            applyCharge(grams: 0, toSlot: label, boxID: boxID, slotID: slotID, jobName: jobName)
+        }
+    }
+
+    /// `"T1A"` -> `("T1", "A")`. The slot is always the final character.
+    static func splitSlotLabel(_ label: String) -> (box: String, slot: String)? {
+        guard label.count >= 2, let last = label.last else { return nil }
+        return (String(label.dropLast()), String(last))
+    }
+
+    /// `"Printing lid.stl — 42 g from T1A"`, or nil when nothing is running.
+    var jobSummary: String? {
+        guard let job, job.state.isActive else { return nil }
+        let name = job.filename.isEmpty ? "a job" : job.filename
+        var parts = ["\(job.state == .paused ? "Paused" : "Printing") \(name)"]
+        if let slot = job.feedingSlot { parts.append("feeding from \(slot)") }
+        if chargedThisSession > 0 {
+            parts.append(String(format: "%.1f g charged", chargedThisSession))
+        }
+        if unattributedGrams > 0 {
+            parts.append(String(format: "%.1f g held — no spool in stock for that slot yet",
+                                unattributedGrams))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func startJobPoll() {
+        guard jobTimer == nil else { return }
+        jobTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.pollJob()
+                try? await Task.sleep(nanoseconds: UInt64(Self.jobPollInterval * 1_000_000_000))
+            }
+        }
     }
 
     // MARK: Derived display

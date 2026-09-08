@@ -123,6 +123,14 @@ final class InventoryViewModel: ObservableObject {
         return true
     }
 
+    /// Deducts filament a print job drew from this spool.
+    func consume(_ spool: Spool, grams: Double, detail: String) {
+        guard var current = inventory.spool(id: spool.id) else { return }
+        current.consume(grams: grams, detail: detail)
+        inventory.update(current)
+        persist()
+    }
+
     func setLocation(_ location: SpoolLocation, for spool: Spool) {
         guard var current = inventory.spool(id: spool.id) else { return }
         current.location = location

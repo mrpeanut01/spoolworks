@@ -1,0 +1,512 @@
+{
+  "_comment": "Captured live from a K2 Plus (firmware 1.4.2) while a print started from T1A. Records the two things a guess would have got wrong: filament_used dips on retraction, and box.T1.filament only names the feeding slot ~65 s after print_stats.state becomes 'printing'.",
+  "printer": "K2 Plus",
+  "boxFirmware": "1.4.2",
+  "slotUnderTest": "T1A",
+  "samples": [
+    {
+      "wall": "10:21:56",
+      "state": "standby",
+      "filename": "",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:21:58",
+      "state": "standby",
+      "filename": "",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:01",
+      "state": "standby",
+      "filename": "",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:05",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:07",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:10",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:12",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:14",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:19",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:21",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:24",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:26",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:28",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:34",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:36",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:38",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:41",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:45",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:47",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:50",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:52",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:54",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:22:58",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:23:00",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:23:02",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:23:04",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 0.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:23:07",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 14.0,
+      "slot": "None",
+      "mode": "0"
+    },
+    {
+      "wall": "10:23:10",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 14.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:12",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 14.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:15",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 14.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:17",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 14.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:19",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 50.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:23",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 68.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:25",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 86.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:27",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 102.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:29",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 104.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:32",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 104.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:35",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 104.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:37",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 104.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:40",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 102.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:42",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 102.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:44",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 138.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:48",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 156.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:50",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 172.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:52",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 190.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:54",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 192.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:23:56",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 192.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:00",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 192.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:02",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 192.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:05",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 190.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:07",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 190.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:09",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 242.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:12",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 260.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:15",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 262.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:17",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 278.19999999995343,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:19",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 280.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:21",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 280.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:25",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 280.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:27",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 280.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:29",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 278.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:31",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 278.0,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:34",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 288.9225999999326,
+      "slot": "A",
+      "mode": "2"
+    },
+    {
+      "wall": "10:24:37",
+      "state": "printing",
+      "filename": "lid.stl_PLA_29m0s.gcode",
+      "filament_used": 293.8317572765518,
+      "slot": "A",
+      "mode": "2"
+    }
+  ]
+}

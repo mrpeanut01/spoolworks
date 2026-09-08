@@ -23,7 +23,11 @@ struct PrinterCFSView: View {
                 }
                 .padding(.bottom, 18)
 
-                statusStrip.padding(.bottom, 20)
+                statusStrip.padding(.bottom, model.jobSummary == nil ? 20 : 12)
+
+                if let summary = model.jobSummary {
+                    JobBanner(text: summary).padding(.bottom, 20)
+                }
 
                 if let reason = model.blockedReason {
                     EmptyPanel(kicker: "Not connected",
@@ -303,5 +307,34 @@ private struct SlotCell: View {
     private var delta: String {
         guard let spool, let last = spool.usage.first else { return "no history yet" }
         return last.deltaGrams == 0 ? last.detail : "\(last.amountLabel) · \(last.detail)"
+    }
+}
+
+
+// MARK: - Job banner
+
+/// What the printer is doing, and what it has taken off a spool while this screen was open.
+///
+/// Shown only while a job is actually running. The gram figure is measured at the extruder — the
+/// CFS reports whole percent, which is 10 g at a time on a 1 kg spool, so between its readings
+/// this is the finer of the two numbers.
+private struct JobBanner: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.m) {
+            Rectangle().fill(Theme.accent).frame(width: 9, height: 9)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.label)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accent.opacity(0.10))
+        .overlay(Rectangle().strokeBorder(Theme.accent, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }

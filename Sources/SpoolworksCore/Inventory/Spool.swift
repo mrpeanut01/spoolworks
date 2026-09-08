@@ -144,9 +144,16 @@ public struct UsageEntry: Identifiable, Hashable, Codable, Sendable {
     public let kind: Kind
     /// Free text: `"job bracket_v3.gcode"`, `"CFS poll · delta"`, `"Intake · tag read"`.
     public let detail: String
-    public let deltaGrams: Int
+    /// Signed grams. **Fractional on purpose.**
+    ///
+    /// A print job is polled every few seconds and draws a fraction of a gram between readings.
+    /// Held as an `Int`, every one of those rounded to zero: the remaining percentage drifted down
+    /// correctly while the log sat next to it reading "0 g", which is the log failing at the one
+    /// job it has. Whole grams are still what gets *displayed* above about 10 g — see
+    /// ``amountLabel`` — but the arithmetic is done at full precision.
+    public let deltaGrams: Double
 
-    public init(id: UUID = UUID(), date: Date = .now, kind: Kind, detail: String, deltaGrams: Int) {
+    public init(id: UUID = UUID(), date: Date = .now, kind: Kind, detail: String, deltaGrams: Double) {
         self.id = id
         self.date = date
         self.kind = kind
@@ -154,10 +161,18 @@ public struct UsageEntry: Identifiable, Hashable, Codable, Sendable {
         self.deltaGrams = deltaGrams
     }
 
-    /// `"−38 g"`, `"1000 g"`. Uses U+2212 MINUS, not a hyphen, so the columns line up in a
-    /// tabular-numerals font.
+    /// `"−38 g"`, `"1000 g"`, `"−0.4 g"`. Uses U+2212 MINUS, not a hyphen, so the columns line up
+    /// in a tabular-numerals font.
+    ///
+    /// A decimal appears only below 10 g, where it is the difference between a figure and nothing
+    /// at all; above that it is noise on a number the CFS only knows to the nearest 10 g anyway.
     public var amountLabel: String {
-        deltaGrams < 0 ? "−\(abs(deltaGrams)) g" : "\(deltaGrams) g"
+        let magnitude = abs(deltaGrams)
+        let sign = deltaGrams < 0 ? "−" : ""
+        if magnitude > 0 && magnitude < 10 {
+            return String(format: "%@%.1f g", sign, magnitude)
+        }
+        return "\(sign)\(Int(magnitude.rounded())) g"
     }
 }
 
@@ -307,15 +322,63 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
                                 date: Date = .now,
                                 source: String? = nil) {
         let clamped = Self.clamp(newPercent)
-        let delta = Int((Double(netWeightGrams) * (clamped - remainingPercent) / 100).rounded())
+        let delta = Double(netWeightGrams) * (clamped - remainingPercent) / 100
         remainingPercent = clamped
         if let source { remainingSource = source }
         usage.insert(UsageEntry(date: date, kind: kind, detail: detail, deltaGrams: delta), at: 0)
     }
 
+    /// Deducts a known mass, for consumption measured at the extruder rather than at the spool.
+    ///
+    /// The counterpart to ``record(percent:kind:detail:date:source:)``, which takes an absolute
+    /// figure because that is what the CFS reports. A print job reports a *delta* — how much
+    /// filament went through — so this is the one place a delta is the input.
+    ///
+    /// ## The two sources disagree, on purpose
+    ///
+    /// A CFS-loaded spool has both: the CFS measures what is left, in whole percent (10 g steps on
+    /// a 1 kg spool), and the job reports what was extruded, to a fraction of a gram. Job
+    /// consumption is deducted as it happens so the figure moves between the CFS's coarse
+    /// readings; the next poll then overwrites it with an absolute measurement, correcting any
+    /// drift. Neither is treated as gospel and the log records both, so a small positive
+    /// correction after a job is the CFS saying "actually there was more left than you thought" —
+    /// information, not an error.
+    public mutating func consume(grams: Double, detail: String, date: Date = .now) {
+        guard grams > 0, netWeightGrams > 0 else { return }
+        let percentUsed = grams / Double(netWeightGrams) * 100
+        let newPercent = Self.clamp(remainingPercent - percentUsed)
+        // Derived from the clamped result rather than from `grams`, so the line can never claim a
+        // spool gave up more than it held.
+        let actual = Double(netWeightGrams) * (remainingPercent - newPercent) / 100
+        remainingPercent = newPercent
+        guard actual > 0 else { return }
+
+        // Coalesce into the running entry for the same job rather than appending.
+        //
+        // A job is polled every few seconds, so appending would write hundreds of lines for one
+        // print — burying the intake, the CFS readings and the movements that make the log worth
+        // having. One line per job, growing as the print runs, says the same thing and stays
+        // readable.
+        if let latest = usage.first, latest.kind == .job, latest.detail == detail {
+            usage[0] = UsageEntry(id: latest.id,
+                                  date: date,
+                                  kind: .job,
+                                  detail: detail,
+                                  deltaGrams: latest.deltaGrams - actual)
+        } else {
+            usage.insert(UsageEntry(date: date, kind: .job, detail: detail, deltaGrams: -actual),
+                         at: 0)
+        }
+    }
+
     /// Appends a usage line that does not change the remaining figure — a movement, a retirement.
     public mutating func note(kind: UsageEntry.Kind, detail: String, date: Date = .now) {
         usage.insert(UsageEntry(date: date, kind: kind, detail: detail, deltaGrams: 0), at: 0)
+    }
+
+    /// Grams consumed across the whole history, for "used since intake".
+    public var consumedGrams: Double {
+        usage.filter { $0.deltaGrams < 0 }.reduce(0) { $0 - $1.deltaGrams }
     }
 
     // MARK: Helpers

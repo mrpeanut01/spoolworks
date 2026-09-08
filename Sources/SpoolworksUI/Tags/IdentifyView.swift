@@ -187,9 +187,11 @@ struct IdentifyView: View {
         }
         let used: String
         if let matched {
-            let consumed = matched.netWeightGrams - matched.remainingGrams
-            let jobs = matched.usage.filter { $0.deltaGrams < 0 }.count
-            used = "\(consumed) g over \(jobs) entr\(jobs == 1 ? "y" : "ies")"
+            let jobs = matched.usage.filter { $0.kind == .job }.count
+            used = jobs > 0
+                ? String(format: "%.0f g over %d job%@", matched.consumedGrams, jobs,
+                         jobs == 1 ? "" : "s")
+                : String(format: "%.0f g", matched.consumedGrams)
         } else {
             used = "not in inventory"
         }

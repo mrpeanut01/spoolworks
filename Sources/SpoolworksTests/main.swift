@@ -47,6 +47,12 @@ let exitCode = TestDriver.run([
     // Reader robustness (code-review fixes)
     readerRobustnessTests,
 
+    // Print jobs and consumption
+    filamentGeometryTests,
+    printJobTrackerTests,
+    moonrakerTests,
+    spoolConsumptionTests,
+
     // Spool inventory
     spoolModelTests,
     spoolIdentityTests,
