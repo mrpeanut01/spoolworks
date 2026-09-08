@@ -212,3 +212,76 @@ two disagree. So a stale UI decision cannot rewrite the keys of a tag that turne
 programmed — which a persisted `true` preference could. The diff, the backup, the access-bit
 preservation and the read-back verification are untouched, and the sheet still states plainly that
 the key is being written.
+
+## D-011 — Location is a user-configurable list of places, and the CFS poll still owns its slots
+**Context:** The Inventory screen showed Location and % remaining as read-only text. The tool owner
+wanted both editable in place, and wanted the shelf-style locations to be a list the user
+maintains, seeded `Unplaced, Shelf, CFS, Ext…`.
+
+`SpoolLocation` already splits four ways by *who owns the fact*: `.cfs(box:slot:)` and
+`.externalHolder` are **observed** — `material_box_info.json` reports them and
+`SpoolInventory.reconcile` rewrites them every 30 s — while `.shelf(String)` and `.unknown` are
+**asserted** by the user and no poll touches them. Making location editable therefore runs straight
+into a conflict the app has not had before: a spool the user hand-places into CFS slot `T1A` that
+the printer then reports empty, or vice versa.
+
+**Alternatives considered.**
+(a) *Let the picker set any location, including a CFS slot.* Rejected: it invites the user to state
+something false about their own hardware, which the next poll silently reverses. `CFSViewModel`
+already rejects exactly this for the design's "CFS units attached" picker, for the same reason.
+(b) *Let a manual CFS assignment win until the user clears it — a sticky override.* Rejected: it
+makes the inventory disagree with the machine indefinitely and adds a third, invisible state
+(overridden) to a field whose value people trust because it is measured.
+(c) *Freeze the picker entirely while the printer holds the spool.* Rejected: "I have just taken
+this out" is a true and useful thing to say in the ~30 s before the poll notices, and blocking it
+teaches the user the field is unreliable.
+(d) *Refuse to remove a place that spools still reference.* Rejected: nothing is lost by moving them
+— the spool, its history and its figure are untouched, only a label goes — and a list you cannot
+tidy without first hunting every spool that mentions a name is a list people stop using.
+(e) *Give places UUIDs so a rename touches nothing.* Rejected: `SpoolLocation.shelf` stores a
+string, so a rename must walk the inventory either way; an id would only add a second thing that
+can disagree with the first. The accepted cost is that the reserved `Unplaced` entry cannot be
+renamed.
+
+**Chosen.**
+1. `SpoolPlaces` (Core) is an ordered, case-insensitively unique list of names, seeded with the
+   four the tool owner asked for and persisted in `UserDefaults` under `SpoolworksSpoolPlaces` —
+   the same pattern as `AppSettings` and `PrinterSettings`, not the inventory file, which the
+   printer part-owns. `Unplaced` is reserved: always present, always first, never renamed or
+   removed, and the only name mapping to `.unknown`. Every other name maps to `.shelf(name)`.
+2. **The picker asserts only where the printer cannot see.** Its rows produce `.unknown` or
+   `.shelf` and nothing else; `.cfs` and `.externalHolder` remain settable only by `reconcile`. A
+   loaded spool's real position is shown as the selected row, labelled `"CFS T1 · A · reported by
+   the printer"`, and applying it is a no-op. So a hand edit can move a spool **off** the printer,
+   never **onto** it.
+3. A hand edit that moves a loaded spool to a place is allowed and provisional. The poll settles
+   it, and the existing reconcile logic already does the right thing in both directions: if the
+   spool really was removed the unload pass skips it (it only touches locations that
+   `isOnPrinter`), so the user's place **survives**; if it is still in the slot, pass 2 rebinds it
+   by identity, restores `.cfs` and writes `"Loaded into T1A"`, so the assertion is **overruled by
+   measurement, in writing**. Both are pinned by tests. The move also rewrites `remainingSource` to
+   `"Last reading from CFS T1 · A"` — the same wording reconcile uses when the printer notices
+   first, so the rail does not read differently depending on who spotted it.
+4. Renaming or removing a place re-points its spools in the same operation
+   (`SpoolInventory.reassign(place:to:detail:)`), each with a `.movement` line saying why. **A place
+   edit can never leave a spool at a name the picker no longer offers.** Removal cascades to
+   `Unplaced`; the button shows the count first and a toast reports it after.
+5. `% remaining` is edited through the *existing* weigh-in control, which grows a By weight / By
+   percent switch rather than gaining a rival "set %" affordance elsewhere. Both units call one
+   method, so the `UsageEntry` invariant — every change to `remainingPercent` appends a line
+   explaining it — is enforced once. Out-of-range figures are refused, not clamped, for the reason
+   the weigh-in already refuses a gross weight; re-typing the figure already on record writes
+   nothing, because a "0 g" adjustment explains nothing.
+6. The list editor sits under the picker it configures, not in a preferences window. The app has no
+   preferences window on purpose (see `AppSettings`): a setting is rendered next to what it affects,
+   and places are only ever wanted while looking at a spool's location.
+
+**Why:** It keeps the one line the whole inventory rests on — a measurement is a measurement and an
+assertion is an assertion — while giving the user the vocabulary they asked for. Nothing the user
+can click produces a claim the printer will contradict without saying so.
+
+**Impact:** `CFS` and `Ext…` are seeded as ordinary shelf names with no special power; they are
+*not* `.cfs` / `.externalHolder`, which is why the printer's own row names its source. There is
+still a window of up to 30 s in which a hand edit and the printer disagree; it closes on the next
+poll and both outcomes are logged. Re-selecting a CFS slot after moving a spool off it by hand is
+not possible — the poll is the only way back, which is the point.

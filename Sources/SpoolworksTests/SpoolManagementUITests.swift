@@ -157,7 +157,7 @@ let inventoryViewModelTests = TestSuite(name: "Inventory view model", cases: [
             defer { try? FileManager.default.removeItem(at: dir) }
             let spool = sampleSpool(percent: 100)
             model.add(spool)
-            model.adjust(spool, toPercent: 62)
+            model.adjust(spool, toPercent: 62, method: .weighed)
 
             guard let after = t.unwrap(model.inventory.spool(id: spool.id), "spool") else { return }
             t.equal(after.remainingPercent, 62, "figure moved")
