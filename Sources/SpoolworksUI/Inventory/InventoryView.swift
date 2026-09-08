@@ -248,8 +248,9 @@ private struct InventoryDetailRail: View {
 
         Rule().padding(.bottom, 14)
 
+        LocationControl(spool: spool, model: model).padding(.bottom, 14)
+
         VStack(spacing: 0) {
-            DataRow("Location", spool.location.description)
             DataRow("Serial", spool.serialLabel, mono: true)
             DataRow("Filament ID", spool.filamentIdLabel, mono: true)
             DataRow("Vendor ID", spool.vendorIdLabel, mono: true)
@@ -261,7 +262,7 @@ private struct InventoryDetailRail: View {
         Text("Usage log").kicker().padding(.bottom, 10)
         UsageLog(entries: spool.usage).padding(.bottom, 18)
 
-        WeighInControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
+        RemainingControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
 
         VStack(spacing: Theme.Spacing.s) {
             Button("Read tag to verify") { env.sidebarSelection = .identify }
@@ -383,49 +384,67 @@ struct InlineFailure: View {
 }
 
 
-// MARK: - Weigh-in
+// MARK: - Correcting what is left
 
-/// Correct what is left by putting the spool on scales.
+/// Correct the remaining figure by hand — from a set of scales, or as a percentage.
 ///
 /// Not in the design, but the design's own copy asks for it: with no CFS attached it says
 /// "weigh-in corrections carry more weight here", and a spool sitting on a shelf has no other way
 /// to stay accurate — its last reading is however full it was when it left the printer.
 ///
-/// It asks for **filament** grams rather than gross weight. A spool's core is 150–250 g depending
-/// on the maker, and there is nowhere honest to get that number from: it is not on the tag, not in
-/// the material database, and not the same across brands. Asking for gross and guessing the core
-/// would overstate every corrected spool by roughly a fifth, so the label says which is wanted.
-private struct WeighInControl: View {
+/// **One control, two units, one code path.** The percentage edit is a second way of saying the
+/// same thing as the weigh-in, not a second mechanism: both call
+/// ``InventoryViewModel/adjust(_:toPercent:method:)``, which is what guarantees the usage line the
+/// model requires for every change to `remainingPercent`. Adding a separate "set %" affordance
+/// somewhere else on the screen was the obvious alternative and was rejected — two places to
+/// correct one number is how the two paths end up with different clamping rules, and how a user
+/// ends up not knowing which one wrote the line they are reading.
+///
+/// The weight field asks for **filament** grams rather than gross weight. A spool's core is
+/// 150–250 g depending on the maker, and there is nowhere honest to get that number from: it is
+/// not on the tag, not in the material database, and not the same across brands. Asking for gross
+/// and guessing the core would overstate every corrected spool by roughly a fifth, so the label
+/// says which is wanted.
+private struct RemainingControl: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
     @State private var isOpen = false
+    @State private var method: AdjustmentMethod = .weighed
     @State private var entry = ""
     @State private var problem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            Button(isOpen ? "Cancel weigh-in" : "Correct by weighing") {
+            Button(isOpen ? "Cancel correction" : "Correct what's left") {
                 isOpen.toggle()
                 entry = ""
                 problem = nil
             }
             .buttonStyle(.sw(.secondary, block: true))
+            .accessibilityLabel(isOpen
+                                ? "Cancel correcting what is left of \(spool.label)"
+                                : "Correct what is left of \(spool.label)")
 
             if isOpen {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-                    FieldBox(label: "Filament remaining", note: "grams, not including the spool") {
+                    SegmentedFilter(options: AdjustmentMethod.allCases,
+                                    title: \.title,
+                                    selection: $method)
+
+                    FieldBox(label: fieldLabel, note: fieldNote) {
                         TextField("", text: $entry)
                             .textFieldStyle(.plain)
                             .swInput()
                             .onSubmit(apply)
+                            .accessibilityLabel(fieldLabel + ", " + fieldNote)
                     }
 
                     HStack(spacing: Theme.Spacing.s) {
                         Button("Apply", action: apply)
                             .buttonStyle(.sw(.primary, size: 12, h: 14, v: 8))
                             .disabled(entry.isEmpty)
-                        Text("of \(spool.netWeightGrams) g net")
+                        Text(scaleNote)
                             .font(Theme.caption)
                             .foregroundStyle(Theme.secondaryLabel)
                     }
@@ -435,27 +454,234 @@ private struct WeighInControl: View {
                             .font(Theme.caption)
                             .foregroundStyle(Theme.danger)
                             .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("Not applied. \(problem)")
                     }
                 }
                 .padding(Theme.Spacing.m)
                 .background(Theme.surface)
                 .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
+                // Switching units mid-edit must not carry the number across: 640 g and 640 % are
+                // not the same claim, and the second would simply be refused with no explanation
+                // of where the figure came from.
+                .onChange(of: method) { _, _ in
+                    entry = ""
+                    problem = nil
+                }
             }
         }
     }
 
+    private var fieldLabel: String {
+        method == .weighed ? "Filament remaining" : "Remaining"
+    }
+
+    private var fieldNote: String {
+        method == .weighed ? "grams, not including the spool" : "percent, 0 to 100"
+    }
+
+    private var scaleNote: String {
+        method == .weighed
+            ? "of \(spool.netWeightGrams) g net"
+            : "currently \(spool.remainingLabel) · \(spool.remainingGramsLabel)"
+    }
+
     private func apply() {
-        guard let grams = Int(entry.trimmingCharacters(in: .whitespaces)) else {
-            problem = "Enter a whole number of grams."
-            return
-        }
-        guard model.adjust(spool, toGrams: grams) else {
-            problem = "That is more than this spool holds (\(spool.netWeightGrams) g). "
-                + "Weigh the filament only, without the spool it is wound on."
-            return
+        let text = entry.trimmingCharacters(in: .whitespaces)
+        switch method {
+        case .weighed:
+            guard let grams = Int(text) else {
+                problem = "Enter a whole number of grams."
+                return
+            }
+            guard model.adjust(spool, toGrams: grams) else {
+                problem = "That is more than this spool holds (\(spool.netWeightGrams) g). "
+                    + "Weigh the filament only, without the spool it is wound on."
+                return
+            }
+        case .byHand:
+            // Accepts a decimal: the CFS reports whole percent but a user reading a half-empty
+            // spool off a chart has no reason to be forced to an integer.
+            guard let percent = Double(text) else {
+                problem = "Enter a percentage."
+                return
+            }
+            guard model.adjust(spool, toPercent: percent, method: .byHand) else {
+                problem = "A spool is somewhere between 0 % and 100 % full. "
+                    + "For a figure in grams, switch to By weight."
+                return
+            }
         }
         isOpen = false
         entry = ""
         problem = nil
+    }
+}
+
+// MARK: - Location
+
+/// Where the spool is: a picker over the user's own places, plus the list editor.
+///
+/// The picker offers **assertions only** — `Unplaced` and the user's place names. It never offers
+/// a CFS slot or the external holder, because those are measurements the 30-second poll owns and
+/// rewrites; see ``InventoryViewModel/setLocation(_:for:)`` and `docs/DECISIONS.md` D-011. When
+/// the printer is currently holding the spool its position is shown as the selected row, labelled
+/// with where it came from, and the note underneath says plainly that the poll will take it back.
+///
+/// The list editor lives here, under the control it configures, rather than in a preferences
+/// window — the app has none, on purpose, and ``AppSettings`` gives the reasoning: a switch is
+/// rendered next to what it affects. Places are only ever wanted while looking at a spool's
+/// location, which is exactly here.
+private struct LocationControl: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var managing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            FieldBox(label: "Location", note: note) {
+                Picker("", selection: selection) {
+                    ForEach(model.locationOptions(for: spool)) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Location of \(spool.label)")
+                .accessibilityHint(spool.location.isOnPrinter
+                    ? "The printer reports this spool as loaded. Choosing a place records that you have taken it out; the next poll corrects it if it is still in the printer."
+                    : "Choose where this spool is kept.")
+            }
+
+            HStack(spacing: Theme.Spacing.s) {
+                Button(managing ? "Done" : "Manage places") { managing.toggle() }
+                    .buttonStyle(.sw(.ghost, size: 11, h: 0, v: 2))
+                    .accessibilityLabel(managing ? "Finish editing places" : "Manage the list of places")
+                Spacer(minLength: 0)
+            }
+
+            if managing { PlaceEditor(model: model) }
+        }
+    }
+
+    private var selection: Binding<LocationOption> {
+        Binding(get: { model.locationOption(for: spool) },
+                set: { model.setLocation($0, for: spool) })
+    }
+
+    private var note: String {
+        spool.location.isOnPrinter
+            ? "the printer owns this; it is re-read every 30 s"
+            : "where you keep it"
+    }
+}
+
+/// Add, rename and remove the places the picker offers.
+///
+/// Renaming is a plain text field committed with Return rather than a Rename button that swaps the
+/// row into an edit state: the row is already a field, the commit is already a keystroke, and the
+/// swap only added a mode the user has to notice they are in. The count beside each place is there
+/// so removing one is never a surprise — the spools move to `Unplaced` and each gets a line in its
+/// own history saying why, but a removal that quietly shuffles eleven spools should say eleven
+/// before it happens, not after.
+private struct PlaceEditor: View {
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var newName = ""
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            Text("Places").kicker()
+
+            ForEach(model.places.names, id: \.self) { name in
+                PlaceRow(name: name,
+                         count: model.spoolCount(atPlace: name),
+                         rename: { rename(name, to: $0) },
+                         remove: { report(model.removePlace(name)) })
+                    // Keyed by the name so a rename rebuilds the row from the new value rather
+                    // than leaving the field showing the old draft.
+                    .id(name)
+            }
+
+            Hairline()
+
+            HStack(spacing: Theme.Spacing.s) {
+                TextField("New place", text: $newName)
+                    .textFieldStyle(.plain)
+                    .swInput()
+                    .onSubmit(add)
+                    .accessibilityLabel("Name of a new place")
+                Button("Add", action: add)
+                    .buttonStyle(.sw(.secondary, size: 11, h: 10, v: 5))
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .accessibilityLabel("Add this place to the list")
+            }
+
+            if let problem {
+                Text(problem)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Not applied. \(problem)")
+            }
+        }
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
+    }
+
+    private func add() {
+        report(model.addPlace(newName))
+        if problem == nil { newName = "" }
+    }
+
+    private func rename(_ old: String, to new: String) {
+        guard new.trimmingCharacters(in: .whitespaces) != old else { return }
+        report(model.renamePlace(old, to: new))
+    }
+
+    /// Rejections are shown, not swallowed — the list refuses an edit for four different reasons
+    /// and a button that silently does nothing is the worst of them.
+    private func report(_ result: PlaceEditResult) {
+        problem = result.problem
+    }
+}
+
+private struct PlaceRow: View {
+    let name: String
+    let count: Int
+    let rename: (String) -> Void
+    let remove: () -> Void
+
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.s) {
+            if SpoolPlaces.isUnplaced(name) {
+                // Reserved: it is where `reconcile` puts a spool the printer has stopped
+                // reporting, so the list cannot be allowed to lose it.
+                ReadOnlyValue(name)
+                SWTag(text: "always", style: .neutral)
+            } else {
+                TextField("", text: $draft)
+                    .textFieldStyle(.plain)
+                    .swInput()
+                    .onSubmit { rename(draft) }
+                    .accessibilityLabel("Name of the place \(name)")
+                    .accessibilityHint("Press Return to rename it.")
+                if count > 0 {
+                    SWTag(text: "\(count)", style: .neutral)
+                        .accessibilityLabel("\(count) spool\(count == 1 ? "" : "s") here")
+                }
+                Button("Remove", action: remove)
+                    .buttonStyle(.sw(.ghost, size: 11, h: 8, v: 4))
+                    .accessibilityLabel("Remove the place \(name)")
+                    .accessibilityHint(count == 0
+                        ? "Nothing is kept here."
+                        : "\(count) spool\(count == 1 ? "" : "s") will move to \(SpoolPlaces.unplaced).")
+            }
+        }
+        .onAppear { draft = name }
     }
 }

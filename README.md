@@ -16,7 +16,7 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 
 | Screen | What it does |
 |---|---|
-| **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. |
+| **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. Location and % remaining are edited in place — the places are a list you keep, and every correction to the figure writes the line that explains it. Slots the printer reports stay the printer's to set. |
 | **Printer & CFS** | The printer's live slots, read from `material_box_info.json` over SSH every 30 s, folded into the inventory. |
 | **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. |
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |

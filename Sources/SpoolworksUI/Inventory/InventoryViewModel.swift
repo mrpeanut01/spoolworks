@@ -3,6 +3,92 @@ import SwiftUI
 import Combine
 import SpoolworksCore
 
+// MARK: - What the Location picker offers
+
+/// One row of the Location picker.
+///
+/// Two kinds, because a spool's location has two possible owners and only one of them is the user.
+///
+/// * ``place`` is an **assertion** — a row from the user's own list, mapping to `.unknown` or
+///   `.shelf(name)`. Choosing one is the user saying where the spool is.
+/// * ``printer`` is an **observation** — `"CFS T1 · A"`, straight from the last poll. It exists so
+///   the picker can display the truth about a loaded spool instead of rendering blank, and it is
+///   never produced by a choice — `InventoryViewModel.setLocation(_:for:)` ignores it.
+///
+/// So the picker can move a spool **off** the printer but never **onto** it, which is the CFS
+/// conflict rule in one sentence. `docs/DECISIONS.md` D-011 has the reasoning and what happens on
+/// the next poll in each direction.
+enum LocationOption: Hashable, Identifiable {
+    case place(String)
+    case printer(String)
+
+    var id: String {
+        switch self {
+        case let .place(name): return "place:\(name)"
+        case let .printer(text): return "printer:\(text)"
+        }
+    }
+
+    /// What the picker row reads. The printer's own position says where it came from, because a
+    /// user-created place called `CFS` sitting next to a measured `CFS T1 · A` would otherwise be
+    /// two indistinguishable rows meaning entirely different things.
+    var title: String {
+        switch self {
+        case let .place(name): return name
+        case let .printer(text): return "\(text) · reported by the printer"
+        }
+    }
+
+    var isPrinterOwned: Bool { if case .printer = self { return true }; return false }
+}
+
+// MARK: - How a hand correction was arrived at
+
+/// The two ways the user can correct what is left of a spool.
+///
+/// Both land as `UsageEntry.Kind.adjustment`: the model has exactly one kind for "the user
+/// corrected this by hand", and splitting it would fragment a spool's history for no gain. What
+/// differs is the **wording**, so the log and the detail rail say which was actually done — a
+/// figure someone measured on scales and a figure someone eyeballed deserve different amounts of
+/// trust when they are read back six months later.
+///
+/// Held as one type rather than two `adjust` methods so the weigh-in and the percentage edit are
+/// provably the same code path. They were briefly two, and the percentage edit immediately grew
+/// its own clamping rule that disagreed with the weigh-in's.
+enum AdjustmentMethod: String, CaseIterable, Identifiable, Sendable {
+    /// Filament grams off a set of scales.
+    case weighed
+    /// A percentage typed in, for a spool no one is going to unmount and weigh.
+    case byHand
+
+    var id: String { rawValue }
+
+    /// The segmented control's label.
+    var title: String {
+        switch self {
+        case .weighed: return "By weight"
+        case .byHand: return "By percent"
+        }
+    }
+
+    /// The usage log's line.
+    var detail: String {
+        switch self {
+        case .weighed: return "Weighed in"
+        case .byHand: return "Set by hand"
+        }
+    }
+
+    /// `Spool.remainingSource` — the one line under the big figure that says where it came from.
+    func source(on date: Date) -> String {
+        let day = date.formatted(date: .abbreviated, time: .omitted)
+        switch self {
+        case .weighed: return "Weighed \(day)"
+        case .byHand: return "Set by hand \(day)"
+        }
+    }
+}
+
 /// The Inventory screen's state, and the one place spools are created, changed and persisted.
 ///
 /// Every mutation saves immediately rather than on a timer or at quit. An inventory that loses the
@@ -20,17 +106,28 @@ final class InventoryViewModel: ObservableObject {
     /// A load or save that failed, shown in place rather than silently swallowed.
     @Published private(set) var storageError: String?
 
+    /// The user's names for where a spool lives when the printer is not holding it.
+    ///
+    /// Owned here rather than by a settings object of its own because the list and the spools that
+    /// reference it have to change together — renaming or removing a place walks the inventory,
+    /// and this view model is the app's only writer of spool state. A second owner would be a
+    /// second source of truth with no way to keep the two honest.
+    @Published private(set) var places: SpoolPlaces
+
     private let store: InventoryStore
     private let toasts: ToastCenter
+    private let defaults: UserDefaults
 
     /// Loaded once and cached: the table is 636 KB and naming a colour on every row render would
     /// re-read it. `nil` when the resource is missing, in which case spools simply carry no colour
     /// name — a degraded label, not a crash.
     private lazy var matcher: ColorMatcher? = try? ColorMatcher.shared()
 
-    init(store: InventoryStore, toasts: ToastCenter) {
+    init(store: InventoryStore, toasts: ToastCenter, defaults: UserDefaults = .standard) {
         self.store = store
         self.toasts = toasts
+        self.defaults = defaults
+        self.places = SpoolPlacesStore.load(from: defaults)
     }
 
     // MARK: Derived
@@ -93,15 +190,37 @@ final class InventoryViewModel: ObservableObject {
         toasts.info("Retired — \(spool.label) · serial \(spool.serialLabel)")
     }
 
-    /// Records a hand-corrected remaining figure — a weigh-in.
-    func adjust(_ spool: Spool, toPercent percent: Double) {
-        guard var current = inventory.spool(id: spool.id) else { return }
+    /// Records a hand-corrected remaining figure. **The only way the user can move that number.**
+    ///
+    /// Both the weigh-in and the inline percentage edit come through here, so the invariant on
+    /// ``UsageEntry`` — every change to `remainingPercent` appends a line explaining it — is
+    /// enforced once rather than at each entry point. ``Spool/record(percent:kind:detail:date:source:)``
+    /// derives the delta from the figure it is given, so the log can never disagree with the
+    /// number it sits under.
+    ///
+    /// Returns false when the figure is unusable, so the caller can keep the field open with the
+    /// value still in it rather than appearing to accept and discard it.
+    @discardableResult
+    func adjust(_ spool: Spool, toPercent percent: Double, method: AdjustmentMethod) -> Bool {
+        // Refused rather than clamped, for the same reason the weigh-in refuses a gross weight:
+        // clamping 130 % to 100 % silently discards what the user actually typed and leaves them
+        // believing the app agreed with them.
+        guard (0...100).contains(percent) else { return false }
+        guard var current = inventory.spool(id: spool.id) else { return false }
+        // Re-typing the figure already on record is not a correction, and a "0 g" line in the log
+        // explains nothing. Anything that genuinely moves the number is written however small —
+        // a 4 g correction on a 1 kg spool is 0.4 % and still real — so this is an exact
+        // comparison, not a tolerance.
+        guard current.remainingPercent != percent else { return true }
+        let now = Date.now
         current.record(percent: percent,
                        kind: .adjustment,
-                       detail: "Weighed in",
-                       source: "Weighed \(Date.now.formatted(date: .abbreviated, time: .omitted))")
+                       detail: method.detail,
+                       date: now,
+                       source: method.source(on: now))
         inventory.update(current)
         persist()
+        return true
     }
 
     /// Records a weigh-in: the user put the spool on scales and this is what is left.
@@ -119,8 +238,9 @@ final class InventoryViewModel: ObservableObject {
         // More than a full spool is a mis-keyed figure or the wrong net weight, not a real
         // reading. Refusing beats clamping to 100% and losing what the user actually measured.
         guard grams <= spool.netWeightGrams else { return false }
-        adjust(spool, toPercent: Double(grams) / Double(spool.netWeightGrams) * 100)
-        return true
+        return adjust(spool,
+                      toPercent: Double(grams) / Double(spool.netWeightGrams) * 100,
+                      method: .weighed)
     }
 
     /// Deducts filament a print job drew from this spool.
@@ -133,10 +253,137 @@ final class InventoryViewModel: ObservableObject {
 
     func setLocation(_ location: SpoolLocation, for spool: Spool) {
         guard var current = inventory.spool(id: spool.id) else { return }
+        // Choosing the row that is already selected is not a move, and a movement line for a
+        // spool that did not move makes the log harder to read, not easier.
+        guard current.location != location else { return }
+        let previous = current.location
         current.location = location
-        current.note(kind: .movement, detail: "Moved to \(location.description)")
+
+        if previous.isOnPrinter {
+            // Taking a spool off the printer by hand ends the live measurement, so the source line
+            // has to stop claiming one. This is deliberately the same wording
+            // `SpoolInventory.reconcile` uses when the *printer* stops reporting a slot — the user
+            // did the same thing the poll would have noticed within 30 s, and the rail should not
+            // read differently depending on who spotted it first.
+            current.remainingSource = "Last reading from \(previous.description)"
+            current.note(kind: .movement,
+                         detail: "Taken off \(previous.description) by hand — now "
+                             + location.description)
+        } else {
+            current.note(kind: .movement, detail: "Moved to \(location.description)")
+        }
         inventory.update(current)
         persist()
+    }
+
+    /// Applies a picker choice.
+    ///
+    /// **A `.printer` row is ignored, and that is the CFS conflict rule.** `.cfs(box:slot:)` and
+    /// `.externalHolder` are measurements the poll owns and rewrites every 30 s; letting the user
+    /// assert one would be letting them state a fact about their own hardware that the next poll
+    /// contradicts, which is the failure mode ``CFSViewModel`` already documents for the design's
+    /// "CFS units attached" picker. So the printer's position is shown, never chosen.
+    ///
+    /// Moving a loaded spool **to** a place is allowed, because it means something honest: "I have
+    /// taken this out". The poll then settles it, correctly in both directions —
+    ///
+    /// * the spool really was removed: the next snapshot does not list it, and `reconcile`'s
+    ///   unload pass only touches spools whose location `isOnPrinter`, so the place the user chose
+    ///   **survives**;
+    /// * the spool is still in the slot: pass 2 rebinds it by identity, restores `.cfs` and writes
+    ///   `"Loaded into T1 · A"`, so the assertion is **overruled by measurement, in writing**.
+    ///
+    /// Both are covered by tests; see `docs/DECISIONS.md` D-011.
+    func setLocation(_ option: LocationOption, for spool: Spool) {
+        guard case let .place(name) = option else { return }
+        setLocation(places.location(for: name), for: spool)
+    }
+
+    // MARK: The place list
+
+    /// The picker's rows for one spool, in the order they are shown.
+    func locationOptions(for spool: Spool) -> [LocationOption] {
+        var options: [LocationOption] = []
+        // First, so a loaded spool's real position is the thing the closed picker shows.
+        if spool.location.isOnPrinter {
+            options.append(.printer(spool.location.description))
+        }
+        options.append(contentsOf: places.names.map(LocationOption.place))
+        // A spool at a place that is no longer on the list. Editing keeps the two in step, so this
+        // can only come from an inventory file written before the list existed — but a picker with
+        // no row matching its own selection renders blank, and a blank Location on a spool that
+        // has one is worse than an extra row.
+        if let name = places.name(for: spool.location), !places.contains(name) {
+            options.append(.place(name))
+        }
+        return options
+    }
+
+    /// Which row is currently selected.
+    func locationOption(for spool: Spool) -> LocationOption {
+        if spool.location.isOnPrinter { return .printer(spool.location.description) }
+        return .place(places.name(for: spool.location) ?? SpoolPlaces.unplaced)
+    }
+
+    /// How many spools would be moved if this place were removed. Shown next to the button, so a
+    /// removal that shuffles a dozen spools is not a surprise.
+    func spoolCount(atPlace name: String) -> Int { inventory.spools(atPlace: name).count }
+
+    @discardableResult
+    func addPlace(_ raw: String) -> PlaceEditResult {
+        var updated = places
+        let result = updated.add(raw)
+        guard result.isApplied else { return result }
+        places = updated
+        SpoolPlacesStore.save(places, to: defaults)
+        return result
+    }
+
+    /// Renames a place and carries its spools with it.
+    ///
+    /// The rename and the re-pointing happen together and unconditionally — that is the whole
+    /// point. A list edit that left spools at the old string would leave them at a location no
+    /// picker row offers, which is the orphan this feature must not create.
+    @discardableResult
+    func renamePlace(_ old: String, to raw: String) -> PlaceEditResult {
+        var updated = places
+        let result = updated.rename(old, to: raw)
+        guard case let .applied(name) = result else { return result }
+        places = updated
+        SpoolPlacesStore.save(places, to: defaults)
+        let moved = inventory.reassign(place: old,
+                                       to: updated.location(for: name),
+                                       detail: "Place renamed — “\(old)” is now “\(name)”")
+        if !moved.isEmpty { persist() }
+        return result
+    }
+
+    /// Removes a place, moving anything on it to `Unplaced`.
+    ///
+    /// Removal is allowed even when spools are on it. Refusing would be the other obvious answer
+    /// and was rejected: nothing is lost by the move — the spool, its history and its remaining
+    /// figure are untouched, only a label goes — and a list you cannot tidy without first hunting
+    /// down every spool that mentions a name is a list people stop using. What it must not do is
+    /// leave a spool somewhere the picker cannot express, so the cascade is not optional, each
+    /// moved spool gets a line saying why, and the toast reports the count.
+    @discardableResult
+    func removePlace(_ name: String) -> PlaceEditResult {
+        var updated = places
+        let result = updated.remove(name)
+        guard case let .applied(removed) = result else { return result }
+        places = updated
+        SpoolPlacesStore.save(places, to: defaults)
+        let moved = inventory.reassign(
+            place: removed,
+            to: .unknown,
+            detail: "Place “\(removed)” removed — moved to \(SpoolPlaces.unplaced)")
+        if !moved.isEmpty {
+            persist()
+            let n = moved.count
+            toasts.info("Removed “\(removed)” — \(n) spool\(n == 1 ? "" : "s") "
+                        + "moved to \(SpoolPlaces.unplaced)")
+        }
+        return result
     }
 
     // MARK: CFS reconciliation
