@@ -21,11 +21,25 @@ struct WriteTagView: View {
     @ObservedObject var model: TagViewModel
     @ObservedObject var settings: AppSettings
     @ObservedObject var env: AppEnvironment
+    /// Observed individually. `AppEnvironment` holds it as a plain `let`, and a nested
+    /// `ObservableObject` does not republish through its owner — the same trap that made
+    /// Read / identify look as though it never read anything.
+    @ObservedObject var inventory: InventoryViewModel
 
-    /// The untagged spool this write is for, if the user asked for one from Inventory.
+    /// The spool this write is for, if the user asked for one from Inventory.
     private var taggingTarget: Spool? {
-        guard let id = env.inventoryModel.awaitingTagFor else { return nil }
-        return env.inventoryModel.inventory.spool(id: id)
+        guard let id = inventory.awaitingTagFor else { return nil }
+        return inventory.inventory.spool(id: id)
+    }
+
+    /// The spool a tag was just attached to, so the screen can say so and invite the second tag.
+    ///
+    /// Read off the write outcome rather than remembered: the record on the outcome is the one that
+    /// actually landed, and a spool matching it is one this write is responsible for.
+    private var justTagged: Spool? {
+        guard taggingTarget == nil,
+              case let .succeeded(summary) = model.writeOutcome else { return nil }
+        return inventory.inventory.spool(matching: summary.record)
     }
 
     var body: some View {
@@ -46,8 +60,10 @@ struct WriteTagView: View {
                         // spool in stock or creates a new record, and those are very different.
                         if let target = taggingTarget {
                             AttachBanner(spool: target, what: "written") {
-                                env.inventoryModel.cancelTagRequest()
+                                inventory.cancelTagRequest()
                             }
+                        } else if let tagged = justTagged {
+                            AttachedBanner(spool: tagged)
                         }
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)
@@ -252,5 +268,34 @@ private struct WriteOptionsCard: View {
         .toggleStyle(.checkbox)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: Theme.Spacing.l)
+    }
+}
+
+/// Says a tag landed on a spool already in stock, and that the second one is ready to write.
+///
+/// The write outcome panel says "written and verified", which is true and answers the wrong
+/// question: the user's question is whether the spool in their hand now *has* this tag. It also
+/// invites the second tag explicitly, because a spool carries one on each side of the hub and the
+/// form is already holding the right payload to write it — the same serial, deliberately, since
+/// both sides must carry the same record.
+private struct AttachedBanner: View {
+    let spool: Spool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Theme.success)
+                .accessibilityHidden(true)
+            Text("Saved to \(spool.label). Present another blank tag to write this spool's second "
+                 + "side — it gets the same payload.")
+                .font(Theme.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.success.opacity(0.10))
+        .overlay(Rectangle().strokeBorder(Theme.success, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }

@@ -880,3 +880,78 @@ let attachByReadTests = TestSuite(name: "Attaching a factory tag", cases: [
         }
     },
 ])
+
+// MARK: - Both sides of a spool tagged after the fact
+
+let secondSideTests = TestSuite(name: "Tagging both sides later", cases: [
+
+    test("the second tag written for a spool updates it rather than making another") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = typedSpool(materialType: "PLA")
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+
+            guard let record = try? SpoolRecord(materialId: "01001",
+                                                colorRGB: "C12E1F",
+                                                filamentLength: .kg1,
+                                                serialNumber: "005150") else {
+                t.expect(false, "could not build a record"); return
+            }
+
+            // Tag 1 — the request is spent here.
+            model.attachTag(to: shelf)
+            t.expect(model.attachTag(record: record, materialType: "PLA"), "first side attaches")
+            t.equal(model.inventory.active.count, 1, "one spool")
+
+            // Tag 2. A spool's two tags carry the *same* payload, so this is the same record. The
+            // request is gone, so it falls through to the normal logging path — which finds the
+            // spool by that identity and updates it.
+            let logged = model.logWrittenSpool(record: record,
+                                               materialLabel: "Creality · Hyper PLA",
+                                               materialType: "PLA",
+                                               enabled: true)
+            t.equal(model.inventory.active.count, 1,
+                    "still one spool — this is the same spool's other side")
+            t.equal(logged?.id, shelf.id, "and it is the one that was tagged")
+        }
+    },
+
+    test("a different serial would have made a second spool, which is the bug that was reported") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = typedSpool(materialType: "PLA")
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1, serialNumber: "005150"),
+                  let second = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "005151") else {
+                t.expect(false, "could not build the records"); return
+            }
+            model.attachTag(to: shelf)
+            _ = model.attachTag(record: first, materialType: "PLA")
+
+            // `commitWrite` randomises the serial after every success, so before the fix the second
+            // tag carried a different one — a different identity, hence a second record. Pinned so
+            // the reason the wiring holds the serial cannot be lost without this failing.
+            _ = model.logWrittenSpool(record: second,
+                                      materialLabel: "Creality · Hyper PLA",
+                                      materialType: "PLA",
+                                      enabled: true)
+            t.equal(model.inventory.active.count, 2,
+                    "a differing serial really does split the spool in two")
+        }
+    },
+])

@@ -110,6 +110,7 @@ let exitCode = TestDriver.run([
     tagCountTests,
     attachTagTests,
     attachByReadTests,
+    secondSideTests,
     inventoryLayoutTests,
 ])
 exit(exitCode)

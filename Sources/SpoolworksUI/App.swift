@@ -105,7 +105,19 @@ final class AppEnvironment: ObservableObject {
             // Only if that fails — no request, or the spool has gone — is it a new record.
             if inventoryModel.attachTag(record: summary.record,
                                         materialType: materialType,
-                                        source: .spoolworksWritten) { return }
+                                        source: .spoolworksWritten) {
+                // Put the serial back. `commitWrite` randomises it after every success, because on
+                // the Write screen the next tag is normally the next *spool* and reusing a serial
+                // would tag two of them identically. Tagging a spool that was already in stock is
+                // the exception: a spool carries a tag on each side of the hub and **both carry the
+                // same payload**, so the second tag written here has to be the same record.
+                //
+                // Without this the second tag was a different serial, so it was a different
+                // identity, so it became a second spool in the inventory — which is what "the tags
+                // did not save" actually was.
+                self.tagModel.draft.serialNumber = summary.record.serialNumber
+                return
+            }
             inventoryModel.logWrittenSpool(record: summary.record,
                                            materialLabel: summary.materialLabel,
                                            materialType: materialType,
