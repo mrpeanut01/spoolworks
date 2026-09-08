@@ -505,15 +505,35 @@ let uploadDefaultsTests = TestSuite(name: "Upload defaults", cases: [
             PrinterSettings.setRebootAfterUpload(true, for: .k2, in: defaults)
             t.expect(PrinterSettings.rebootAfterUpload(for: .k2, in: defaults), "reboot is on")
 
-            // The interlock lives in PrinterSettings, so no caller can bypass it.
+            // Derived, not stored: blocking updates reports reboot as off whatever is on disk.
             PrinterSettings.setAllowDatabaseUpdates(false, for: .k2, in: defaults)
             t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
-                     "and blocking updates turned it off")
+                     "blocked updates means no reboot")
 
-            // Re-enabling must not resurrect the old "yes".
+            // ...and the user's actual choice survives, rather than being reset.
             PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
+            t.expect(PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
+                     "re-allowing restores the choice they made")
+        }
+    },
+
+    // A printer whose `allow` value arrived by migration never went through the setter, so an
+    // invariant enforced only on write left the settings screen showing a disabled toggle
+    // switched on — misstating what an upload would do.
+    test("a migrated printer still reports reboot off while updates are blocked") { t in
+        onMain {
+            let suite = "sw-upload-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: suite) else { return }
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            // Exactly the on-disk shape of a printer configured before the rename.
+            defaults.set(true, forKey: "prevent_K2")
+            defaults.set(true, forKey: "reboot_K2")
+
+            t.expect(!PrinterSettings.allowDatabaseUpdates(for: .k2, in: defaults),
+                     "migrated to blocked")
             t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
-                     "it stays off until the user asks for it again")
+                     "and reboot reports off without the setter ever running")
         }
     },
 ])

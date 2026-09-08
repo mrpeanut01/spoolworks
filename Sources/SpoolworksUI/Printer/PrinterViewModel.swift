@@ -188,15 +188,25 @@ enum PrinterSettings {
         store.set(value, forKey: "allow_\(suffix(family))")
         // Drop the superseded key so a later read cannot resurrect the old answer.
         store.removeObject(forKey: "prevent_\(suffix(family))")
-        // The interlock lives here rather than in the view model so no other caller can bypass
-        // it: rebooting is only offered while updates are allowed, and a hidden "yes" that sprang
-        // back on re-enabling would make the upload honour a choice the user can no longer see.
-        if !value { setRebootAfterUpload(false, for: family, in: store) }
+        // Nothing to clear: `rebootAfterUpload` derives the interlock, so the stored preference
+        // can be left alone and comes back intact if updates are allowed again.
     }
 
+    /// Whether an upload should restart the printer afterwards.
+    ///
+    /// **Derived, not merely stored.** Rebooting is meaningless while database updates are
+    /// blocked — a restart is when the printer's updater runs — so this reports false in that
+    /// case whatever is on disk. Enforcing the invariant only in the setter was not enough: a
+    /// printer whose `allow` value arrived by migration never went through the setter, and the
+    /// settings screen showed a disabled toggle switched on, which misstates what an upload will
+    /// do.
+    ///
+    /// The stored preference is left intact rather than cleared, so blocking updates and then
+    /// allowing them again restores the choice the user actually made instead of resetting it.
     static func rebootAfterUpload(for family: PrinterType,
                                   in store: UserDefaults = defaults) -> Bool {
-        store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
+        guard allowDatabaseUpdates(for: family, in: store) else { return false }
+        return store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
     }
 
     static func setRebootAfterUpload(_ value: Bool, for family: PrinterType,
@@ -418,13 +428,9 @@ final class PrinterViewModel: ObservableObject {
 
     func setAllowDatabaseUpdates(_ value: Bool, for family: PrinterType) {
         PrinterSettings.setAllowDatabaseUpdates(value, for: family)
-        // Rebooting is only offered while updates are allowed, so turning them off must also clear
-        // the reboot preference — otherwise a hidden "yes" springs back the next time they are
-        // re-enabled, and the upload sheet would honour a choice the user can no longer see.
-        if !value {
-            PrinterSettings.setRebootAfterUpload(false, for: family)
-            apply(family) { $0.rebootAfterUpload = false }
-        }
+        // Re-read rather than assume: `rebootAfterUpload` is derived from this value, so the row
+        // has to be refreshed from the source of truth in the same breath.
+        apply(family) { $0.rebootAfterUpload = PrinterSettings.rebootAfterUpload(for: family) }
         apply(family) { $0.allowDatabaseUpdates = value }
     }
 
