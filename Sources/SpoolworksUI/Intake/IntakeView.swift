@@ -35,6 +35,16 @@ struct IntakeView: View {
             .padding(.horizontal, 26)
             .padding(.vertical, 22)
         }
+        // Auto-read, so no button has to be pressed. Read mode is what arms TagViewModel's
+        // arrival handling; Intake is a reading screen whichever method is chosen, and a blank tag
+        // presented in Method B simply fails to decode and is ignored.
+        .onAppear { tagModel.mode = .read }
+        // Keyed on the UID rather than the record: a spool's two tags carry the *same* payload, so
+        // watching the record would miss the second one entirely.
+        .onChange(of: tagModel.lastRead?.uid ?? []) { _, _ in
+            guard let result = tagModel.lastRead else { return }
+            model.absorb(result)
+        }
         // The same sheet the Write screen raises. A plan must be confirmed on whichever screen
         // built it, or it is raised against a view that is not on screen — the defect documented
         // in AppEnvironment.sidebarSelection.
@@ -96,13 +106,13 @@ struct IntakeView: View {
             HStack(spacing: 10) {
                 Button(model.isScan ? "Read a tag" : "New blank spool") {
                     if model.isScan {
-                        Task { await model.readTag(model.tags[0]) }
+                        Task { await tagModel.read() }
                     } else {
                         model.reset()
                     }
                 }
                 .buttonStyle(.sw(.primary))
-                .disabled(model.busy)
+                .disabled(tagModel.activity.isRunning)
 
                 Button("Start over") { model.reset() }
                     .buttonStyle(.sw(.ghost))
@@ -110,6 +120,9 @@ struct IntakeView: View {
 
             if let failure = model.failure {
                 InlineFailure(text: failure).padding(.top, 14)
+            }
+            if let mismatch = model.mismatch {
+                InlineFailure(text: mismatch).padding(.top, 14)
             }
             if let duplicate = model.duplicate {
                 DuplicateNotice(spool: duplicate) {
@@ -139,10 +152,12 @@ struct IntakeView: View {
             ForEach(model.tags) { slot in
                 TagRow(slot: slot,
                        isScan: model.isScan,
-                       busy: model.busy || tagModel.activity.isRunning,
+                       busy: tagModel.activity.isRunning,
                        previousDone: slot.index == 0 || model.tags[0].isDone) {
                     if model.isScan {
-                        Task { await model.readTag(slot) }
+                        // The one shared reader path. `onChange(of: lastRead.uid)` files the
+                        // result in the next slot, exactly as an untouched tag would be.
+                        Task { await tagModel.read() }
                     } else {
                         beginWrite(slot)
                     }
@@ -369,7 +384,7 @@ private struct TagRow: View {
 
     private var detail: String {
         if isScan {
-            return slot.isDone ? "read and decoded · payload matches" : "present this tag to the reader"
+            return slot.isDone ? "read and decoded · payload matches" : "waiting — present this tag"
         }
         if slot.isDone { return "written and verified byte for byte" }
         return previousDone ? "present a blank MIFARE Classic 1K tag" : "waiting for tag 1"
@@ -382,7 +397,9 @@ private struct TagRow: View {
     }
 
     private var cta: String {
-        if isScan { return slot.isDone ? "Re-read" : "Read" }
+        // Kept as a manual fallback for a tag the reader saw but did not decode; the normal path
+        // is that it never needs pressing.
+        if isScan { return slot.isDone ? "Re-read" : "Read now" }
         return slot.isDone ? "Rewrite" : "Write"
     }
 }

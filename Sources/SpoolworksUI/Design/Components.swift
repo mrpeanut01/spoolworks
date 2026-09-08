@@ -383,24 +383,26 @@ enum StatusLevel {
 
 /// A square status indicator. Square, not round — nothing in this system is rounded.
 ///
-/// Pulses only while busy, so motion means "something is happening" rather than being decoration.
+/// ## It does not pulse, and that is deliberate
+///
+/// The first version animated the busy state with `repeatForever`, driven by an `@State` flag
+/// toggled from `onAppear`/`onChange`. That livelocked the app. The reader begins life in
+/// `.starting`, which maps to `.busy`, so the pulse began at launch; the continuous re-render
+/// starved the main actor; the monitor therefore never left `.starting`; so the dot never stopped
+/// pulsing. Self-sustaining, and it only bit when a dot was actually busy — which is why an
+/// all-green launch looked fine. The visible symptoms were a header stuck on "none configured"
+/// and "starting…", a catalogue reporting 0 materials, and no CFS poll: everything asynchronous
+/// frozen while the synchronous work had plainly run.
+///
+/// Colour carries the state. There is a label beside every dot, so nothing is lost.
 struct StatusDot: View {
     let level: StatusLevel
     var size: CGFloat = 9
-
-    @State private var dim = false
 
     var body: some View {
         Rectangle()
             .fill(level.color)
             .frame(width: size, height: size)
-            .opacity(dim ? 0.3 : 1)
-            .animation(level == .busy
-                       ? .easeInOut(duration: 1).repeatForever(autoreverses: true)
-                       : .default,
-                       value: dim)
-            .onAppear { dim = (level == .busy) }
-            .onChange(of: level) { _, new in dim = (new == .busy) }
             .accessibilityHidden(true)
     }
 }

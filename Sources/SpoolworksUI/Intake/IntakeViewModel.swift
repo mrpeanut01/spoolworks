@@ -72,6 +72,18 @@ final class IntakeViewModel: ObservableObject {
     /// silently creating a duplicate.
     @Published private(set) var duplicate: Spool?
 
+    /// Raised when a tag arrives whose payload is not the one already being intaken — a second
+    /// spool presented before the first was confirmed. Filling the empty slot with it would build
+    /// a record from two different spools' tags.
+    @Published private(set) var mismatch: String?
+
+    /// UIDs already absorbed, so the same physical tag cannot fill both slots.
+    ///
+    /// A spool's two tags carry the **same payload** but different UIDs, which is exactly why the
+    /// UID is the right key here: presenting tag 1 twice must not tick off tag 2, and presenting
+    /// tag 2 must.
+    private var absorbedUIDs: Set<[UInt8]> = []
+
     // MARK: The form
 
     @Published var brand = ""
@@ -146,7 +158,7 @@ final class IntakeViewModel: ObservableObject {
 
     var tagNote: String {
         isScan
-            ? "A Creality spool carries two factory tags with the same payload. Reading either one is enough; read the second only to confirm the pair."
+            ? "Just present the tags — each is read as it lands and fills the next slot. A Creality spool carries two factory tags with the same payload, so reading either is enough; the second only confirms the pair."
             : "A spool carries two tags. Both get the same payload, each verified by read-back — either one identifies the spool later. A spool tagged on one side only will fail to read half the time it is loaded."
     }
 
@@ -245,31 +257,51 @@ final class IntakeViewModel: ObservableObject {
 
     // MARK: Actions
 
-    /// Reads one of the spool's tags (method A).
-    func readTag(_ slot: TagSlot) async {
-        guard !busy else { return }
-        busy = true
-        failure = nil
-        defer { busy = false }
-
-        do {
-            let result = try await monitor.withCard { session, identity in
-                guard identity.isUsable else { throw TagError.unsupportedCard(identity.type) }
-                return try TagService(session: session).readTag()
-            }
-            uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
-
-            guard let record = result.record else {
-                failure = "That tag carries no readable spool record. A blank tag needs Method B."
-                return
-            }
-            adopt(record)
-            tagsHandled = max(tagsHandled, slot.index + 1)
-            toasts.success("Tag read — \(record.filamentId) · \(record.rgbHex)")
-        } catch {
-            failure = error.localizedDescription
+    /// Takes a tag the reader has already read and files it in the next empty slot.
+    ///
+    /// The user does not press anything: ``TagViewModel`` auto-reads whatever lands on the reader,
+    /// and this absorbs the result. Deliberately *not* a second card session of its own — two
+    /// models competing for one reader is how a scan ends up half-read, and the auto-read arming
+    /// rules in `TagViewModel` are already the thing that makes this reliable.
+    ///
+    /// Only in scan mode. Method B's slots are for **writing** blank tags, and a write must stay
+    /// behind its confirmation sheet; a tag arriving there fills nothing.
+    func absorb(_ result: TagReadResult) {
+        // Deliberately does not check `busy`: this is called *from* the read that set it, and
+        // guarding on it made the manual button read the card and then silently discard the
+        // result. Re-entry is prevented by the UID set below, which is the real invariant.
+        guard isScan else { return }
+        guard let record = result.record else {
+            failure = "That tag carries no readable spool record. A blank tag needs Method B."
+            return
         }
+        // The same physical tag, presented again, is not the second tag.
+        guard !absorbedUIDs.contains(result.uid) else { return }
+
+        // A different spool arriving mid-intake is a mistake worth stopping on, not a slot to fill.
+        if let decoded, decoded != record {
+            mismatch = "That is a different spool (\(record.filamentId) · \(record.rgbHex)). "
+                + "Confirm or discard the one in progress first."
+            return
+        }
+
+        absorbedUIDs.insert(result.uid)
+        mismatch = nil
+        failure = nil
+        uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
+        adopt(record)
+        tagsHandled = min(2, absorbedUIDs.count)
+        toasts.success(tagsHandled >= 2
+                       ? "Both tags read — \(record.filamentId) · \(record.rgbHex)"
+                       : "Tag read — \(record.filamentId) · \(record.rgbHex)")
     }
+
+    /// Whether a read is in flight, for disabling the slot buttons.
+    ///
+    /// Owned by ``TagViewModel``: this screen no longer opens a card session of its own. It did,
+    /// and that was two models contending for one reader — which is how a reader wedges mid-read.
+    /// Everything here now absorbs what the shared auto-read produced.
+    func setBusy(_ value: Bool) { busy = value }
 
     /// Fills the form from a decoded tag, and flags a spool already in stock.
     private func adopt(_ record: SpoolRecord) {
@@ -396,6 +428,8 @@ final class IntakeViewModel: ObservableObject {
         decoded = nil
         duplicate = nil
         failure = nil
+        mismatch = nil
+        absorbedUIDs.removeAll()
         uidLabel = "—"
         if !keepingMethod { method = .scan }
         brand = ""

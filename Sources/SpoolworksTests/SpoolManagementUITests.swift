@@ -1,6 +1,6 @@
 import Foundation
 @testable import SpoolworksUI
-import SpoolworksCore
+@testable import SpoolworksCore
 
 // The async/@MainActor pump lives in UIStateTests.swift; these reuse it via `onMain` below.
 private final class Cell<T> {
@@ -575,6 +575,161 @@ let writeFormDefaultsTests = TestSuite(name: "Write form defaults", cases: [
             t.expect(!model.draftIsEdited, "untouched")
             t.equal(model.draft.serialNumber, model.draftBaseline.serialNumber,
                     "including the random serial")
+        }
+    },
+])
+
+
+// MARK: - Intake auto-read
+
+@MainActor
+private func makeIntake() -> (IntakeViewModel, InventoryViewModel, URL) {
+    let (inventory, _, dir) = makeInventory()
+    let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                inventory: inventory,
+                                materials: MaterialsViewModel.previewValue(),
+                                toasts: ToastCenter())
+    return (model, inventory, dir)
+}
+
+private func read(uid: [UInt8], record: SpoolRecord?) -> TagReadResult {
+    TagReadResult(uid: uid,
+                  derivedKey: MifareKey.default,
+                  isProgrammed: record != nil,
+                  sector1Key: MifareKey.default,
+                  sector1KeyType: .keyA,
+                  decryptedSector1: [UInt8](repeating: 0, count: 48),
+                  record: record,
+                  recordError: nil,
+                  sector2: nil,
+                  printerType: nil)
+}
+
+let intakeAutoReadTests = TestSuite(name: "Intake auto-read", cases: [
+
+    // The user presses nothing: a tag landing on the reader fills the next empty slot.
+    test("a tag fills the first slot without anyone pressing Read") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+
+            t.equal(model.tagsHandled, 0, "nothing read yet")
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.tagsHandled, 1, "one slot filled")
+            t.equal(model.filamentId, record.filamentId, "and the form took the payload")
+            t.equal(model.tagProgress, "1 of 2 read", "progress")
+        }
+    },
+
+    // A spool's two tags carry the SAME payload and different UIDs — so the UID is the key.
+    // Presenting one tag twice must not tick off the second.
+    test("the same tag presented twice does not fill both slots") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.tagsHandled, 1, "still one")
+        }
+    },
+
+    test("the spool's second tag — same payload, different UID — fills the second slot") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            model.absorb(read(uid: [9, 9, 9, 9], record: record))
+            t.equal(model.tagsHandled, 2, "both slots")
+            t.equal(model.tagProgress, "2 of 2 read", "progress")
+        }
+    },
+
+    // A second spool presented before the first is confirmed would otherwise build one record out
+    // of two different spools' tags.
+    test("a different spool is refused rather than filling the empty slot") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1),
+                  let other = try? SpoolRecord(materialId: "02003", colorRGB: "8A8A88",
+                                               filamentLength: .kg1) else { return }
+
+            model.absorb(read(uid: [1, 2, 3, 4], record: first))
+            model.absorb(read(uid: [5, 6, 7, 8], record: other))
+
+            t.equal(model.tagsHandled, 1, "the second slot stays empty")
+            t.expect(model.mismatch != nil, "and the screen says why")
+            t.equal(model.filamentId, first.filamentId, "the form still holds the first spool")
+        }
+    },
+
+    // Method B's slots are for writing blank tags, and a write must stay behind its confirmation.
+    test("a tag arriving in Method B fills nothing") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+            model.method = .manual
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.tagsHandled, 0, "writing is never automatic")
+        }
+    },
+
+    test("a blank tag says what to do instead of filling a slot") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            model.absorb(read(uid: [1, 2, 3, 4], record: nil))
+            t.equal(model.tagsHandled, 0, "nothing filled")
+            t.expect(model.failure?.contains("Method B") == true, "and points at Method B")
+        }
+    },
+
+    test("starting over forgets the tags already seen") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            model.reset()
+            t.equal(model.tagsHandled, 0, "cleared")
+
+            // The very same tag must be readable again after a reset.
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.tagsHandled, 1, "and it counts again")
+        }
+    },
+])
+
+
+// MARK: - One reader, one path
+
+let intakeReaderContentionTests = TestSuite(name: "Intake reader contention", cases: [
+
+    // The manual button used to open a second card session while TagViewModel was auto-reading —
+    // two models contending for one reader, which is how a read wedges mid-scan. And absorb()
+    // began with `guard !busy`, so the read it was called from silently discarded its own result.
+    test("absorbing works while the model reports itself busy") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+
+            model.setBusy(true)
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.tagsHandled, 1, "the result is not discarded")
         }
     },
 ])
