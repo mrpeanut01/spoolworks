@@ -47,6 +47,15 @@ let exitCode = TestDriver.run([
     // Reader robustness (code-review fixes)
     readerRobustnessTests,
 
+    // Spool inventory
+    spoolModelTests,
+    spoolIdentityTests,
+    spoolInventoryTests,
+    inventoryReconcileTests,
+    inventoryStoreTests,
+    materialBoxInfoTests,
+    cfsIdentityAmbiguityTests,
+
     // UI state machine (code-review fixes)
     spoolDraftTests,
     tagCascadeTests,
