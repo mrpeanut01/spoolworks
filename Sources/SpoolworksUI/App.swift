@@ -54,7 +54,16 @@ final class AppEnvironment: ObservableObject {
         self.materialsModel = MaterialsViewModel(storage: storage)
         // The live SSH transport rather than the default stand-in: without it every printer
         // operation throws "not implemented", which is what the app shipped with.
-        let printerModel = PrinterViewModel(storage: storage, transport: LivePrinterTransport())
+        // Keychain-backed, not in-memory: the default store kept passwords only for the
+        // lifetime of the process, so a printer had to be re-authenticated every launch and the
+        // CFS auto-poll could never run after a restart.
+        let credentials = KeychainPrinterCredentialStore(
+            onFailure: { [weak toasts] message in
+                Task { @MainActor in toasts?.error(message) }
+            })
+        let printerModel = PrinterViewModel(storage: storage,
+                                            transport: LivePrinterTransport(),
+                                            credentials: credentials)
         self.printerModel = printerModel
 
         // Same fallback reasoning as the material storage above: a broken Application Support

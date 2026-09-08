@@ -138,14 +138,18 @@ the evidence trail for how the tag format was established, and are deliberately 
 
 ## Licensing
 
-The upstream project publishes no `LICENSE` file, so the terms under which this derivative may be
-distributed are unsettled. Resolve that with the upstream author before releasing binaries.
+The original work here is **MIT** — see [`LICENSE`](LICENSE).
+
+That grant does not cover everything in the tree. [`NOTICE`](NOTICE) itemises the third-party
+material, and one item is unresolved: **upstream publishes no LICENSE file**, so the three verbatim
+DnG-Crafts files in `reference/` carry default copyright and no grant to redistribute. Read
+`NOTICE` before publishing this anywhere.
 
 ## Known limitations
 
 - **Ad-hoc signed**, so first launch needs a right-click. Notarisation requires a paid Apple
   Developer account.
-- **Printer upload and the CFS poll are mock-tested only.** The UI is now wired to the real
+- **Printer upload and the CFS poll have never run against a real printer.** The UI is now wired to the real
   `SSHTransport` (it previously used a stand-in that threw "not implemented" from every method),
   and the transport itself is tested — but no database has been uploaded to, and no CFS polled
   from, a real printer since that wiring landed.

@@ -109,6 +109,14 @@ protocol PrinterCredentialStoring: AnyObject {
     func setPassword(_ password: String?, for family: PrinterType)
     /// True when a password is available without asking the user again.
     func hasPassword(for family: PrinterType) -> Bool
+    /// Tells the store that a printer's address changed, so anything it cached under the old one
+    /// is dropped. A store keyed by family has nothing to do here; the Keychain-backed one is
+    /// keyed by *host* and would otherwise keep serving the previous machine's password.
+    func invalidate(_ family: PrinterType)
+}
+
+extension PrinterCredentialStoring {
+    func invalidate(_ family: PrinterType) {}
 }
 
 /// Session-scoped store. Deliberately volatile: losing the password on quit is a far smaller
@@ -381,6 +389,9 @@ final class PrinterViewModel: ObservableObject {
 
     func setHost(_ host: String, for family: PrinterType) {
         PrinterSettings.setHost(host, for: family)
+        // The Keychain is keyed by host, so a re-addressed printer must not keep answering with
+        // the password of the machine it used to point at.
+        credentials.invalidate(family)
         apply(family) { $0.host = host }
     }
 
