@@ -376,8 +376,9 @@ struct TagFormCard: View {
         guard model.draftSourceUID == prefill.uid else {
             return "Tag \(prefill.uidSpaced) was read. Its values are not in this form."
         }
-        return model.draftIsEdited
-            ? "Edited — started from tag \(prefill.uidSpaced)."
+        if model.draftIsEdited { return "Edited — started from tag \(prefill.uidSpaced)." }
+        return model.draftCarriesFreshSerial
+            ? "These values were read from tag \(prefill.uidSpaced), with a new serial."
             : "These values were read from tag \(prefill.uidSpaced)."
     }
 
@@ -470,7 +471,6 @@ struct TagFormCard: View {
 struct AutoWriteCard: View {
     @ObservedObject var monitor: ReaderMonitor
     @ObservedObject var model: TagViewModel
-    @ObservedObject var settings: AppSettings
 
     var body: some View {
         Card("Auto-Write", symbol: "bolt.fill", accessory: AnyView(pill)) {
@@ -495,17 +495,13 @@ struct AutoWriteCard: View {
 
                 if model.autoWriteEnabled {
                     Divider()
-                    // The one write auto-write will not do on its own. Surfaced here, next to the
-                    // behaviour it changes, rather than left to be discovered in a sheet.
-                    Toggle("Allow writing sector keys (advanced)",
-                           isOn: $settings.advancedTagOperations)
-                        .toggleStyle(.checkbox)
-                    Text(settings.advancedTagOperations
-                         ? "Blank tags are programmed automatically. Programming rewrites sector "
-                           + "1's keys and cannot be undone."
-                         : "A blank tag needs its sector 1 keys rewritten, which cannot be "
-                           + "undone — presenting one opens the confirmation sheet instead of "
-                           + "writing it.")
+                    // There used to be an "Allow writing sector keys (advanced)" opt-in here, and
+                    // a blank tag presented with it off raised the confirmation sheet instead of
+                    // being written. It gated the app's most ordinary operation — tagging a new
+                    // spool — behind a checkbox worded like a hazard, so it is gone.
+                    Text("Blank tags are programmed on presentation. Programming writes sector "
+                         + "1's key, derived from the tag's UID, and that cannot be undone — but "
+                         + "a blank tag has nothing on it to lose.")
                         .font(.callout)
                         .foregroundStyle(Theme.secondaryLabel)
                         .fixedSize(horizontal: false, vertical: true)

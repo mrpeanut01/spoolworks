@@ -118,30 +118,18 @@ struct WriteConfirmationSheet: View {
     /// reader. `commitWrite` guards on exactly that, and used to return in silence — so a click
     /// during a ⌘R read did nothing at all and left the sheet sitting there.
     @ObservedObject var model: TagViewModel
-    @ObservedObject var settings: AppSettings
     let completion: (Bool) -> Void
 
-    /// Per-write acknowledgement. Always starts off, even for someone programming a batch, so a
-    /// trailer write is never a single click.
-    @State private var trailerAcknowledged = false
-    /// Advanced opt-in held locally for the lifetime of the sheet. Committed to `AppSettings`
-    /// only when the write is actually confirmed — see the toggle for why.
-    @State private var trailerAdvancedLocal = false
     @FocusState private var cancelFocused: Bool
 
-    /// Two independent gates on a trailer write, per D-006: the persistent advanced opt-in, and
-    /// this one write's acknowledgement.
-    private var canWrite: Bool {
-        guard !model.activity.isRunning else { return false }
-        guard plan.requiresTrailerWrite else { return true }
-        return trailerAdvancedLocal && trailerAcknowledged
-    }
+    /// The sheet itself is the confirmation. A blank tag used to need two further ticks before the
+    /// button came alive — an "advanced" opt-in and a per-write acknowledgement — which is three
+    /// deliberate acts to do the most ordinary thing this app does. The tag still cannot be
+    /// written while the reader is busy, and the trailer rewrite is still spelled out above.
+    private var canWrite: Bool { !model.activity.isRunning }
 
-    /// Why the button is off, in the order the user can act on it.
-    private var blockedReason: String {
-        if model.activity.isRunning { return model.activity.label }
-        return "Allow sector-key writes and confirm the change first"
-    }
+    /// Why the button is off. Only one reason remains.
+    private var blockedReason: String { model.activity.label }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
@@ -164,10 +152,7 @@ struct WriteConfirmationSheet: View {
         .padding(Theme.Spacing.xl)
         .frame(width: 620)
         .background(Theme.background)
-        .onAppear {
-            cancelFocused = true
-            trailerAdvancedLocal = settings.advancedTagOperations
-        }
+        .onAppear { cancelFocused = true }
     }
 
     private var header: some View {
@@ -246,39 +231,21 @@ struct WriteConfirmationSheet: View {
         }
     }
 
+    /// What programming a blank tag does, stated once and not dressed as an alarm.
+    ///
+    /// This used to be a warning-toned panel carrying two checkboxes that had to be ticked before
+    /// the Write button came alive. Programming a blank tag is what tagging a new spool *is*, and
+    /// the tag has nothing on it to lose, so the gates are gone. The facts stay — a trailer write
+    /// is genuinely irreversible, and someone reading this sheet should know it is happening.
     private var trailerWarning: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            Label("This rewrites the sector 1 keys", systemImage: "key.horizontal.fill")
-                .font(.headline)
-                .foregroundStyle(Theme.warning)
-            Text("Sector 1 is still on the factory key, so programming it writes block 7 — the "
-                 + "sector trailer — with the key derived from this tag's UID. The access bits are "
-                 + "read and preserved, never authored, and the write is refused outright if they "
-                 + "read back as zeros. Even so, a trailer write cannot be undone by this app.")
-                .font(.callout)
-                .foregroundStyle(Theme.secondaryLabel)
-                .fixedSize(horizontal: false, vertical: true)
-            Divider()
-            // Gate 1 — advanced opt-in, held LOCALLY while the sheet is open.
-            //
-            // It deliberately does not write through to AppSettings here. Binding it straight to
-            // the persistent setting meant a user who ticked it to satisfy the gate and then
-            // pressed Cancel had silently enabled unattended, irreversible trailer writes for
-            // every future blank tag. It is committed only if this write is confirmed.
-            Toggle("Allow writing sector keys (advanced)", isOn: $trailerAdvancedLocal)
-                .toggleStyle(.checkbox)
-                .help("Applies to this write. Cancelling leaves your saved setting unchanged.")
-            // Gate 2 — this write only. Resets every time the sheet opens.
-            Toggle("I understand this permanently changes the tag's sector 1 key",
-                   isOn: $trailerAcknowledged)
-                .toggleStyle(.checkbox)
-                .disabled(!trailerAdvancedLocal)
-        }
-        .padding(Theme.Spacing.m)
-        .background(Theme.warning.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall)
-            .strokeBorder(Theme.warning.opacity(0.4), lineWidth: Theme.hairline))
+        Label("Sector 1 is still on the factory key, so programming this tag writes block 7 — the "
+              + "sector trailer — with the key derived from its UID. Access bits are read and "
+              + "preserved, never authored, and the write is refused outright if they read back "
+              + "as zeros. The key change itself cannot be undone by this app.",
+              systemImage: "key.horizontal.fill")
+            .font(.callout)
+            .foregroundStyle(Theme.secondaryLabel)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var backupNote: some View {
@@ -299,12 +266,7 @@ struct WriteConfirmationSheet: View {
             Button("Cancel") { completion(false) }
                 .keyboardShortcut(.cancelAction)
                 .focused($cancelFocused)
-            Button(plan.requiresTrailerWrite ? "Program Tag" : "Write Tag") {
-                // Persist the advanced opt-in only now, on an actual confirmation. Cancelling
-                // must leave the saved setting exactly as it was.
-                if trailerAdvancedLocal { settings.advancedTagOperations = true }
-                completion(true)
-            }
+            Button(plan.requiresTrailerWrite ? "Program Tag" : "Write Tag") { completion(true) }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canWrite)
                 .help(canWrite ? "Writes the values above to the tag" : blockedReason)

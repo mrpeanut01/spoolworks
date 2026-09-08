@@ -146,12 +146,17 @@ struct WriteDiffRow: Identifiable, Equatable {
 /// confirmation for any destructive operation; automatic backup dump of all readable sectors
 /// before any write; key/trailer modification gated behind an explicit advanced toggle."
 ///
-/// Nothing writes without one of these, and that has not changed. What *has* changed, at the tool
-/// owner's explicit instruction, is that the plan is not always **shown**: in Write mode with
-/// auto-write on, presenting a tag builds this plan, checks it, and commits it without raising the
-/// sheet — see ``TagViewModel/autoWriteIfNeeded(card:allowTrailerWrite:)``. The read-before-write,
-/// the diff, the backup and the trailer gate all survive intact; only the confirmation click is
-/// gone, because in Write mode the presentation of the tag *is* the confirmation.
+/// Nothing writes without one of these, and that has not changed. Two things have, both at the
+/// tool owner's explicit instruction:
+///
+/// * The plan is not always **shown**. In Write mode with auto-write on, presenting a tag builds
+///   this plan, checks it, and commits it without raising the sheet — see
+///   ``TagViewModel/autoWriteIfNeeded(card:)``. The presentation of the tag *is* the confirmation.
+/// * The "advanced" preference that had to be on before a blank tag could be programmed is gone.
+///   ``isBlankTagProgramming`` replaces it: an authorisation derived from the tag that was just
+///   read, which `TagService` re-checks against the card in front of it.
+///
+/// The read-before-write, the diff, the backup and Core's trailer gate all survive intact.
 struct WritePlan: Identifiable, Equatable {
     let id = UUID()
     /// The tag this plan was computed against. Re-checked at commit time; a swapped tag aborts.
@@ -171,6 +176,24 @@ struct WritePlan: Identifiable, Equatable {
 
     var hasChanges: Bool { rows.contains(where: \.changed) || requiresTrailerWrite }
     var changedRows: [WriteDiffRow] { rows.filter(\.changed) }
+
+    /// Whether this write's trailer rewrite is the harmless kind: programming a blank tag.
+    ///
+    /// Sector 1 is on the factory key and holds no record, so splicing in the derived key is the
+    /// only thing that can make this tag a spool tag, and there is nothing being overwritten. This
+    /// is the authorisation ``TagService/writeTag(record:printerType:allowTrailerWrite:onBackup:)``
+    /// asks for, and it is a *claim about the tag* rather than a preference — so Core re-checks it
+    /// against its own read and refuses if the two disagree.
+    ///
+    /// It used to be an opt-in the user had to find and tick before a blank tag could be written
+    /// at all, which put two extra clicks in front of the app's most ordinary operation: tagging a
+    /// new spool.
+    ///
+    /// The two conditions are the same bit today — `requiresTrailerWrite` is defined as "sector 1
+    /// did not open with the derived key", and that is exactly what makes the condition `.blank`.
+    /// Both are named anyway, so that if either definition ever widens this stops being true
+    /// rather than quietly authorising something else.
+    var isBlankTagProgramming: Bool { requiresTrailerWrite && currentCondition == .blank }
 }
 
 /// The outcome of a completed write.
@@ -523,6 +546,17 @@ final class TagViewModel: ObservableObject {
         return draftSourceUID == prefill.uid && !draftIsEdited
     }
 
+    /// True when the form holds a read tag's values but will write a serial of its own.
+    ///
+    /// Derived rather than remembered, so it cannot claim one thing while the form holds another.
+    /// The serial field is hidden, so this sentence on the provenance line is the only place the
+    /// behaviour is visible — and "these values came off tag X" would otherwise be a promise the
+    /// form does not keep.
+    var draftCarriesFreshSerial: Bool {
+        guard let prefill, draftSourceUID == prefill.uid else { return false }
+        return draft.serialNumber != prefill.record.serialNumber
+    }
+
     // MARK: Recently used colours
 
     /// Colours this user has actually written to a tag or read off one, most recent first,
@@ -577,10 +611,11 @@ final class TagViewModel: ObservableObject {
     /// already made, one tag at a time, through a batch.
     ///
     /// Three things keep it from being a hazard, and all three are structural rather than advisory:
-    /// it only exists in Write mode (``autoWriteIfNeeded(card:allowTrailerWrite:)`` returns
+    /// it only exists in Write mode (``autoWriteIfNeeded(card:)`` returns
     /// immediately otherwise, so **Read mode can never write**); it fires at most once per UID per
-    /// arrival (see ``autoWriteHandledUID``); and a write that would rewrite a sector trailer still
-    /// goes through the confirmation sheet unless the persistent advanced opt-in is already on.
+    /// arrival (see ``autoWriteHandledUID``); and the only trailer write it will do unasked is
+    /// programming a *blank* tag, which is checked per-tag by ``WritePlan/isBlankTagProgramming``
+    /// and re-checked by `TagService` against the card itself.
     ///
     /// Defaults to on, because that is what was asked for. The off switch is a toggle in Write
     /// mode itself, not a preference pane.
@@ -723,8 +758,7 @@ final class TagViewModel: ObservableObject {
     /// the view layer calls it.
     func respondToCard(_ card: CardIdentity?) async {
         await autoReadIfNeeded(card: card)
-        await autoWriteIfNeeded(card: card,
-                                allowTrailerWrite: settings.advancedTagOperations)
+        await autoWriteIfNeeded(card: card)
     }
 
     /// Re-drives a postponed arrival now that the model is free again.
@@ -926,7 +960,7 @@ final class TagViewModel: ObservableObject {
     /// preference is gone.
     ///
     /// Write mode is excluded, and reading is all this does in either case: presenting a tag in
-    /// Write mode is handled by ``autoWriteIfNeeded(card:allowTrailerWrite:)``, and no path from
+    /// Write mode is handled by ``autoWriteIfNeeded(card:)``, and no path from
     /// here can reach a write.
     func autoReadIfNeeded(card: CardIdentity?) async {
         guard mode == .read else { return }
@@ -1000,7 +1034,9 @@ final class TagViewModel: ObservableObject {
     /// - Parameter prefillingDraft: whether the read may also flow into the write form. False for
     ///   the read a *write* takes of the tag it is about to overwrite: that read exists to build
     ///   the diff, and letting it rewrite the very draft the diff was computed from would produce
-    ///   a sheet whose "after" column no longer matched the form behind it.
+    ///   a sheet whose "after" column no longer matched the form behind it. False, too, for the
+    ///   read-back a write takes *after* landing its bytes — the form's prefill is the last tag
+    ///   the user **read**, never the last one this app wrote.
     private func adopt(_ result: TagReadResult, prefillingDraft: Bool = true) async {
         lastRead = result
         readUID = result.uid
@@ -1016,18 +1052,34 @@ final class TagViewModel: ObservableObject {
     ///
     /// The condition is the whole design: a pristine form (defaults, or values loaded from an
     /// earlier tag and untouched since) is adopted silently, so read-then-switch-to-write lands on
-    /// "write this same spool again". A form the user has edited is never overwritten — Write →
+    /// "write another one of these". A form the user has edited is never overwritten — Write →
     /// Read → Write has to come back to what they composed — and the read is offered as a button
     /// instead.
+    ///
+    /// The form still *opens* blank, which is what was asked for: with no tag read there is
+    /// nothing to prefill from, and a form pre-populated out of thin air reads as a tag that was
+    /// scanned. This fills it only once a real tag has been read.
     private func rememberForWriting(_ result: TagReadResult) async {
         guard let record = result.record else { return }
         prefill = TagPrefill(uid: result.uid, record: record, printerType: result.printerType)
         guard !draftIsEdited else { return }
-        await applyPrefill()
+        await applyPrefill(copyingSerial: false)
     }
 
     /// Copies ``prefill`` into the write form. The one path that loads a tag's values.
-    func applyPrefill() async {
+    ///
+    /// - Parameter copyingSerial: whether the tag's serial comes across with everything else.
+    ///
+    ///   True when the user asked for this tag's contents by name — *Use Tag Values*, or *Load
+    ///   into write form* — because that is the "duplicate this tag" gesture: the spool's other
+    ///   side, or a replacement for a damaged tag, and both have to carry the same serial.
+    ///
+    ///   False when the form filled itself in behind the user, from whatever they last read. There
+    ///   the next thing written is a *different* spool, and taking the serial with it would tag
+    ///   two spools identically — which is the whole reason the serial is randomised rather than
+    ///   left at the `000001` every K2 slot ships with. The field is not shown, so the difference
+    ///   is invisible either way; that is exactly why it has to be right.
+    func applyPrefill(copyingSerial: Bool = true) async {
         guard let prefill else { return }
         if let name = prefill.printerType,
            let resolved = PrinterType(identifying: name),
@@ -1037,7 +1089,9 @@ final class TagViewModel: ObservableObject {
         draft.materialID = prefill.record.materialId
         draft.color = Color(tagHex: prefill.record.rgbHex) ?? draft.color
         draft.weight = prefill.record.knownLength ?? .kg1
-        draft.serialNumber = prefill.record.serialNumber
+        draft.serialNumber = copyingSerial
+            ? prefill.record.serialNumber
+            : SpoolRecord.randomSerialNumber()
         syncCascade(toMaterialID: prefill.record.materialId)
         draftSourceUID = prefill.uid
         draftBaseline = draft
@@ -1214,7 +1268,11 @@ final class TagViewModel: ObservableObject {
 
             switch readback {
             case let .success(fresh):
-                await adopt(fresh)
+                // Not a prefill. This read is the app looking at its own handiwork, and offering
+                // it back as "write this again" would hand the next spool the serial of the one
+                // just tagged — the collision the random serial exists to avoid. The write form's
+                // memory is of tags the *user* read.
+                await adopt(fresh, prefillingDraft: false)
                 self.readback = .confirmed
                 toasts.success("Written to tag \(summary.uidSpaced) — "
                                + "#\(plan.record.rgbHex), serial \(plan.record.serialNumber)")
@@ -1265,7 +1323,7 @@ final class TagViewModel: ObservableObject {
                 guard identity.isUsable else { throw TagError.unsupportedCard(identity.type) }
                 return try TagService(session: session).readTag()
             }
-            await adopt(fresh)
+            await adopt(fresh, prefillingDraft: false)
             readback = .confirmed
             toasts.success("Tag \(fresh.uid.hexStringSpaced) read back — "
                            + "the values below are what is on it")
@@ -1288,11 +1346,7 @@ final class TagViewModel: ObservableObject {
     /// cannot fire on entering Write mode with a tag already on the reader; the other half is
     /// ``consumeAutoWriteArming()``, which spends that tag's arming when the mode changes.
     ///
-    /// - Parameter allowTrailerWrite: `AppSettings.advancedTagOperations`. Passed in rather than
-    ///   held, so this model still owns no preferences. A blank tag needs its sector-1 trailer
-    ///   rewritten, which is irreversible; auto-write replaces the *sheet*, not that opt-in, so
-    ///   with the opt-in off a blank tag raises the confirmation sheet instead of writing.
-    func autoWriteIfNeeded(card: CardIdentity?, allowTrailerWrite: Bool) async {
+    func autoWriteIfNeeded(card: CardIdentity?) async {
         // Read mode can never write. First line, no exceptions, no other caller.
         guard mode == .write else { return }
         guard autoWriteEnabled else { return }
@@ -1324,10 +1378,10 @@ final class TagViewModel: ObservableObject {
             toasts.warning("Not written — \(issue)")
             return
         }
-        await autoWrite(card: card, allowTrailerWrite: allowTrailerWrite)
+        await autoWrite(card: card)
     }
 
-    private func autoWrite(card: CardIdentity, allowTrailerWrite: Bool) async {
+    private func autoWrite(card: CardIdentity) async {
         let record: SpoolRecord
         do { record = try draft.makeRecord() }
         catch {
@@ -1368,14 +1422,11 @@ final class TagViewModel: ObservableObject {
         // so nothing can slip into the gap on the main actor.
         activity = .idle
 
-        guard !plan.requiresTrailerWrite || allowTrailerWrite else {
-            pendingPlan = plan
-            autoWriteSkipped = "This tag is blank, so programming it rewrites its sector 1 keys."
-            toasts.warning("This tag is blank — rewriting its sector 1 keys needs your "
-                           + "confirmation, so auto-write stopped here.")
-            return
-        }
-        await commitWrite(plan, allowTrailerWrite: allowTrailerWrite)
+        // A blank tag used to stop here and raise the sheet. It no longer does: programming one
+        // destroys nothing, and in Write mode laying it on the reader is the instruction to write
+        // it. `allowTrailerWrite` is now the plan's claim about the tag rather than a preference,
+        // and it is still the parameter Core gates on.
+        await commitWrite(plan, allowTrailerWrite: plan.isBlankTagProgramming)
     }
 
     // MARK: Recently used colours
@@ -1479,6 +1530,15 @@ final class TagViewModel: ObservableObject {
 
     /// The UID auto-write has already dealt with, if any.
     var autoWriteArmingForTesting: [UInt8]? { autoWriteHandledUID }
+
+    /// Installs a read exactly as a real one would, with no reader and no card session.
+    ///
+    /// `adopt` is where the write form's memory is decided — which reads become the prefill, and
+    /// what the prefill does to a form the user may have typed in. That is a rule, not a
+    /// transport, and testing it through PC/SC would test the wrong thing.
+    func adoptForTesting(_ result: TagReadResult, prefillingDraft: Bool = true) async {
+        await adopt(result, prefillingDraft: prefillingDraft)
+    }
 
     /// Runs `body` with the model reporting `activity`, then restores `.idle` — which fires the
     /// same deferred-arrival retry a real operation finishing would.

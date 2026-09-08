@@ -2,15 +2,21 @@ import Foundation
 import SwiftUI
 import Combine
 
-/// The two persistent switches the app still has, backed by `UserDefaults`.
+/// The persistent switches the app still has, backed by `UserDefaults`.
 ///
 /// Key names are prefixed so they never collide with the Windows registry values under
 /// `HKCU\CFS RFID\Settings` (`SPEC/03-ui.md` §2 and §8.4).
 ///
-/// **There is no preferences window.** Both switches are rendered next to what they affect —
-/// `advancedTagOperations` on the Auto-Write card and in the write confirmation sheet,
-/// `showKeyMaterial` on the Reader screen — and the `Settings` scene has been removed. See
-/// ``ReaderPane`` for the reasoning.
+/// **There is no preferences window.** Each switch is rendered next to what it affects —
+/// `showKeyMaterial` on the Reader screen, `addWrittenSpoolsToInventory` on the write result —
+/// and the `Settings` scene has been removed. See ``ReaderPane`` for the reasoning.
+///
+/// There was a third, `advancedTagOperations`, which had to be turned on before a blank tag could
+/// be programmed. Programming a blank tag is what tagging a new spool *is*, and the tag has
+/// nothing on it to lose, so the opt-in only ever stood between the user and the app's most
+/// ordinary operation. The authorisation now comes from the write plan's own reading of the tag
+/// (``WritePlan/isBlankTagProgramming``), which `TagService` re-checks against the card in front
+/// of it — a claim that can be verified, rather than a preference that could only be trusted.
 ///
 /// ## The Windows `AutoRead` / `AutoWrite` pair
 ///
@@ -31,17 +37,6 @@ final class AppSettings: ObservableObject {
 
     private let defaults: UserDefaults
 
-    /// Permits the one irreversible operation this app can perform: rewriting a sector trailer,
-    /// which is what programming a blank tag requires.
-    ///
-    /// **Off by default, and it stays off unless the user turns it on.** Nothing writes a sector
-    /// key while it is off — not the confirmation sheet, whose Write button stays disabled, and
-    /// not auto-write, which raises the sheet instead of programming a blank tag. Even with it on,
-    /// the sheet still asks for a separate per-write acknowledgement.
-    @Published var advancedTagOperations: Bool {
-        didSet { defaults.set(advancedTagOperations, forKey: Keys.advancedTagOperations) }
-    }
-
     /// Show sector trailers and key bytes on the tag screen and in the memory inspector.
     /// Display only; it changes nothing that is written.
     @Published var showKeyMaterial: Bool {
@@ -60,14 +55,12 @@ final class AppSettings: ObservableObject {
     }
 
     enum Keys {
-        static let advancedTagOperations = "K2AdvancedTagOperations"
         static let showKeyMaterial = "K2ShowKeyMaterial"
         static let addWrittenSpoolsToInventory = "SpoolworksAddWrittenSpoolsToInventory"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        advancedTagOperations = defaults.bool(forKey: Keys.advancedTagOperations)
         showKeyMaterial = defaults.bool(forKey: Keys.showKeyMaterial)
         // `bool(forKey:)` is false for an absent key, so the default-on preference is read
         // through `object(forKey:)` — otherwise "never set" is indistinguishable from "turned off".

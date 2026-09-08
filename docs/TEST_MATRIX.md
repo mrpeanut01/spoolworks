@@ -102,7 +102,7 @@ User confirmation: "works as designed."
 | Reader status | no reader; reader present, no tag; unplug mid-session | pending |
 | Tag read | blank tag; tag we wrote; OEM/locked tag; unsupported card type | pending |
 | Tag write | confirmation shown; backup surfaced; success; failure mid-write | pending |
-| Tag write | trailer write requires explicit advanced opt-in | pending |
+| Tag write | a blank tag authorises its own trailer write; a programmed one does not | `Tag arrivals` |
 | Materials | empty DB; browse; add; edit; delete-with-confirm; validation errors | pending |
 | Materials | id formats the shipped data actually uses (`E1001`, `P1001`) accepted | pending |
 | Printers | none configured; add; upload with progress + cancel; upload failure | pending |

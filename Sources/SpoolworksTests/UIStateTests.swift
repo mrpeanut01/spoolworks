@@ -9,7 +9,7 @@ import Foundation
 import SwiftUI
 import AppKit
 @testable import SpoolworksUI
-import SpoolworksCore
+@testable import SpoolworksCore
 
 // MARK: - Bridging async, main-actor code into a synchronous harness
 
@@ -81,6 +81,25 @@ private func blankTagRead() throws -> TagReadResult {
     let service = TagService(card: MifareClassicCard(transport: MockTransport()),
                              cardType: .mifareClassic1K)
     return try service.readTag()
+}
+
+/// A read of a tag that already holds a record, for the prefill rules.
+private func programmedRead(uid: [UInt8], serial: String, materialId: String = "12345",
+                            colour: String = "1188ff") throws -> TagReadResult {
+    let record = try SpoolRecord(materialId: materialId,
+                                 colorRGB: colour,
+                                 filamentLength: .kg1,
+                                 serialNumber: serial)
+    return TagReadResult(uid: uid,
+                         derivedKey: .default,
+                         isProgrammed: true,
+                         sector1Key: .default,
+                         sector1KeyType: .keyA,
+                         decryptedSector1: [UInt8](repeating: 0, count: 48),
+                         record: record,
+                         recordError: nil,
+                         sector2: nil,
+                         printerType: nil)
 }
 
 @MainActor
@@ -164,6 +183,105 @@ let spoolDraftTests = TestSuite(name: "Write form draft", cases: [
         $0.expect(!draft.isValid, "no colour yet")
         $0.expect(draft.validationIssues.contains("Choose a colour."),
                   "and the reason is named")
+    },
+])
+
+// MARK: - Write form prefill
+
+/// What the write form remembers, and from which tag.
+///
+/// The tool owner's rule, in their words: the form opens blank, "however, pre-fill it with the
+/// last tag that was read (not written) if there was one". Both halves are load-bearing — a form
+/// that fills itself from thin air looks like a tag that was scanned, and a form that fills itself
+/// from the app's own last write hands the next spool the serial of the one just tagged.
+let writeFormPrefillTests = TestSuite(name: "Write form prefill", cases: [
+
+    test("a form nobody has read a tag into stays blank") { t in
+        runOnMain {
+            let h = makeHarness()
+            t.equal(h.model.prefill, nil)
+            t.equal(h.model.draft.materialID, "", "no material out of thin air")
+            t.expect(h.model.draft.color == nil, "and no colour: blue read as a tag that was read")
+        }
+    },
+
+    test("a read fills the untouched form with the tag's values") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.equal(h.model.draft.materialID, "12345")
+            t.equal(h.model.draftSourceUID, tagA.uid)
+            t.expect(h.model.draft.color != nil, "the tag's colour comes across")
+        }
+    },
+
+    // The serial is the one field that must NOT come across on its own. It is hidden, so this is
+    // invisible on screen — which is exactly why it is pinned here.
+    test("an automatic prefill takes everything except the serial") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.expect(h.model.draft.serialNumber != "004212",
+                     "the next spool is a different spool; two spools must not share a serial")
+            t.expect(h.model.draftCarriesFreshSerial, "and the form says so")
+        }
+    },
+
+    // Asking for the tag's values by name is the "duplicate this tag" gesture — the spool's other
+    // side, or a replacement for a damaged tag. Both have to carry the same serial.
+    test("asking for the tag's values by name does take the serial") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(read)
+            await h.model.applyPrefill()          // the "Use Tag Values" button
+            t.equal(h.model.draft.serialNumber, "004212")
+            t.expect(!h.model.draftCarriesFreshSerial)
+        }
+    },
+
+    // The read-back a write takes of its own handiwork is a confirmation, not a scan.
+    test("the tag this app just wrote does not become the form's memory") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let scanned = try? programmedRead(uid: tagA.uid, serial: "004212"),
+                  let written = try? programmedRead(uid: tagB.uid, serial: "008888",
+                                                    materialId: "54321") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(scanned)
+            // `prefillingDraft: false` is what `commitWrite` passes for its read-back.
+            await h.model.adoptForTesting(written, prefillingDraft: false)
+
+            t.equal(h.model.lastRead?.uid, tagB.uid, "the panel still shows what was read back")
+            t.equal(h.model.prefill?.uid, tagA.uid,
+                    "but the form remembers the tag the *user* read")
+            t.equal(h.model.draft.materialID, "12345",
+                    "and holds that tag's values, not the written one's")
+        }
+    },
+
+    // Unchanged by any of the above, and the reason the rule is "untouched form" rather than
+    // "always": Write → Read → Write has to come back to what the user composed.
+    test("a form the user has edited is never overwritten by a read") { t in
+        runOnMain {
+            let h = makeHarness()
+            h.model.draft.materialID = "99999"
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.equal(h.model.draft.materialID, "99999")
+            t.expect(h.model.prefill != nil, "the read is still offered as a button")
+        }
     },
 ])
 
@@ -419,6 +537,46 @@ let tagArrivalTests = TestSuite(name: "Tag arrivals", cases: [
             t.expect(h.toasts.current != nil,
                       "a swallowed click is what made the sheet look dead; it must say something")
             t.equal(h.model.writeOutcome, nil, "and it must not claim a write happened")
+        }
+    },
+
+    // The user's instruction: "Blank tags do not need the confirmation."
+    //
+    // Programming a blank tag used to stop auto-write dead and raise the sheet unless an
+    // "Allow writing sector keys (advanced)" preference had been found and ticked — two extra
+    // clicks in front of tagging a new spool, which is the most ordinary thing this app does.
+    // The authorisation now comes from the plan's own reading of the tag.
+    test("a blank tag carries its own authorisation to be programmed") { t in
+        runOnMain {
+            guard let plan = try? samplePlan() else {
+                t.expect(false, "could not build a plan from the card simulator")
+                return
+            }
+            t.expect(plan.requiresTrailerWrite, "the simulator's card starts blank")
+            t.equal(plan.currentCondition, .blank)
+            t.expect(plan.isBlankTagProgramming,
+                     "a blank tag has nothing to lose and needs no opt-in")
+        }
+    },
+
+    // The narrow claim, so this cannot quietly become "always true". A tag that already holds a
+    // record needs no trailer write at all, and must not be reported as if it authorised one.
+    test("a programmed tag authorises no trailer write") { t in
+        runOnMain {
+            guard let current = try? programmedRead(uid: tagA.uid, serial: "004212"),
+                  let record = try? SpoolRecord(materialId: "12345",
+                                                colorRGB: "c12e1f",
+                                                filamentLength: .kg1,
+                                                serialNumber: "009999") else {
+                t.expect(false, "fixture")
+                return
+            }
+            let plan = TagViewModel.makePlan(current: current,
+                                             record: record,
+                                             materialLabel: "Creality · Hyper PLA",
+                                             printerTypeString: "K2")
+            t.expect(!plan.requiresTrailerWrite)
+            t.expect(!plan.isBlankTagProgramming)
         }
     },
 

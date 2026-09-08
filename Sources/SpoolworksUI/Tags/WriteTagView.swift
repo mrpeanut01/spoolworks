@@ -35,7 +35,7 @@ struct WriteTagView: View {
                             HardwareNoticeBanner(notice: notice, monitor: monitor)
                         }
                         TagFormCard(monitor: monitor, model: model)
-                        AutoWriteCard(monitor: monitor, model: model, settings: settings)
+                        AutoWriteCard(monitor: monitor, model: model)
                         WriteOptionsCard(settings: settings)
                         if let outcome = model.writeOutcome {
                             WriteOutcomeCard(outcome: outcome, model: model)
@@ -58,9 +58,12 @@ struct WriteTagView: View {
         // is raised against a view that is not on screen and auto-write stays blocked until
         // something else clears it. That defect is documented in `AppEnvironment.sidebarSelection`.
         .sheet(item: $model.pendingPlan) { plan in
-            WriteConfirmationSheet(plan: plan, model: model, settings: settings) { confirmed in
+            WriteConfirmationSheet(plan: plan, model: model) { confirmed in
                 if confirmed {
-                    Task { await model.commitWrite(plan, allowTrailerWrite: settings.advancedTagOperations) }
+                    // The plan's own claim about the tag, not a preference: a blank tag needs its
+                    // sector-1 keys programmed, and Core re-checks that against its own read.
+                    Task { await model.commitWrite(plan,
+                                                   allowTrailerWrite: plan.isBlankTagProgramming) }
                 } else {
                     model.cancelPendingWrite()
                 }

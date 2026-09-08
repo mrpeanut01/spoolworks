@@ -71,11 +71,11 @@ struct IntakeView: View {
         // built it, or it is raised against a view that is not on screen — the defect documented
         // in AppEnvironment.sidebarSelection.
         .sheet(item: $tagModel.pendingPlan) { plan in
-            WriteConfirmationSheet(plan: plan, model: env.tagModel, settings: env.settings) { confirmed in
+            WriteConfirmationSheet(plan: plan, model: env.tagModel) { confirmed in
                 if confirmed {
                     Task {
                         await tagModel.commitWrite(
-                            plan, allowTrailerWrite: env.settings.advancedTagOperations)
+                            plan, allowTrailerWrite: plan.isBlankTagProgramming)
                         // Only a verified write counts. `writeOutcome` is set from the read-back,
                         // so a tag that reported 90 00 without landing the bytes does not tick.
                         if case .succeeded = tagModel.writeOutcome, let slot = pendingSlot {

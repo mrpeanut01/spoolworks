@@ -69,6 +69,7 @@ let exitCode = TestDriver.run([
 
     // UI state machine (code-review fixes)
     spoolDraftTests,
+    writeFormPrefillTests,
     tagCascadeTests,
     tagAutoWriteStateTests,
     tagArrivalTests,

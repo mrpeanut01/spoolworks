@@ -143,3 +143,18 @@ for any destructive operation; automatic backup dump of all readable sectors bef
 key/trailer modification gated behind an explicit advanced toggle.
 **Why:** The Windows app is comparatively unguarded; on a rewrite we can be safer at no UX cost.
 **Impact:** Slightly more confirmation UI than Windows. Considered a deliberate improvement.
+
+**Amended (tool owner, on the bench):** the advanced toggle is gone, and programming a blank tag
+needs no opt-in. The clause assumed every trailer write is destructive. The only trailer write this
+app performs is on a tag whose sector 1 is still on the factory key and holds no record — i.e.
+tagging a new spool, the most ordinary thing the app does — and there is nothing on such a tag to
+lose. Gating it behind a preference worded like a hazard put two clicks and a hunt in front of the
+main workflow and taught the user to tick the scary box by reflex, which is worse than not asking.
+
+Everything else in the clause stands. The write is still authorised per-tag rather than by
+preference: `WritePlan.isBlankTagProgramming` is a claim about the card that was just read, and
+`TagService.writeTag` re-derives the same condition from its own authentication and refuses if the
+two disagree. So a stale UI decision cannot rewrite the keys of a tag that turned out to be
+programmed — which a persisted `true` preference could. The diff, the backup, the access-bit
+preservation and the read-back verification are untouched, and the sheet still states plainly that
+the key is being written.
