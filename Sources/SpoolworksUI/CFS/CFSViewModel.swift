@@ -75,14 +75,14 @@ final class CFSViewModel: ObservableObject {
     var blockedReason: String? {
         guard let target else {
             return printers.printers.isEmpty
-                ? "No printer is configured yet. Add one on the Printers screen and Spoolworks can read its CFS."
-                : "Several printers are configured. Choose one on the Printers screen to poll."
+                ? "No printer is configured yet. Add one in Manage ▸ Printers (⇧⌘2) and Spoolworks can read its CFS."
+                : "Several printers are configured. Choose one in Manage ▸ Printers (⇧⌘2) to poll."
         }
         if !target.isReachableOnPaper {
-            return "\(target.displayName) has no address. Add one on the Printers screen."
+            return "\(target.displayName) has no address. Add one in Manage ▸ Printers (⇧⌘2)."
         }
         if !target.hasStoredPassword {
-            return "\(target.displayName) has no saved password. Add one on the Printers screen."
+            return "\(target.displayName) has no saved password. Add one in Manage ▸ Printers (⇧⌘2)."
         }
         return nil
     }

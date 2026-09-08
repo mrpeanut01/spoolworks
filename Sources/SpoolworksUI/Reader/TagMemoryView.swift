@@ -61,6 +61,17 @@ struct TagMemoryView: View {
                 .help("Re-read every sector (⌘R)")
                 .keyboardShortcut("r", modifiers: .command)
             }
+
+            // This switch used to live on the Reader screen, which the design folds into
+            // Read / identify. It belongs here regardless: this window is the only place its
+            // effect is visible, and the project's own rule is that a switch is rendered next to
+            // what it affects rather than in a preferences pane.
+            ToolbarItem(placement: .automatic) {
+                Toggle("Show key material", isOn: $settings.showKeyMaterial)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("Show sector trailers and key bytes. Display only — it changes nothing that is written.")
+            }
         }
         .task(id: monitor.insertionCount) {
             guard monitor.state.card?.isUsable == true else { return }

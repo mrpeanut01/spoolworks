@@ -74,6 +74,8 @@ final class AppEnvironment: ObservableObject {
     }
 
     static let tagMemoryWindowID = "tag-memory"
+    static let materialsWindowID = "materials"
+    static let printersWindowID = "printers"
 }
 
 // MARK: - App
@@ -102,6 +104,24 @@ public struct SpoolworksApp: App {
         // menu items' `disabled` state depends on *their* publishers, and observing only the
         // environment would leave it frozen at whatever it was when the menu bar was built.
         .commands { SpoolworksCommands(env: env, monitor: env.monitor, tagModel: env.tagModel) }
+
+        // Materials and Printers are windows rather than sidebar destinations.
+        //
+        // The design's sidebar has exactly five entries and a read-only "Material database"
+        // footer, so neither screen has a place in it. But both are still needed — the catalogue
+        // is what turns a filament id into a name on the Intake and Write screens, and the printer
+        // list is where the address and password the CFS poll needs are entered. Dropping them
+        // from the sidebar without rehousing them made the Printer & CFS screen tell users to
+        // "add one on the Printers screen" while offering no way to reach it.
+        Window("Materials", id: AppEnvironment.materialsWindowID) {
+            MaterialsView(model: env.materialsModel)
+        }
+        .defaultSize(width: 900, height: 640)
+
+        Window("Printers", id: AppEnvironment.printersWindowID) {
+            PrintersView(model: env.printerModel)
+        }
+        .defaultSize(width: 820, height: 600)
 
         // Tag Memory is a reference view you keep open next to the main window, not a sheet.
         // The Windows author gave `TagMemoryForm` its own taskbar entry — the same instinct.
@@ -135,6 +155,13 @@ struct SpoolworksCommands: Commands {
     var body: some Commands {
         // Nothing in this app creates a document.
         CommandGroup(replacing: .newItem) {}
+
+        CommandMenu("Manage") {
+            Button("Materials…") { openWindow(id: AppEnvironment.materialsWindowID) }
+                .keyboardShortcut("1", modifiers: [.command, .shift])
+            Button("Printers…") { openWindow(id: AppEnvironment.printersWindowID) }
+                .keyboardShortcut("2", modifiers: [.command, .shift])
+        }
 
         CommandMenu("Tag") {
             Button("Read Tag") {

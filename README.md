@@ -22,8 +22,14 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
 | **Write tag** | Program a tag for a third-party spool, or replace a damaged one. |
 
-Materials and Printers remain reachable — the catalogue drives the sidebar footer and the intake
-lookup, and printer credentials drive the CFS poll.
+**Materials** and **Printers** are windows rather than sidebar entries — `Manage ▸ Materials`
+(⇧⌘1) and `Manage ▸ Printers` (⇧⌘2). The design's sidebar has exactly five entries, but both
+screens are still needed: the catalogue turns a filament id into a name on Intake and Write, and
+the printer list is where the address and password the CFS poll uses are entered.
+
+The former **Reader** screen is gone. Its diagnostics are the right-hand column of Read / identify,
+and its one setting — show key material — moved into the Tag Memory window (⌘M), which is the only
+place its effect is visible.
 
 ## How a spool is identified
 
