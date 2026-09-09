@@ -255,8 +255,17 @@ private struct InventoryRow: View {
                             .font(.system(size: 10))
                             .foregroundStyle(spool.remainingPercent < 15 ? Theme.danger : Theme.warning)
                     }
+                    // Both figures. The percentage is what the app stores and what the bar draws;
+                    // grams is what you compare against a print's estimate and what a set of
+                    // scales says. Reading one and having to do the arithmetic for the other is
+                    // work the row can do — and the arithmetic needs the spool's size, which is
+                    // not in this column.
                     Text(spool.remainingLabel)
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    Text(spool.remainingGramsLabel)
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .lineLimit(1)
                 }
                 .frame(width: layout.width(.remaining), alignment: .trailing)
 
@@ -693,7 +702,7 @@ private struct TypeRow: View {
     }
 }
 
-/// What a full spool of this weighs, correctable.
+/// What a **full** spool of this holds — its size, not how much is on it. Correctable.
 ///
 /// Nominal, and both ways it gets set can be wrong: the tag's length code is what Creality wrote,
 /// and an unrecognised code reports as 1 kg on every Creality client. A row mis-picked at intake is
@@ -707,7 +716,7 @@ private struct NetWeightRow: View {
         // Not `DataRow`, for the reason `TypeRow` gives: it collapses its contents under
         // `.accessibilityElement(children: .combine)`, which leaves a control unreachable.
         HStack(alignment: .firstTextBaseline) {
-            Text("Net weight")
+            Text("Spool size")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.secondaryLabel)
             Spacer(minLength: Theme.Spacing.s)
@@ -724,7 +733,7 @@ private struct NetWeightRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 150)
-            .accessibilityLabel("Net weight of \(spool.label)")
+            .accessibilityLabel("Spool size of \(spool.label) — what a full one holds")
         }
         .padding(.vertical, Theme.Spacing.s)
         .overlay(alignment: .bottom) { Hairline() }
