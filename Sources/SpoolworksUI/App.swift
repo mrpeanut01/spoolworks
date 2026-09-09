@@ -90,9 +90,9 @@ final class AppEnvironment: ObservableObject {
                                           toasts: toasts)
         self.intakeModel = intakeModel
         self.tagModel.onWriteSucceeded = {
-            [weak inventoryModel, weak settings, weak intakeModel,
+            [weak inventoryModel, weak intakeModel,
              weak materials = self.materialsModel] summary in
-            guard let inventoryModel, let settings else { return }
+            guard let inventoryModel else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
             // verified before committing, so a write made there logs nothing on its own.
             guard intakeModel?.isActive != true else { return }
@@ -120,8 +120,7 @@ final class AppEnvironment: ObservableObject {
             }
             inventoryModel.logWrittenSpool(record: summary.record,
                                            materialLabel: summary.materialLabel,
-                                           materialType: materialType,
-                                           enabled: settings.addWrittenSpoolsToInventory)
+                                           materialType: materialType)
         }
     }
 

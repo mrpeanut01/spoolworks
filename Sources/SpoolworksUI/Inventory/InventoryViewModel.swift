@@ -662,13 +662,14 @@ final class InventoryViewModel: ObservableObject {
     /// catalogue. It is left empty rather than guessed when the tag's filament id is not in the
     /// catalogue: a spool of unknown type is a fact, and writing "PLA" over it would be a
     /// plausible-looking invention. The rail lets the user set it — see ``setMaterialType(_:for:)``.
+    /// Unconditional. It used to be gated by an "Add to inventory" checkbox on the Write screen,
+    /// which existed for re-tagging a spool that was already listed — a case the attach flow now
+    /// handles properly, and one this method never got wrong anyway: it matches an existing record
+    /// by identity and updates it rather than adding a second.
     @discardableResult
     func logWrittenSpool(record: SpoolRecord,
                          materialLabel: String,
-                         materialType: String = "",
-                         enabled: Bool) -> Spool? {
-        guard enabled else { return nil }
-
+                         materialType: String = "") -> Spool? {
         if var existing = inventory.spool(matching: record) {
             existing.tagSource = .spoolworksWritten
             existing.note(kind: .movement, detail: "Tag rewritten and verified")

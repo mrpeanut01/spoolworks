@@ -25,7 +25,8 @@ enum SpoolPlacesStore {
     /// key was never written" from "the user deleted every place", and those need opposite
     /// answers: the first must seed `Unplaced, Shelf, CFS, Ext…`, the second must be honoured and
     /// leave the list at just `Unplaced`. `object(forKey:)` is the only read that can tell them
-    /// apart — the same trap ``AppSettings/addWrittenSpoolsToInventory`` documents for `Bool`.
+    /// apart — the same trap a default-on `Bool` preference has, where `bool(forKey:)`
+    /// cannot tell "never written" from "turned off".
     static func load(from defaults: UserDefaults = .standard) -> SpoolPlaces {
         let destination = defaults.string(forKey: unloadKey) ?? SpoolPlaces.unplaced
         guard let stored = defaults.object(forKey: key) as? [String] else {

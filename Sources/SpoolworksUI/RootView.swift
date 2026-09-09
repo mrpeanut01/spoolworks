@@ -132,8 +132,7 @@ struct RootView: View {
                          monitor: env.monitor,
                          inventory: env.inventoryModel)
         case .write:
-            WriteTagView(monitor: env.monitor, model: env.tagModel,
-                         settings: env.settings, env: env,
+            WriteTagView(monitor: env.monitor, model: env.tagModel, env: env,
                          inventory: env.inventoryModel)
         }
     }

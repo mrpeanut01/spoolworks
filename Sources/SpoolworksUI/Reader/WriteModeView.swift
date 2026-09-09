@@ -499,9 +499,9 @@ struct AutoWriteCard: View {
                     // a blank tag presented with it off raised the confirmation sheet instead of
                     // being written. It gated the app's most ordinary operation — tagging a new
                     // spool — behind a checkbox worded like a hazard, so it is gone.
-                    Text("Blank tags are programmed on presentation. Programming writes sector "
-                         + "1's key, derived from the tag's UID, and that cannot be undone — but "
-                         + "a blank tag has nothing on it to lose.")
+                    // The reasoning — why programming a blank tag needs no confirmation — is in
+                    // `docs/DECISIONS.md` D-006. The screen states what happens, not the argument.
+                    Text("Blank tags are programmed on presentation.")
                         .font(.callout)
                         .foregroundStyle(Theme.secondaryLabel)
                         .fixedSize(horizontal: false, vertical: true)

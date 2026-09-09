@@ -178,8 +178,7 @@ let spoolTypeEditingTests = TestSuite(name: "Spool type editing", cases: [
             }
             let logged = model.logWrittenSpool(record: record,
                                                materialLabel: "Creality · Hyper PLA",
-                                               materialType: "PLA",
-                                               enabled: true)
+                                               materialType: "PLA")
             t.equal(logged?.materialType, "PLA", "the type the caller resolved is carried through")
             t.equal(logged?.brand, "Creality", "and the label is still split into brand and name")
             t.equal(logged?.name, "Hyper PLA", "name")
@@ -204,8 +203,7 @@ let spoolTypeEditingTests = TestSuite(name: "Spool type editing", cases: [
             // put a type on screen that nothing supports, and the user would have no way to know it
             // was guessed rather than read.
             let logged = model.logWrittenSpool(record: record,
-                                               materialLabel: "Someone Else · Filament",
-                                               enabled: true)
+                                               materialLabel: "Someone Else · Filament")
             t.equal(logged?.materialType, "", "left blank, and correctable in the rail")
         }
     },
@@ -998,8 +996,7 @@ let secondSideTests = TestSuite(name: "Tagging both sides later", cases: [
             // spool by that identity and updates it.
             let logged = model.logWrittenSpool(record: record,
                                                materialLabel: "Creality · Hyper PLA",
-                                               materialType: "PLA",
-                                               enabled: true)
+                                               materialType: "PLA")
             t.equal(model.inventory.active.count, 1,
                     "still one spool — this is the same spool's other side")
             t.equal(logged?.id, shelf.id, "and it is the one that was tagged")
@@ -1032,8 +1029,7 @@ let secondSideTests = TestSuite(name: "Tagging both sides later", cases: [
             // the reason the wiring holds the serial cannot be lost without this failing.
             _ = model.logWrittenSpool(record: second,
                                       materialLabel: "Creality · Hyper PLA",
-                                      materialType: "PLA",
-                                      enabled: true)
+                                      materialType: "PLA")
             t.equal(model.inventory.active.count, 2,
                     "a differing serial really does split the spool in two")
         }

@@ -8,7 +8,7 @@ import Combine
 /// `HKCU\CFS RFID\Settings` (`SPEC/03-ui.md` §2 and §8.4).
 ///
 /// **There is no preferences window.** Each switch is rendered next to what it affects —
-/// `showKeyMaterial` on the Reader screen, `addWrittenSpoolsToInventory` on the write result —
+/// `showKeyMaterial` on the Reader screen —
 /// and the `Settings` scene has been removed. See ``ReaderPane`` for the reasoning.
 ///
 /// There was a third, `advancedTagOperations`, which had to be turned on before a blank tag could
@@ -43,20 +43,9 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showKeyMaterial, forKey: Keys.showKeyMaterial) }
     }
 
-    /// After a verified write, add the spool to stock.
-    ///
-    /// On by default, which is what the design shows and what the action implies: programming a
-    /// tag for a spool is the moment you take ownership of it, and a spool you have just tagged
-    /// and not logged is exactly the gap the inventory exists to close. Off is for re-tagging a
-    /// spool that is already in stock — replacing a damaged tag — where a second record would be
-    /// a duplicate.
-    @Published var addWrittenSpoolsToInventory: Bool {
-        didSet { defaults.set(addWrittenSpoolsToInventory, forKey: Keys.addWrittenSpoolsToInventory) }
-    }
 
     enum Keys {
         static let showKeyMaterial = "K2ShowKeyMaterial"
-        static let addWrittenSpoolsToInventory = "SpoolworksAddWrittenSpoolsToInventory"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -64,7 +53,5 @@ final class AppSettings: ObservableObject {
         showKeyMaterial = defaults.bool(forKey: Keys.showKeyMaterial)
         // `bool(forKey:)` is false for an absent key, so the default-on preference is read
         // through `object(forKey:)` — otherwise "never set" is indistinguishable from "turned off".
-        addWrittenSpoolsToInventory =
-            (defaults.object(forKey: Keys.addWrittenSpoolsToInventory) as? Bool) ?? true
     }
 }

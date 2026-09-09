@@ -19,7 +19,6 @@ import SpoolworksCore
 struct WriteTagView: View {
     @ObservedObject var monitor: ReaderMonitor
     @ObservedObject var model: TagViewModel
-    @ObservedObject var settings: AppSettings
     @ObservedObject var env: AppEnvironment
     /// Observed individually. `AppEnvironment` holds it as a plain `let`, and a nested
     /// `ObservableObject` does not republish through its owner — the same trap that made
@@ -67,14 +66,14 @@ struct WriteTagView: View {
                         }
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)
-                        WriteOptionsCard(settings: settings)
+                        WriteOptionsCard()
                         if let outcome = model.writeOutcome {
                             WriteOutcomeCard(outcome: outcome, model: model)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    WriteVerifyPanel(model: model, monitor: monitor, settings: settings)
+                    WriteVerifyPanel(model: model, monitor: monitor)
                         .frame(width: 420)
                 }
             }
@@ -113,7 +112,6 @@ struct WriteTagView: View {
 private struct WriteVerifyPanel: View {
     @ObservedObject var model: TagViewModel
     @ObservedObject var monitor: ReaderMonitor
-    @ObservedObject var settings: AppSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -165,9 +163,6 @@ private struct WriteVerifyPanel: View {
                         .textSelection(.enabled)
                 }
                 .padding(.top, 4)
-                Text("Seven hex digits — one flag nibble, then RRGGBB.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.secondaryLabel)
             }
             .padding(.top, 16)
             .overlay(alignment: .top) {
@@ -193,8 +188,7 @@ private struct WriteVerifyPanel: View {
                  state: wrote ? "done" : (model.canWrite ? "ready" : "waiting")),
             Step(what: "Read back and compare byte for byte",
                  state: wrote ? "done" : "waiting"),
-            Step(what: "Add the spool to inventory",
-                 state: settings.addWrittenSpoolsToInventory ? (wrote ? "done" : "ready") : "off"),
+            Step(what: "Add the spool to inventory", state: wrote ? "done" : "ready"),
         ]
     }
 
@@ -230,44 +224,31 @@ private struct WriteVerifyPanel: View {
 
 // MARK: - Options
 
-/// The three switches the design puts under the write form.
+/// One line, stating the guarantee the whole screen rests on.
 ///
-/// One is a setting, one is a statement of fact, and the third lives on the Auto-Write card above.
+/// **Verify by read-back is not optional.** The design draws it as a checkbox; making it one would
+/// let someone turn off the check that distinguishes "the reader returned 90 00" from "the bytes
+/// are on the tag". It is shown and always on. The paragraph that used to explain *why* is gone —
+/// it is in the docs, and the reason a screen states a guarantee is so you can see it holds, not so
+/// you can read an essay about it.
 ///
-/// **Verify by read-back is not optional** — the design draws it as a checkbox, but making it one
-/// would let someone turn off the check that distinguishes "the reader returned 90 00" from "the
-/// bytes are on the tag", which is the guarantee this app is built on. It is shown, always on, and
-/// says why.
+/// The "Add to inventory" checkbox that sat beside it is gone too, with the setting behind it: a
+/// verified write now always logs its spool. It existed for re-tagging a spool already in stock,
+/// which the attach flow handles properly — and `logWrittenSpool` matches an existing record by
+/// identity anyway, so leaving it on never created a duplicate.
 private struct WriteOptionsCard: View {
-    @ObservedObject var settings: AppSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            // The design's third switch here is "Write on scan". It is not repeated: the Auto-Write
-            // card above owns that value and surrounds it with the arming state and the sector-key
-            // gate, which a bare checkbox cannot carry. Two controls for one setting on one screen
-            // reads as a bug even when they stay in sync.
-            HStack(spacing: Theme.Spacing.s) {
-                Image(systemName: "checkmark.square.fill")
-                    .foregroundStyle(Theme.success)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Verify by read-back").font(.system(size: 13))
-                    Text("Always on. A reader answering 90 00 means the command was accepted, not that the bytes landed.")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.secondaryLabel)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Verify by read-back, always on")
-
-            Toggle("Add to inventory", isOn: $settings.addWrittenSpoolsToInventory)
-                .help("Log the spool to stock after a verified write. Turn off when replacing a damaged tag on a spool that is already listed.")
+        HStack(spacing: Theme.Spacing.s) {
+            Image(systemName: "checkmark.square.fill")
+                .foregroundStyle(Theme.success)
+                .accessibilityHidden(true)
+            Text("Verify by read-back · always on").font(.system(size: 13))
+            Spacer(minLength: 0)
         }
-        .toggleStyle(.checkbox)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: Theme.Spacing.l)
+        .accessibilityElement(children: .combine)
     }
 }
 

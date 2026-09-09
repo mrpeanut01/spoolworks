@@ -110,7 +110,7 @@ No Xcode needed — Command Line Tools are enough.
 
 ```bash
 swift build
-swift run SpoolworksTests   # 638 tests, no reader or camera required
+swift run SpoolworksTests   # 636 tests, no reader or camera required
 Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
@@ -158,7 +158,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 638 tests, runnable without hardware |
+| `SpoolworksTests` | 636 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
@@ -199,7 +199,8 @@ meodai colour-name dataset; and Creality's material data.
   from, a real printer since that wiring landed.
 - **Verify by read-back cannot be switched off.** The design offers it as a checkbox; making it
   one would let someone disable the check that distinguishes "the reader returned `90 00`" from
-  "the bytes are on the tag". It is shown as always-on instead.
+  "the bytes are on the tag". It is shown as always-on instead. A verified write always logs its
+  spool, too — the checkbox that used to gate that is gone.
 - The Creality Cloud profile download validates the CDN host against an allow-list that is an
   educated guess; it fails closed.
 - **The colour scanner has not been checked against a reference.** Its accuracy is measured against
