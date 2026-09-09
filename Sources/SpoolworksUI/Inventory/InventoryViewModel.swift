@@ -203,26 +203,29 @@ final class InventoryViewModel: ObservableObject {
 
     /// The figures the "what's left" picker offers for one spool, fullest first.
     ///
-    /// A 100 g ladder, the same step the net-weight picker uses, each rung labelled in **both**
-    /// units — `700 g · 70%` — because the two answer different questions and neither is the
-    /// obvious one. Grams is what a set of scales says; percent is what the inventory stores and
-    /// what the bar shows. Making the user pick a unit first, then type a number in it, was two
-    /// decisions for a value most people are eyeballing to the nearest tenth of a spool.
+    /// **Eleven rungs, a tenth of a spool apart**, each labelled in both units — `700 g · 70%`.
+    /// The two answer different questions and neither is the obvious one: grams is what a set of
+    /// scales says, percent is what the inventory stores and what the bar shows.
     ///
-    /// The spool's own net weight is always the top rung even when it is not a multiple of 100 —
-    /// a 750 g spool has to be able to say "full".
+    /// Stepped by *percent* rather than by grams, which is the correction that matters. A 100 g
+    /// ladder gave a 1 kg spool the eleven rungs everyone pictures and gave a 250 g spool three —
+    /// and gave a spool recorded at 100 g exactly two, which reads as the picker being broken when
+    /// it is the net weight that is wrong. A tenth of a spool is eleven rungs for every spool, and
+    /// on the 1 kg spool almost everyone is holding it *is* the 100 g ladder.
     ///
-    /// Nothing here is precise to the gram any more. That is the trade: a picker cannot express
-    /// 437 g. It is the right one for a list you scroll past, and the wrong one for a scale, so
-    /// this is the place to look if weighing to the gram is ever wanted back.
+    /// The ceiling is the spool's own net weight, never a round number above it. Claiming more
+    /// filament than the spool can hold is not a figure `adjust(_:toGrams:)` would accept, and
+    /// offering it would be offering a choice that does nothing.
+    ///
+    /// Nothing here is precise to the gram. That is the trade: a picker cannot express 437 g. It
+    /// is right for a list you scroll past and wrong for a scale, so this is the place to look if
+    /// weighing to the gram is ever wanted back.
     nonisolated func remainingOptions(for spool: Spool) -> [(grams: Int, percent: Double, label: String)] {
         let net = spool.netWeightGrams
         guard net > 0 else { return [] }
-        var rungs = stride(from: (net / 100) * 100, through: 0, by: -100).map { $0 }
-        if rungs.first != net { rungs.insert(net, at: 0) }
-        return rungs.map { grams in
-            let percent = Double(grams) / Double(net) * 100
-            return (grams, percent, "\(grams) g · \(Int(percent.rounded()))%")
+        return stride(from: 100, through: 0, by: -10).map { percent in
+            let grams = Int((Double(net) * Double(percent) / 100).rounded())
+            return (grams, Double(percent), "\(grams) g · \(percent)%")
         }
     }
 
@@ -406,6 +409,26 @@ final class InventoryViewModel: ObservableObject {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value != current.materialType else { return }
         current.materialType = value
+        inventory.update(current)
+        persist()
+    }
+
+    /// Corrects a spool's net weight.
+    ///
+    /// The figure is nominal — it comes from the tag's length code, or from whatever was chosen at
+    /// intake — and both can be wrong. An unrecognised code reports as 1 kg on every Creality
+    /// client, and a mis-picked row at intake is a spool recorded at 100 g that will never be
+    /// right again. Before this there was no way to say so: net weight was written once and never
+    /// afterwards.
+    ///
+    /// The **percentage is preserved, not the grams**. A spool the user believes is half full is
+    /// still half full after they correct what a full one weighs; recomputing the percentage from
+    /// the old grams would take a correction of the *container* and silently restate how much is
+    /// in it.
+    func setNetWeight(_ grams: Int, for spool: Spool) {
+        guard grams > 0, var current = inventory.spool(id: spool.id) else { return }
+        guard grams != current.netWeightGrams else { return }
+        current.netWeightGrams = grams
         inventory.update(current)
         persist()
     }

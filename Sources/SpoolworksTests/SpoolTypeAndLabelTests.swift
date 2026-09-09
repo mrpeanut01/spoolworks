@@ -463,6 +463,28 @@ let weightLadderTests = TestSuite(name: "Weight ladder", cases: [
 
 let remainingOptionTests = TestSuite(name: "Remaining options", cases: [
 
+    test("eleven rungs for every spool, a tenth apart") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            // A 100 g ladder gave a 1 kg spool eleven rungs and a 250 g spool three — and gave a
+            // spool wrongly recorded at 100 g exactly two, which reads as the picker being broken.
+            for net in [1000, 750, 500, 250, 100] {
+                var spool = typedSpool(materialType: "PLA")
+                spool.netWeightGrams = net
+                let options = model.remainingOptions(for: spool)
+                t.equal(options.count, 11, "\(net) g spool has eleven rungs")
+                t.equal(options.map { Int($0.percent) }, [100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0],
+                        "\(net) g steps a tenth at a time, fullest first")
+                t.equal(options.first?.grams, net, "full is the spool's own weight, never more")
+                t.equal(options.last?.grams, 0, "and empty is empty")
+            }
+        }
+    },
+
     test("a 1 kg spool steps in hundreds, fullest first, in both units") { t in
         onMain {
             let (model, defaults, suite, dir) = makeInventory()
@@ -472,12 +494,53 @@ let remainingOptionTests = TestSuite(name: "Remaining options", cases: [
             }
             let spool = typedSpool(materialType: "PLA")
             let options = model.remainingOptions(for: spool)
+            // On the 1 kg spool almost everyone is holding, a tenth of a spool *is* 100 g.
             t.equal(options.map(\.grams), [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100, 0],
                     "eleven rungs, fullest first")
             t.equal(options.first?.label, "1000 g · 100%", "full")
             t.equal(options.last?.label, "0 g · 0%", "empty")
             t.expect(options.contains { $0.label == "100 g · 10%" },
                      "and the rung the request named")
+        }
+    },
+
+    test("correcting the net weight keeps how full the spool is, not how many grams") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var wrong = typedSpool(materialType: "PLA")
+            wrong.netWeightGrams = 100          // mis-picked at intake
+            wrong.remainingPercent = 50
+            model.add(wrong)
+
+            model.setNetWeight(1000, for: wrong)
+
+            guard let after = t.unwrap(model.inventory.spool(id: wrong.id), "spool") else { return }
+            t.equal(after.netWeightGrams, 1000, "corrected")
+            // A spool the user believes is half full is still half full after they correct what a
+            // full one weighs. Recomputing from the old grams would take a correction of the
+            // *container* and silently restate how much is in it.
+            t.equal(after.remainingPercent, 50, "and still half full")
+            t.equal(model.remainingOptions(for: after).count, 11, "with a usable ladder again")
+        }
+    },
+
+    test("a zero or unchanged net weight is a no-op rather than a write") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            let spool = typedSpool(materialType: "PLA")
+            model.add(spool)
+            let before = model.inventory.spool(id: spool.id)
+            model.setNetWeight(0, for: spool)
+            model.setNetWeight(spool.netWeightGrams, for: spool)
+            t.equal(model.inventory.spool(id: spool.id), before, "untouched")
         }
     },
 
@@ -491,9 +554,9 @@ let remainingOptionTests = TestSuite(name: "Remaining options", cases: [
             var spool = typedSpool(materialType: "PLA")
             spool.netWeightGrams = 750
             let options = model.remainingOptions(for: spool)
-            t.equal(options.first?.grams, 750, "its own weight is the top rung")
+            t.equal(options.first?.grams, 750, "its own weight is the top rung, never a round number above it")
             t.equal(options.first?.label, "750 g · 100%", "and reads as full")
-            t.equal(options.dropFirst().first?.grams, 700, "then the ladder resumes")
+            t.equal(options.dropFirst().first?.grams, 675, "a tenth down from 750, not down to 700")
             t.equal(options.last?.grams, 0, "down to empty")
         }
     },

@@ -362,6 +362,7 @@ private struct InventoryDetailRail: View {
 
         VStack(spacing: 0) {
             TypeRow(spool: spool, model: model, materials: env.materialsModel)
+            NetWeightRow(spool: spool, model: model)
             DataRow("Serial", spool.serialLabel, mono: true)
             DataRow("Filament ID", spool.filamentIdLabel, mono: true)
             DataRow("Vendor ID", spool.vendorIdLabel, mono: true)
@@ -576,7 +577,7 @@ private struct RemainingControl: View {
                     // One picker, not a unit switch and a field. See
                     // `InventoryViewModel.remainingOptions(for:)` for why both units are on every
                     // rung and what this trades away.
-                    FieldBox(label: "How much is left", note: "nearest 100 g") {
+                    FieldBox(label: "How much is left", note: "a tenth of a spool per step") {
                         Picker("", selection: $chosen) {
                             Text("—").tag(Int?.none)
                             ForEach(options, id: \.grams) { option in
@@ -689,6 +690,45 @@ private struct TypeRow: View {
         var found = Set(materials.rows.map(\.materialType).filter { !$0.isEmpty })
         if !spool.materialType.isEmpty { found.insert(spool.materialType) }
         return found.sorted()
+    }
+}
+
+/// What a full spool of this weighs, correctable.
+///
+/// Nominal, and both ways it gets set can be wrong: the tag's length code is what Creality wrote,
+/// and an unrecognised code reports as 1 kg on every Creality client. A row mis-picked at intake is
+/// the other way — a spool recorded at 100 g whose "what's left" picker then offers a tenth of a
+/// spool per rung and looks broken, when the broken thing is this figure.
+private struct NetWeightRow: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+    var body: some View {
+        // Not `DataRow`, for the reason `TypeRow` gives: it collapses its contents under
+        // `.accessibilityElement(children: .combine)`, which leaves a control unreachable.
+        HStack(alignment: .firstTextBaseline) {
+            Text("Net weight")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryLabel)
+            Spacer(minLength: Theme.Spacing.s)
+            Picker("", selection: Binding(get: { spool.netWeightGrams },
+                                          set: { model.setNetWeight($0, for: spool) })) {
+                // The spool's own figure is offered even when the tag format has no code for it,
+                // so opening the picker can never quietly change a value just by being opened.
+                if !IntakeViewModel.weights.contains(spool.netWeightGrams) {
+                    Text(Spool.weightLabel(spool.netWeightGrams)).tag(spool.netWeightGrams)
+                }
+                ForEach(IntakeViewModel.weights, id: \.self) { grams in
+                    Text(Spool.weightLabel(grams)).tag(grams)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 150)
+            .accessibilityLabel("Net weight of \(spool.label)")
+        }
+        .padding(.vertical, Theme.Spacing.s)
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityElement(children: .contain)
     }
 }
 
