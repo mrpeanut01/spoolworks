@@ -232,3 +232,11 @@ public enum VendorDefaultPassword {
     public static let hi = "Creality2024"
     public static let i7 = "creality_2025"
 }
+
+/// `Error.localizedDescription` — which is what every UI surface shows — reads `errorDescription`,
+/// not `description`. Without this the CFS strip and the upload sheets showed "The operation
+/// couldn't be completed. (SpoolworksCore.CredentialError error 3.)" in place of the sentence the case
+/// was written to say.
+extension CredentialError: LocalizedError {
+    public var errorDescription: String? { description }
+}

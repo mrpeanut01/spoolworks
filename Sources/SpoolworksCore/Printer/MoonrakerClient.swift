@@ -94,3 +94,9 @@ public struct MoonrakerClient: PrintJobReading {
                                 feedingSlot: feeding)
     }
 }
+
+/// The enum already provided `errorDescription`; what it lacked was the conformance that makes
+/// `Error.localizedDescription` — which is what every UI surface shows — read it. Without this
+/// the CFS strip showed "The operation couldn't be completed. (SpoolworksCore.MoonrakerError error 0.)"
+/// in place of the sentence the case was written to say.
+extension MoonrakerError: LocalizedError {}

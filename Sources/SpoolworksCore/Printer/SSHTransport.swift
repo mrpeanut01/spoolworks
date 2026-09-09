@@ -399,36 +399,43 @@ public final class SSHTransport: PrinterTransport, CustomStringConvertible {
 
         if exitStatus == 0 { return nil }
 
-        if lower.contains("remote host identification has changed") {
-            return .hostKeyChanged(host: host)
-        }
-        if lower.contains("host key verification failed") {
-            // With `accept-new`, a *new* key is pinned silently, so reaching here means either
-            // the strict policy or a key we already have on file and could not match.
-            return lower.contains("changed") ? .hostKeyChanged(host: host) : .hostKeyUnverified(host: host)
-        }
-        if lower.contains("permission denied") || lower.contains("too many authentication failures") {
-            return .authenticationFailed
-        }
-        if lower.contains("could not resolve hostname") || lower.contains("name or service not known") {
-            return .connectionFailed("no such host \"\(host)\"")
-        }
-        if lower.contains("connection refused") {
-            return .connectionFailed("\(host) refused the connection on the SSH port")
-        }
-        if lower.contains("operation timed out") || lower.contains("connection timed out")
-            || lower.contains("timeout, server") {
-            return .connectionFailed("\(host) did not answer")
-        }
-        if lower.contains("no route to host") || lower.contains("network is unreachable") {
-            return .connectionFailed("\(host) is unreachable")
-        }
-        if lower.contains("no matching key exchange method")
-            || lower.contains("no matching host key type")
-            || lower.contains("no matching cipher") {
-            return .connectionFailed(
-                "the printer only offers legacy SSH algorithms — enable legacy algorithm support "
-                + "and try again")
+        // ssh reports its own failures — connection, host key, authentication — with exit 255
+        // and passes the remote command's status through otherwise. Classifying by text alone
+        // filed a remote `cat: … Permission denied` (exit 1) under "wrong password", and made
+        // the download branch below for that message unreachable.
+        if exitStatus == 255 {
+            if lower.contains("remote host identification has changed") {
+                return .hostKeyChanged(host: host)
+            }
+            if lower.contains("host key verification failed") {
+                // With `accept-new`, a *new* key is pinned silently, so reaching here means either
+                // the strict policy or a key we already have on file and could not match.
+                return lower.contains("changed") ? .hostKeyChanged(host: host) : .hostKeyUnverified(host: host)
+            }
+            if lower.contains("permission denied") || lower.contains("too many authentication failures") {
+                return .authenticationFailed
+            }
+            if lower.contains("could not resolve hostname") || lower.contains("name or service not known") {
+                return .connectionFailed("no such host \"\(host)\"")
+            }
+            if lower.contains("connection refused") {
+                return .connectionFailed("\(host) refused the connection on the SSH port")
+            }
+            if lower.contains("operation timed out") || lower.contains("connection timed out")
+                || lower.contains("timeout, server") {
+                return .connectionFailed("\(host) did not answer")
+            }
+            if lower.contains("no route to host") || lower.contains("network is unreachable") {
+                return .connectionFailed("\(host) is unreachable")
+            }
+            if lower.contains("no matching key exchange method")
+                || lower.contains("no matching host key type")
+                || lower.contains("no matching cipher") {
+                return .connectionFailed(
+                    "the printer only offers legacy SSH algorithms — enable legacy algorithm support "
+                    + "and try again")
+            }
+
         }
 
         // Past this point the failure came from the remote *command*, not from ssh itself.
@@ -463,11 +470,12 @@ public final class SSHTransport: PrinterTransport, CustomStringConvertible {
 
     /// Rejects hosts that could be read as options or smuggle a newline into the command line.
     public static func validate(host: String) throws {
-        let trimmed = host.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("-"),
-              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-              !trimmed.contains("\0")
+        // The string checked is the string that reaches argv, the credential key and the
+        // known_hosts file. Checking a trimmed copy let `" 10.0.0.5"` through with its space.
+        guard !host.isEmpty,
+              !host.hasPrefix("-"),
+              host.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              !host.contains("\0")
         else { throw PrinterTransportError.invalidHost(host) }
     }
 
@@ -756,8 +764,11 @@ public enum ProcessRunner {
 
         private func markTimedOut() {
             lock.lock()
+            // A child that has already exited on its own did not time out, whatever the clock
+            // says: the deadline and the exit can land within the same few milliseconds, and
+            // reporting a completed upload as timed out would have the user redo it.
+            guard let running = process, running.isRunning else { lock.unlock(); return }
             timedOut = true
-            let running = process
             lock.unlock()
             RunBox.stop(running)
         }
@@ -827,9 +838,14 @@ public enum ProcessRunner {
             DispatchQueue.global(qos: .userInitiated).async {
                 let handle = inPipe.fileHandleForWriting
                 if let stdin, !stdin.isEmpty {
-                    // The remote `cat` can die (disk full, bad path) while we are still writing,
-                    // which surfaces as EPIPE. That is the remote command's failure to report,
-                    // not ours, so swallow it and let the exit status speak.
+                    // A child that exits before draining stdin — ssh failing authentication with
+                    // a 478 KB database queued behind a full pipe, say — closes the read end
+                    // under a blocked write, and the kernel's answer is SIGPIPE, which kills
+                    // *this* process; `try?` cannot catch a signal. With the flag set the write
+                    // fails with EPIPE instead. That, like the remote `cat` dying (disk full,
+                    // bad path), is the remote side's failure to report, so it is swallowed and
+                    // the exit status is left to speak.
+                    _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
                     try? handle.write(contentsOf: stdin)
                 }
                 try? handle.close()
@@ -844,6 +860,9 @@ public enum ProcessRunner {
             defer { timer.cancel() }
 
             process.waitUntilExit()
+            // The deadline is over the moment the child is gone; it must not fire during the
+            // drain and mark a finished run as timed out.
+            timer.cancel()
             // Bounded: see `drainGracePeriod`. On expiry the reader threads are abandoned —
             // they hold nothing but their own pipe handles and finish when the last write end
             // closes — and whatever `DataBox` has so far is what we report.
