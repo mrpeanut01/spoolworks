@@ -293,7 +293,7 @@ public struct FilamentColorEstimator: Sendable {
     /// the ISO a webcam picks indoors is the difference between a stable readout and one that
     /// jitters several units a frame — a 64-pixel cell cuts the noise angle by eight. Reducing to a
     /// fixed grid also makes everything downstream independent of whatever resolution the camera
-    /// delivers: the mode seek is O(n²), and n is 144 whether the crop was 60 px across or 600.
+    /// delivers: the mode seek is O(n²), and n is 400 whether the crop was 60 px across or 600.
     ///
     /// Cells divide the field evenly; a remainder of fewer than `gridSize` pixels at the right or
     /// bottom edge is left out rather than unevenly weighted into the last row.
