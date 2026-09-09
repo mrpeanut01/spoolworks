@@ -97,8 +97,10 @@ private func noOrphans(_ model: InventoryViewModel, _ t: TestContext) {
 let spoolPlacesTests = TestSuite(name: "Spool places", cases: [
 
     // The tool owner asked for exactly these four, in this order.
-    test("a first run is seeded with Unplaced, Shelf, CFS and Ext…") { t in
-        t.equal(SpoolPlaces().names, ["Unplaced", "Shelf", "CFS", "Ext…"], "seeded list")
+    test("a first run is seeded with Unplaced and Shelf") { t in
+        // `CFS` and `Ext…` were seeded once and retired: they duplicated the two locations the
+        // printer owns, which "On printer" already covers. See `SpoolPlaces.retiredSeeds`.
+        t.equal(SpoolPlaces().names, ["Unplaced", "Shelf"], "seeded list")
     },
 
     // `.unknown` is where `reconcile` puts a spool the printer has stopped reporting, and where a
@@ -143,8 +145,8 @@ let spoolPlacesTests = TestSuite(name: "Spool places", cases: [
         t.equal(places.location(for: "Shelf"), .shelf("Shelf"), "everything else is a shelf")
         // `CFS` is seeded because the tool owner asked for it, and it is an ordinary shelf name
         // with no special power — it does not, and must not, produce `.cfs(box:slot:)`.
-        t.equal(places.location(for: "CFS"), .shelf("CFS"), "seeded but powerless")
-        t.equal(places.location(for: "Ext…"), .shelf("Ext…"), "likewise")
+        t.equal(places.location(for: "Anything"), .shelf("Anything"), "any name is a shelf")
+        t.equal(places.location(for: "Ext…"), .shelf("Ext…"), "including one since retired")
 
         t.expect(places.name(for: .cfs(box: "T1", slot: "A")) == nil, "no row owns a CFS slot")
         t.expect(places.name(for: .externalHolder) == nil, "nor the external holder")
@@ -423,9 +425,10 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
                 try? FileManager.default.removeItem(at: dir)
                 defaults.removePersistentDomain(forName: suite)
             }
+            _ = model.addPlace("Garage")
             let a = makeSpool(serial: "000001", location: .shelf("Shelf"))
             let b = makeSpool(serial: "000002", location: .shelf("Shelf"))
-            let elsewhere = makeSpool(serial: "000003", location: .shelf("CFS"))
+            let elsewhere = makeSpool(serial: "000003", location: .shelf("Garage"))
             model.add(a)
             model.add(b)
             model.add(elsewhere)
@@ -436,7 +439,7 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
             t.expect(!model.places.contains("Shelf"), "gone from the list")
             t.equal(model.inventory.spool(id: a.id)?.location, .unknown, "and its spools moved")
             t.equal(model.inventory.spool(id: b.id)?.location, .unknown, "both of them")
-            t.equal(model.inventory.spool(id: elsewhere.id)?.location, .shelf("CFS"),
+            t.equal(model.inventory.spool(id: elsewhere.id)?.location, .shelf("Garage"),
                     "another place is untouched")
             t.expect(model.inventory.spool(id: a.id)?.usage.first?.detail.contains("removed") == true,
                      "each says why it moved")
@@ -454,7 +457,8 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
             }
             let spool = makeSpool(location: .shelf("Shelf"))
             model.add(spool)
-            t.expect(model.removePlace("CFS").isApplied, "removed")
+            _ = model.addPlace("Garage")
+            t.expect(model.removePlace("Garage").isApplied, "removed")
             t.equal(model.inventory.spool(id: spool.id)?.usage.count, 0, "nothing logged")
             noOrphans(model, t)
         }
@@ -473,12 +477,11 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
             let reopened = InventoryViewModel(store: InventoryStore(directory: dir),
                                               toasts: ToastCenter(),
                                               defaults: defaults)
-            t.equal(reopened.places.names, ["Unplaced", "CFS", "Ext…", "Garage rack"],
-                    "exactly what was left")
+            t.equal(reopened.places.names, ["Unplaced", "Garage rack"], "exactly what was left")
 
             // Deleting everything is a choice, not a corruption — it must not spring back to the
-            // seeded four. Only a *never written* key seeds.
-            for name in ["CFS", "Ext…", "Garage rack"] { reopened.removePlace(name) }
+            // seeded list. Only a *never written* key seeds.
+            for name in ["Garage rack"] { reopened.removePlace(name) }
             let again = InventoryViewModel(store: InventoryStore(directory: dir),
                                            toasts: ToastCenter(),
                                            defaults: defaults)
@@ -519,7 +522,7 @@ let inventoryFilterOptionTests = TestSuite(name: "Inventory filter options", cas
                 defaults.removePersistentDomain(forName: suite)
             }
             let titles = model.filterOptions.map(\.title)
-            t.equal(titles, ["All", "On printer", "Unplaced", "Shelf", "CFS", "Ext…", "Low", "Untagged"],
+            t.equal(titles, ["All", "On printer", "Unplaced", "Shelf", "Low", "Untagged"],
                     "states, then every place, then the conditions")
 
             _ = model.addPlace("Dry box")
@@ -568,8 +571,9 @@ let inventoryFilterOptionTests = TestSuite(name: "Inventory filter options", cas
                 try? FileManager.default.removeItem(at: dir)
                 defaults.removePersistentDomain(forName: suite)
             }
-            model.filter = .at(.shelf("CFS"))
-            _ = model.removePlace("CFS")
+            _ = model.addPlace("Garage")
+            model.filter = .at(.shelf("Garage"))
+            _ = model.removePlace("Garage")
             t.equal(model.filter, .all, "the selection falls back")
         }
     },
@@ -582,7 +586,7 @@ let inventoryFilterOptionTests = TestSuite(name: "Inventory filter options", cas
                 defaults.removePersistentDomain(forName: suite)
             }
             model.filter = .low
-            _ = model.removePlace("CFS")
+            _ = model.removePlace("Garage")
             t.equal(model.filter, .low, "Low is not a place and survives")
         }
     },
@@ -646,8 +650,9 @@ let unloadDestinationTests = TestSuite(name: "Unload destination", cases: [
                 try? FileManager.default.removeItem(at: dir)
                 defaults.removePersistentDomain(forName: suite)
             }
-            model.setUnloadDestination("CFS")
-            _ = model.removePlace("CFS")
+            _ = model.addPlace("Garage")
+            model.setUnloadDestination("Garage")
+            _ = model.removePlace("Garage")
             t.equal(model.places.unloadDestination, SpoolPlaces.unplaced, "fell back")
         }
     },
@@ -677,8 +682,77 @@ let unloadDestinationTests = TestSuite(name: "Unload destination", cases: [
                 try? FileManager.default.removeItem(at: dir)
                 defaults.removePersistentDomain(forName: suite)
             }
-            model.setUnloadDestination("Ext…")
-            t.equal(SpoolPlacesStore.load(from: defaults).unloadDestination, "Ext…", "persisted")
+            _ = model.addPlace("Garage")
+            model.setUnloadDestination("Garage")
+            t.equal(SpoolPlacesStore.load(from: defaults).unloadDestination, "Garage", "persisted")
         }
+    },
+])
+
+// MARK: - Retiring the two places that were seeded by mistake
+
+let retiredSeedTests = TestSuite(name: "Retired seeded places", cases: [
+
+    test("CFS and Ext… are dropped, and only once") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            // A list as an installed copy already has it.
+            _ = model.addPlace("CFS")
+            _ = model.addPlace("Ext…")
+            t.expect(model.places.contains("CFS"), "present to begin with")
+
+            model.retireSeededPlaces()
+            t.expect(!model.places.contains("CFS"), "CFS gone — On printer already says this")
+            t.expect(!model.places.contains("Ext…"), "and Ext…")
+            t.expect(model.places.contains("Shelf"), "while a real place is untouched")
+
+            // Adding one back must stick: a cleanup that ran every launch would be the app
+            // arguing with the user.
+            _ = model.addPlace("CFS")
+            model.retireSeededPlaces()
+            t.expect(model.places.contains("CFS"), "put back by hand, and left alone")
+        }
+    },
+
+    test("a place with spools on it is kept, because the user has made it theirs") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            _ = model.addPlace("CFS")
+            model.add(makeSpool(location: .shelf("CFS")))
+
+            model.retireSeededPlaces()
+            t.expect(model.places.contains("CFS"), "kept")
+            t.equal(model.inventory.active.first?.location, .shelf("CFS"),
+                    "and the spool did not move — a cleanup must not cascade")
+            noOrphans(model, t)
+        }
+    },
+
+    test("a place chosen as the unload destination is kept, because that is a setting") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            _ = model.addPlace("Ext…")
+            model.setUnloadDestination("Ext…")
+            model.retireSeededPlaces()
+            t.expect(model.places.contains("Ext…"), "kept")
+            t.equal(model.places.unloadDestination, "Ext…", "and still the destination")
+        }
+    },
+
+    test("a fresh install seeds only Unplaced and Shelf") { t in
+        t.equal(SpoolPlaces().names, ["Unplaced", "Shelf"],
+                "the two that duplicated On printer are not seeded any more")
     },
 ])

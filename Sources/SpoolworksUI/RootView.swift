@@ -98,6 +98,9 @@ struct RootView: View {
             env.sidebarSelection = .inventory
             env.monitor.start()
             env.inventoryModel.load()
+            // After the spools, never before: the cleanup refuses to drop a place that has
+            // anything on it, and it can only know that once the inventory is loaded.
+            env.inventoryModel.retireSeededPlaces()
             // Ordered on purpose: the polls need a configured printer, and `refresh()` is what
             // discovers one. Starting them first meant `canPoll` was false on the first pass and
             // nothing happened for a full interval.

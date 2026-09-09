@@ -181,6 +181,9 @@ final class InventoryViewModel: ObservableObject {
         return true
     }
 
+    /// Records that the one-shot in ``retireSeededPlaces()`` has run.
+    private static let retiredSeedsDroppedKey = "SpoolworksRetiredSeededPlaces"
+
     private let store: InventoryStore
     private let toasts: ToastCenter
     private let defaults: UserDefaults
@@ -510,6 +513,35 @@ final class InventoryViewModel: ObservableObject {
                                        detail: "Place renamed — “\(old)” is now “\(name)”")
         if !moved.isEmpty { persist() }
         return result
+    }
+
+    /// Drops the two places that were seeded by mistake, once, and only when it is safe.
+    ///
+    /// `CFS` and `Ext…` duplicated what "On printer" already says — see
+    /// ``SpoolworksCore/SpoolPlaces/retiredSeeds``. Changing the seed fixes a new install and does
+    /// nothing for one that already wrote them to `UserDefaults`, so this removes them from an
+    /// existing list.
+    ///
+    /// Three guards, because this edits a list the user owns without being asked at that moment:
+    /// it runs **once** and records that it has; it skips a place that has **any spool on it**,
+    /// since a rename or a hand assignment means the user has made it theirs; and it skips one
+    /// chosen as the unload destination, which is a deliberate setting. A user who wants either
+    /// name back adds it, and it will not be taken away again.
+    func retireSeededPlaces() {
+        guard !defaults.bool(forKey: Self.retiredSeedsDroppedKey) else { return }
+        defaults.set(true, forKey: Self.retiredSeedsDroppedKey)
+
+        var updated = places
+        var changed = false
+        for name in SpoolPlaces.retiredSeeds where updated.contains(name) {
+            guard spoolCount(atPlace: name) == 0 else { continue }
+            guard updated.unloadDestination.caseInsensitiveCompare(name) != .orderedSame else { continue }
+            if updated.remove(name).isApplied { changed = true }
+        }
+        guard changed else { return }
+        places = updated
+        SpoolPlacesStore.save(places, to: defaults)
+        normaliseFilter()
     }
 
     /// Sets where a spool goes when the printer stops reporting it.

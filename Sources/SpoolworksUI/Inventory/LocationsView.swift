@@ -126,11 +126,9 @@ struct LocationsView: View {
                        + "spool goes when the printer stops reporting it, so a list that could "
                        + "lose it would strand spools in a state no row can express."))
                 .fixedSize(horizontal: false, vertical: true)
-            (bold("CFS") + Text(" and ") + bold("Ext…")
-                + Text(" are ordinary names with no special power. When a spool is actually "
-                       + "loaded the printer says so every 30 seconds, and the spool's own row "
-                       + "names that as its source — these two are just convenient labels for "
-                       + "putting a spool somewhere by hand."))
+            Text("A spool actually loaded in the printer is not kept anywhere here. The poll says "
+                 + "where it is every 30 seconds and the Inventory filter covers it under "
+                 + "“On printer”, so this list is only for the places *you* put a spool.")
                 .fixedSize(horizontal: false, vertical: true)
             Text("Removing a location moves everything kept there to \(SpoolPlaces.unplaced), and "
                  + "each spool gets a line in its own history saying so.")

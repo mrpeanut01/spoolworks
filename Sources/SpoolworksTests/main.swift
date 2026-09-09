@@ -101,6 +101,7 @@ let exitCode = TestDriver.run([
     inventoryEditingTests,
     inventoryFilterOptionTests,
     unloadDestinationTests,
+    retiredSeedTests,
     tagSourceLabelTests,
     spoolTypeEditingTests,
     intakeNameTests,

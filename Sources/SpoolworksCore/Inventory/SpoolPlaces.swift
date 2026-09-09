@@ -65,7 +65,21 @@ public struct SpoolPlaces: Hashable, Sendable {
     public static let unplaced = "Unplaced"
 
     /// What a first run gets, as specified by the tool owner.
-    public static let seeded: [String] = [unplaced, "Shelf", "CFS", "Ext…"]
+    public static let seeded: [String] = [unplaced, "Shelf"]
+
+    /// Names that were seeded once and should not have been.
+    ///
+    /// `CFS` and `Ext…` were offered as ordinary places with no special power, on the reasoning
+    /// that a spool can be put anywhere by hand. What they actually did was duplicate the two
+    /// locations the *printer* owns — `.cfs(box:slot:)` and `.externalHolder` — which the Inventory
+    /// filter already covers under "On printer". So the filter row carried two buttons for a state
+    /// another button expressed better, and the Location picker invited a user to hand-assert a
+    /// place the poll describes properly.
+    ///
+    /// Kept as a list rather than deleted outright because an installed copy already has them
+    /// written to `UserDefaults`; changing ``seeded`` alone would fix new installs and leave every
+    /// existing one carrying them for ever.
+    public static let retiredSeeds: [String] = ["CFS", "Ext…"]
 
     /// Long enough for "Garage shelf, second from the top"; short enough that the Inventory
     /// table's 118 pt Location column is not being asked to render a paragraph.
