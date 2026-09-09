@@ -272,8 +272,49 @@ private struct StatusCell: View {
 
 // MARK: - Sidebar
 
+/// The windows the sidebar offers. Not `SidebarItem` cases: those switch the detail column and can
+/// be *selected*, and these open a window and cannot.
+enum ManageWindow: String, CaseIterable, Identifiable {
+    case materials, printers, locations
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .materials: return "Materials"
+        case .printers: return "Printers"
+        case .locations: return "Locations"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .materials: return "books.vertical"
+        case .printers: return "server.rack"
+        case .locations: return "mappin.and.ellipse"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .materials: return "The filament catalogue every screen resolves ids against"
+        case .printers: return "Addresses and passwords the CFS poll uses"
+        case .locations: return "Where you keep spools, and where they go when unloaded"
+        }
+    }
+
+    var windowID: String {
+        switch self {
+        case .materials: return AppEnvironment.materialsWindowID
+        case .printers: return AppEnvironment.printersWindowID
+        case .locations: return AppEnvironment.locationsWindowID
+        }
+    }
+}
+
 private struct Sidebar: View {
     @ObservedObject var env: AppEnvironment
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -294,6 +335,22 @@ private struct Sidebar: View {
                         env.sidebarSelection = item
                     }
                 }
+            }
+
+            // The three windows, reachable from the shell rather than only from the menu bar.
+            //
+            // The design's sidebar has exactly five entries and these are not screens, which is why
+            // they were menu-only. But a menu is where you look for a command you already know
+            // exists; the sidebar is where you look for the parts of an app — and a catalogue of
+            // materials, a list of printers and a list of locations are parts. They open windows
+            // rather than switching the detail column, so they are buttons and never selected.
+            Hairline().padding(.horizontal, 14).padding(.vertical, 14)
+            Text("Manage")
+                .kicker()
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            ForEach(ManageWindow.allCases) { window in
+                ManageRow(window: window) { openWindow(id: window.windowID) }
             }
 
             Spacer(minLength: Theme.Spacing.l)
@@ -397,5 +454,44 @@ private struct MaterialDatabaseFooter: View {
 
     private var summary: String {
         "\(model.printerType.databaseFileName) · \(model.rows.count) materials\nversion \(model.version)"
+    }
+}
+
+/// A sidebar row that opens a window. Deliberately never drawn as selected — nothing in the detail
+/// column corresponds to it, and a row that stays lit after its window is closed would be lying
+/// about where you are.
+private struct ManageRow: View {
+    let window: ManageWindow
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: window.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 15)
+                Text(window.title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: Theme.Spacing.s)
+                // Says it leaves the sidebar behind, which a row that merely switches screens
+                // does not.
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 10))
+                    .opacity(0.45)
+            }
+            .foregroundStyle(Theme.label)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hovering ? Theme.navHoverFill : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(window.help)
+        .accessibilityLabel("\(window.title). \(window.help)")
+        .accessibilityHint("Opens the \(window.title) window.")
     }
 }

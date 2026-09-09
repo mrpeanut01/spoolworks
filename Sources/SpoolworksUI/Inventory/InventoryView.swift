@@ -412,8 +412,11 @@ private struct InventoryDetailRail: View {
             .buttonStyle(.sw(.secondary, block: true))
             .help("Opens Intake with this spool's details, ready to log another like it.")
 
+            // Outlined rather than a bare link. Retiring is reversible — the spool and its whole
+            // history are kept — but it is still the one button here that takes a spool out of the
+            // list, and it should look like something you press on purpose.
             Button("Retire spool") { model.retireTarget = spool }
-                .buttonStyle(.sw(.ghost, block: true))
+                .buttonStyle(.sw(.outline, block: true))
         }
 
         // The log goes last. It is the only thing on the rail with no bound on its height, so
@@ -557,7 +560,7 @@ struct InlineFailure: View {
 /// not on the tag, not in the material database, and not the same across brands. Asking for gross
 /// and guessing the core would overstate every corrected spool by roughly a fifth, so the label
 /// says which is wanted.
-private struct RemainingControl: View {
+struct RemainingControl: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
@@ -647,7 +650,7 @@ private struct RemainingControl: View {
 /// represent a state a spool is genuinely in. A type the catalogue does not list — an older spool,
 /// or a database since unloaded — is offered too, so opening the picker can never silently rewrite
 /// a value just by being opened.
-private struct TypeRow: View {
+struct TypeRow: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
     @ObservedObject var materials: MaterialsViewModel
@@ -702,7 +705,7 @@ private struct TypeRow: View {
 /// and an unrecognised code reports as 1 kg on every Creality client. A row mis-picked at intake is
 /// the other way — a spool recorded at 100 g whose "what's left" picker then offers a tenth of a
 /// spool per rung and looks broken, when the broken thing is this figure.
-private struct NetWeightRow: View {
+struct NetWeightRow: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
@@ -745,16 +748,14 @@ private struct NetWeightRow: View {
 /// the printer is currently holding the spool its position is shown as the selected row, labelled
 /// with where it came from, and the note underneath says plainly that the poll will take it back.
 ///
-/// The list of locations is edited in its own window (``LocationsView``), not here. It began inline
-/// under this control, on the reasoning that a setting belongs next to what it affects; that holds
-/// for a switch and not for a list, and the window's own comment carries the argument. What matters
-/// here is that there is exactly **one** editor — an inline copy left alongside it would be two
-/// places to do one thing, with two chances to disagree.
-private struct LocationControl: View {
+/// The list of locations is edited in its own window (``LocationsView``), reached from the sidebar
+/// rather than from here. It began inline under this control, then as a link beside it; both put a
+/// way into a *window* inside a panel about one spool, which is the wrong altitude. Windows are
+/// reached from the shell, and the shell is the sidebar.
+struct LocationControl: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
@@ -771,15 +772,6 @@ private struct LocationControl: View {
                     : "Choose where this spool is kept.")
             }
 
-            HStack(spacing: Theme.Spacing.s) {
-                Button("Manage locations…") {
-                    openWindow(id: AppEnvironment.locationsWindowID)
-                }
-                .buttonStyle(.sw(.ghost, size: 11, h: 0, v: 2))
-                .accessibilityLabel("Manage the list of locations")
-                .accessibilityHint("Opens the Locations window.")
-                Spacer(minLength: 0)
-            }
         }
     }
 
@@ -795,3 +787,35 @@ private struct LocationControl: View {
     }
 }
 
+
+// MARK: - The editable part of a spool, shared
+
+/// Everything about a spool that can be changed by hand: where it is, what it is, how big it is and
+/// how much is left.
+///
+/// Lives here and is used by Read / identify as well as by the Inventory rail. Identifying a tag
+/// and then having to go somewhere else to say "this one is nearly empty" is a round trip through a
+/// screen you were just on, and the spool is already in front of you — so the same controls appear
+/// there, rather than a second set that could disagree about what a tenth of a spool means or which
+/// locations exist.
+///
+/// Deliberately no header of its own: each host frames it, because "Spool detail" and "this is the
+/// spool on the reader" are different sentences about the same controls.
+struct SpoolEditControls: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+    @ObservedObject var materials: MaterialsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            LocationControl(spool: spool, model: model).padding(.bottom, 14)
+            VStack(spacing: 0) {
+                TypeRow(spool: spool, model: model, materials: materials)
+                NetWeightRow(spool: spool, model: model)
+            }
+            .padding(.bottom, 14)
+            RemainingControl(spool: spool, model: model)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

@@ -22,10 +22,13 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
 | **Write tag** | Program a tag for a third-party spool, or replace a damaged one — and log it to stock. |
 
-**Materials** and **Printers** are windows rather than sidebar entries — `Manage ▸ Materials`
-(⇧⌘1) and `Manage ▸ Printers` (⇧⌘2). The design's sidebar has exactly five entries, but both
-screens are still needed: the catalogue turns a filament id into a name on Intake and Write, and
-the printer list is where the address and password the CFS poll uses are entered.
+**Materials**, **Printers** and **Locations** are windows, not screens — but the sidebar has a
+**Manage** section that opens them, alongside `Manage ▸ Materials` (⇧⌘1), `Printers` (⇧⌘2) and
+`Locations` (⇧⌘3). The design's sidebar has exactly five destinations and these are not
+destinations; a menu is where you look for a command you already know exists, and the sidebar is
+where you look for the parts of an app. All three are parts: the catalogue turns a filament id into
+a name on Intake and Write, the printer list holds the address and password the CFS poll uses, and
+the location list is where a spool can be kept and where one goes when it leaves the printer.
 
 The former **Reader** screen is gone. Its diagnostics are the right-hand column of Read / identify,
 and its one setting — show key material — moved into the Tag Memory window (⌘M), which is the only
@@ -107,7 +110,7 @@ No Xcode needed — Command Line Tools are enough.
 
 ```bash
 swift build
-swift run SpoolworksTests   # 634 tests, no reader or camera required
+swift run SpoolworksTests   # 638 tests, no reader or camera required
 Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
@@ -155,7 +158,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 634 tests, runnable without hardware |
+| `SpoolworksTests` | 638 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.

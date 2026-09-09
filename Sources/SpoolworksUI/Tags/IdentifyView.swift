@@ -83,7 +83,24 @@ struct IdentifyView: View {
                 }
 
                 HStack(alignment: .top, spacing: 24) {
-                    hero.frame(maxWidth: .infinity, alignment: .topLeading)
+                    VStack(alignment: .leading, spacing: 18) {
+                        hero
+                        // The spool is already in front of you. Sending someone to Inventory to
+                        // say "this one is nearly empty" is a round trip through a screen they
+                        // were just on, so the same controls appear here — the same ones, not a
+                        // second set that could disagree about what a tenth of a spool means.
+                        if let spool = matched {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Correct this spool").kicker().padding(.bottom, 12)
+                                SpoolEditControls(spool: spool,
+                                                  model: inventory,
+                                                  materials: env.materialsModel)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .cardSurface(padding: 20)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 18) {
                         readerPanel
                         if showDebug { memoryPanel }
