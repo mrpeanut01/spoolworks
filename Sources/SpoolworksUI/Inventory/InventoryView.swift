@@ -370,9 +370,6 @@ private struct InventoryDetailRail: View {
         }
         .padding(.bottom, 18)
 
-        Text("Usage log").kicker().padding(.bottom, 10)
-        UsageLog(entries: spool.usage).padding(.bottom, 18)
-
         RemainingControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
 
         // No "Read tag to verify" here. It only switched screens, which the sidebar already does,
@@ -402,9 +399,25 @@ private struct InventoryDetailRail: View {
                 .buttonStyle(.sw(.ghost, block: true))
                 .help("Fills the Write screen from this spool and attaches the tag once verified.")
             }
+            // Buying two of something is ordinary, and re-typing a spool you already own to record
+            // the second one is work the app can do.
+            Button("Clone to a new spool") {
+                env.intakeModel.clone(spool)
+                env.sidebarSelection = .intake
+            }
+            .buttonStyle(.sw(.secondary, block: true))
+            .help("Opens Intake with this spool's details, ready to log another like it.")
+
             Button("Retire spool") { model.retireTarget = spool }
                 .buttonStyle(.sw(.ghost, block: true))
         }
+
+        // The log goes last. It is the only thing on the rail with no bound on its height, so
+        // anything below it gets pushed off the bottom as a spool accumulates history — and what
+        // was below it was every control on the screen. It is also the part you read rather than
+        // act on, which is the other reason it belongs after the buttons.
+        Text("Usage log").kicker().padding(.top, 18).padding(.bottom, 10)
+        UsageLog(entries: spool.usage)
     }
 }
 

@@ -955,3 +955,78 @@ let secondSideTests = TestSuite(name: "Tagging both sides later", cases: [
         }
     },
 ])
+
+// MARK: - Cloning a spool already in stock
+
+let cloneTests = TestSuite(name: "Clone a spool", cases: [
+
+    test("a clone lands on Method B carrying the spool's details") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            var source = typedSpool(materialType: "PETG")
+            source.brand = "Creality"
+            source.name = "Hyper PLA"
+            source.colorHex = "0087BE"
+            source.netWeightGrams = 500
+            source.remainingPercent = 37
+
+            model.clone(source)
+
+            t.equal(model.method, .manual, "Method B — a clone has no tag to read")
+            t.equal(model.brand, "Creality", "brand")
+            t.equal(model.name, "Hyper PLA", "name")
+            t.equal(model.materialType, "PETG", "type")
+            t.equal(model.colorHex, "0087BE",
+                    "the spool's own colour, not the catalogue placeholder the material carries")
+            t.equal(model.netWeightGrams, 500, "net weight")
+        }
+    },
+
+    test("the serial is not cloned, because this is a different spool") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            let source = typedSpool(materialType: "PLA")
+            let sourceSerial = source.identity?.serialNumber ?? ""
+            model.clone(source)
+            // Two records sharing a serial, a filament and a colour are indistinguishable — the
+            // collision `SpoolIdentity` exists to avoid, and the one field a clone must not copy.
+            t.expect(!model.serial.isEmpty, "a serial was allocated")
+            t.expect(model.serial != sourceSerial, "and it is not the source's")
+        }
+    },
+
+    test("a clone starts full however little is left of the original") { t in
+        onMain {
+            let (model, inventory, cleanup) = await makeIntake()
+            defer { cleanup() }
+            var source = typedSpool(materialType: "PLA")
+            source.remainingPercent = 12
+            model.clone(source)
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "the clone") else { return }
+            t.equal(added.remainingPercent, 100, "cloning a half-used spool records a fresh one")
+        }
+    },
+
+    test("the tag count is mirrored, so cloning shelf stock does not arm the reader") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            var untagged = typedSpool(materialType: "PLA")
+            untagged.identity = nil
+            untagged.tagSource = .untagged
+            model.clone(untagged)
+            // A clone of a spool sitting untagged on a shelf is almost always another unopened
+            // spool going onto the same shelf.
+            t.equal(model.tagsRequired, 0, "no tag, and nothing armed")
+            t.expect(!model.isArmedToWrite, "reader idle")
+
+            let tagged = typedSpool(materialType: "PLA")
+            model.clone(tagged)
+            t.equal(model.tagsRequired, 2, "a clone of a tagged spool expects tags")
+        }
+    },
+])

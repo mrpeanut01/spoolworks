@@ -576,6 +576,55 @@ final class IntakeViewModel: ObservableObject {
         inventory.selectedID = duplicate.id
     }
 
+    /// Fills the form from a spool already in stock, ready to log another like it.
+    ///
+    /// Buying two of something is the ordinary case, and re-typing a spool you already own to
+    /// record the second one is work the app can do. It lands on Method B because a clone is a new
+    /// physical spool with no tag yet — there is nothing to read.
+    ///
+    /// **The serial is not cloned.** It is allocated fresh, because this is a different spool and
+    /// two records sharing a serial, a filament and a colour are indistinguishable — the collision
+    /// ``SpoolIdentity`` exists to avoid, and the one thing a clone must not copy.
+    ///
+    /// Nor is the remaining figure: a clone starts full, which is what Intake gives every spool it
+    /// adds. Cloning a half-used spool to record a fresh one is the point.
+    ///
+    /// The tag count is mirrored from the source rather than defaulted. A clone of a spool sitting
+    /// untagged on a shelf is almost always another unopened spool going onto the same shelf, and a
+    /// clone of a tagged one is a spool about to be tagged.
+    func clone(_ spool: Spool) {
+        // Resets the form through `method`'s `didSet`, so everything below is written onto a clean
+        // one rather than over whatever the last spool left.
+        method = .manual
+
+        // Order matters. Setting `materialID` runs `adoptCatalogueMaterial`, which overwrites
+        // brand, name, type *and* colour from the catalogue — so the catalogue goes first and the
+        // spool's own values go last, or the clone would come back wearing the catalogue's
+        // placeholder colour instead of the one it is a clone of.
+        if let base = spool.identity?.filamentId, !base.isEmpty {
+            let id = base.count == 6 ? String(base.dropFirst()) : base
+            if let row = materials.rows.first(where: { $0.id == id }) {
+                catalogueBrand = row.brand
+                materialID = row.id
+            }
+        } else if let row = materials.rows.first(where: {
+            $0.brand.caseInsensitiveCompare(spool.brand) == .orderedSame
+                && $0.name.caseInsensitiveCompare(spool.name) == .orderedSame
+        }) {
+            // No tag to take a filament id from, so fall back to matching the catalogue by name.
+            catalogueBrand = row.brand
+            materialID = row.id
+        }
+
+        brand = spool.brand
+        name = spool.name
+        materialType = spool.materialType
+        colorHex = Spool.normaliseHex(spool.colorHex)
+        netWeightGrams = spool.netWeightGrams
+        serial = Self.allocateSerial()
+        setTagsRequired(spool.isUntagged ? 0 : 2)
+    }
+
     /// Loads the tag draft from the intake form, so the shared write path can build a plan from it.
     ///
     /// Method B writes through exactly the same machinery as the Write screen — the confirmation
