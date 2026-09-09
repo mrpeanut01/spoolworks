@@ -1093,3 +1093,86 @@ let cloneTests = TestSuite(name: "Clone a spool", cases: [
         }
     },
 ])
+
+// MARK: - Spool size and amount remaining are two questions
+
+let intakeRemainingTests = TestSuite(name: "Intake remaining", cases: [
+
+    test("a part-used spool can be taken in as part-used, in both methods") { t in
+        for manual in [true, false] {
+            onMain {
+                let (model, inventory, cleanup) = await makeIntake()
+                defer { cleanup() }
+                model.method = manual ? .manual : .scan
+                model.name = "Half a spool"
+                model.netWeightGrams = 1000
+                model.remainingPercent = 40
+
+                if manual {
+                    model.setTagsRequired(0)
+                    model.confirm()
+                } else {
+                    guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                        filamentLength: .kg1, serialNumber: "009001")
+                    else { t.expect(false, "record"); return }
+                    let spool = inventory.spool(from: record,
+                                                name: "Half a spool",
+                                                netWeightGrams: 1000,
+                                                remainingPercent: 40)
+                    inventory.add(spool)
+                }
+
+                guard let added = t.unwrap(inventory.inventory.active.first, "the spool") else { return }
+                t.equal(added.netWeightGrams, 1000, "\(manual ? "manual" : "scan"): size is the spool")
+                t.equal(added.remainingPercent, 40, "and remaining is what is on it")
+                t.equal(added.remainingLabel, "40%", "which is what the rail shows")
+                t.expect(added.remainingSource.contains("intake"),
+                         "with a source saying the user said so, not that it was assumed")
+            }
+        }
+    },
+
+    test("a full spool still reads as assumed full, not as a figure someone set") { t in
+        onMain {
+            let (model, inventory, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.name = "Straight out of the box"
+            model.setTagsRequired(0)
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "the spool") else { return }
+            t.equal(added.remainingPercent, 100, "full by default, which is the common case")
+            t.expect(added.remainingSource.contains("assumed"),
+                     "and says so — an assumption and a measurement are different claims")
+        }
+    },
+
+    test("changing the spool size keeps how full it is, and re-labels the rungs") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.netWeightGrams = 1000
+            model.remainingPercent = 50
+            t.expect(model.remainingOptions.contains { $0.label == "500 g · 50%" },
+                     "half of a kilo")
+
+            // Stored as a percentage, so the selection survives a change of spool size — which is
+            // the whole reason it is not stored in grams.
+            model.netWeightGrams = 500
+            t.equal(model.remainingPercent, 50, "still half")
+            t.expect(model.remainingOptions.contains { $0.label == "250 g · 50%" },
+                     "and half of five hundred is what the picker now says")
+        }
+    },
+
+    test("starting over goes back to a full spool") { t in
+        onMain {
+            let (model, _, cleanup) = await makeIntake()
+            defer { cleanup() }
+            model.remainingPercent = 20
+            model.reset()
+            t.equal(model.remainingPercent, 100, "the next spool is full until said otherwise")
+        }
+    },
+])

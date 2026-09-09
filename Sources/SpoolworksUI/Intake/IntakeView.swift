@@ -288,10 +288,23 @@ struct IntakeView: View {
                         .labelsHidden()
                     }
                 }
-                FieldBox(label: "Net weight") {
+                // Two questions, and they were one field. "Net weight" beside nothing else about
+                // quantity reads as "how much is here", so every spool taken in was silently
+                // recorded as full — which is right for a spool out of its box and wrong for the
+                // reason most people count their stock: they already own it, and some of it is
+                // half used. The labels now say which is which, and both are asked.
+                FieldBox(label: "Spool size", note: "what a full one holds") {
                     Picker("", selection: $model.netWeightGrams) {
                         ForEach(IntakeViewModel.weights, id: \.self) {
                             Text(Spool.weightLabel($0)).tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                FieldBox(label: "How much is left", note: "on the spool now") {
+                    Picker("", selection: $model.remainingPercent) {
+                        ForEach(model.remainingOptions, id: \.percent) { option in
+                            Text(option.label).tag(option.percent)
                         }
                     }
                     .labelsHidden()

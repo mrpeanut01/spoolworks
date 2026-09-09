@@ -221,12 +221,7 @@ final class InventoryViewModel: ObservableObject {
     /// is right for a list you scroll past and wrong for a scale, so this is the place to look if
     /// weighing to the gram is ever wanted back.
     nonisolated func remainingOptions(for spool: Spool) -> [(grams: Int, percent: Double, label: String)] {
-        let net = spool.netWeightGrams
-        guard net > 0 else { return [] }
-        return stride(from: 100, through: 0, by: -10).map { percent in
-            let grams = Int((Double(net) * Double(percent) / 100).rounded())
-            return (grams, Double(percent), "\(grams) g · \(percent)%")
-        }
+        Spool.remainingLadder(netWeightGrams: spool.netWeightGrams)
     }
 
     /// The filter row: the two states that are not places, then every place the user has
@@ -602,6 +597,7 @@ final class InventoryViewModel: ObservableObject {
                name: String = "",
                materialType: String = "",
                netWeightGrams: Int? = nil,
+               remainingPercent: Double = 100,
                location: SpoolLocation = .unknown,
                tagSource: TagSource = .crealityFactory,
                detail: String = "Intake · tag read") -> Spool {
@@ -612,9 +608,11 @@ final class InventoryViewModel: ObservableObject {
                           colorHex: record.rgbHex,
                           colorName: colorName(forHex: record.rgbHex),
                           netWeightGrams: netWeightGrams ?? record.weightGrams,
-                          remainingPercent: 100,
+                          remainingPercent: remainingPercent,
                           location: location,
-                          remainingSource: "Intake · assumed full",
+                          remainingSource: remainingPercent >= 100
+                              ? "Intake · assumed full"
+                              : "Set at intake",
                           tagSource: tagSource)
         spool.note(kind: .intake, detail: detail)
         return spool

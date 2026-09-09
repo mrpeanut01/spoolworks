@@ -144,7 +144,20 @@ final class IntakeViewModel: ObservableObject {
     @Published var brand = ""
     @Published var name = ""
     @Published var materialType = "PLA"
+    /// What a **full** spool of this filament holds — the spool's size, not how much is on it.
+    ///
+    /// The distinction was not made anywhere and it needed to be: a field labelled "Net weight"
+    /// beside nothing else about quantity reads as "how much is here", and every spool taken in
+    /// was silently recorded as full.
     @Published var netWeightGrams = 1000
+
+    /// How much of it is actually left, as a percentage.
+    ///
+    /// Intake used to assume 100 in both methods, which is right for a spool out of its box and
+    /// wrong for the reason most people count their stock — they already own it, and some of it is
+    /// half used. A tag cannot help here either: the length code is the spool's *size*, and nothing
+    /// on the tag says how much has been printed.
+    @Published var remainingPercent: Double = 100
     @Published var colorHex = "C12E1F"
     /// Allocated by this app in method B; read off the tag in method A.
     @Published var serial = ""
@@ -166,6 +179,11 @@ final class IntakeViewModel: ObservableObject {
             materialID = materials(for: catalogueBrand).first?.id ?? ""
         }
     }
+    /// The eleven "how much is left" rungs for the spool size currently chosen.
+    var remainingOptions: [(grams: Int, percent: Double, label: String)] {
+        Spool.remainingLadder(netWeightGrams: netWeightGrams)
+    }
+
     /// The five weights the tag's length code can express. There is no "other": a weight the tag
     /// cannot encode would be lost the moment the spool was written.
     static let weights: [Int] = FilamentLength.allCases.map(\.grams).sorted(by: >)
@@ -525,10 +543,13 @@ final class IntakeViewModel: ObservableObject {
                                     brand: brand,
                                     name: name,
                                     materialType: materialType,
-                                    // What is on the form, not what was on the tag. The picker is
-                                    // editable in Method A too, and an edit that the confirm
-                                    // silently threw away is worse than not offering it.
+                                    // What is on the form, not what was on the tag. Both are
+                                    // editable in Method A too, and an edit the confirm silently
+                                    // threw away is worse than not offering it. The tag cannot
+                                    // answer the second one at all: its length code is the spool's
+                                    // *size*, and nothing on it says how much has been printed.
                                     netWeightGrams: netWeightGrams,
+                                    remainingPercent: remainingPercent,
                                     tagSource: .crealityFactory,
                                     detail: "Intake · tag read")
         } else {
@@ -539,10 +560,10 @@ final class IntakeViewModel: ObservableObject {
                              colorHex: colorHex,
                              colorName: inventory.colorName(forHex: Spool.normaliseHex(colorHex)),
                              netWeightGrams: netWeightGrams,
-                             remainingPercent: 100,
+                             remainingPercent: remainingPercent,
                              location: .shelf("Shelf"),
-                             remainingSource: willBeTagged
-                                 ? "Intake · tagged, assumed full"
+                             remainingSource: remainingPercent < 100 ? "Set at intake"
+                                 : willBeTagged ? "Intake · tagged, assumed full"
                                  : tagsRequired == 0 ? "Counted onto the shelf, assumed full"
                                                      : "Manual record · tag pending",
                              tagSource: willBeTagged ? .spoolworksWritten : .untagged)
@@ -656,6 +677,7 @@ final class IntakeViewModel: ObservableObject {
         name = ""
         materialType = "PLA"
         netWeightGrams = 1000
+        remainingPercent = 100
         colorHex = "C12E1F"
         filamentId = ""
         materialID = ""

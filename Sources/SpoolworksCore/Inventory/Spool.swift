@@ -412,6 +412,31 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         return s
     }
 
+    /// The eleven figures a "how much is left" picker offers for a spool of this size.
+    ///
+    /// Fullest first, a tenth of a spool apart, each labelled in **both** units — `700 g · 70%`.
+    /// The two answer different questions and neither is the obvious one: grams is what a set of
+    /// scales says, percent is what the inventory stores and what the bar shows.
+    ///
+    /// Stepped by percent rather than by grams so the count is eleven for *every* spool. A gram
+    /// ladder gave a 1 kg spool the eleven rungs everyone pictures and a 250 g spool three; on the
+    /// 1 kg spool almost everyone is holding, a tenth is 100 g anyway.
+    ///
+    /// The top rung is the spool's own size, never a round number above it. More filament than the
+    /// spool can hold is not a figure anything here would accept.
+    ///
+    /// Lives on `Spool` rather than on either screen because Intake and the Inventory rail both
+    /// ask it, and two ladders that could disagree about what "half" means is exactly the kind of
+    /// drift this app keeps single-sourcing to avoid.
+    public static func remainingLadder(netWeightGrams net: Int)
+        -> [(grams: Int, percent: Double, label: String)] {
+        guard net > 0 else { return [] }
+        return stride(from: 100, through: 0, by: -10).map { percent in
+            let grams = Int((Double(net) * Double(percent) / 100).rounded())
+            return (grams, Double(percent), "\(grams) g · \(percent)%")
+        }
+    }
+
     /// `1000 -> "1 kg"`, `750 -> "750 g"`.
     public static func weightLabel(_ grams: Int) -> String {
         grams % 1000 == 0 && grams >= 1000 ? "\(grams / 1000) kg" : "\(grams) g"
