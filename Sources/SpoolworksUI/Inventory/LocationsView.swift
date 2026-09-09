@@ -93,23 +93,19 @@ struct LocationsView: View {
     private var unloadDestination: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             Text("When a spool leaves the printer").kicker()
-            HStack(spacing: Theme.Spacing.m) {
-                Picker("", selection: Binding(get: { model.places.unloadDestination },
-                                              set: { model.setUnloadDestination($0) })) {
-                    ForEach(model.places.names, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
+            Picker("", selection: Binding(get: { model.places.unloadDestination },
+                                          set: { model.setUnloadDestination($0) })) {
+                ForEach(model.places.names, id: \.self) { name in
+                    Text(name).tag(name)
                 }
-                .labelsHidden()
-                .frame(maxWidth: 220)
-                .accessibilityLabel("Where a spool goes when it leaves the printer")
-                Text("Applied by the 30-second poll, the moment the printer stops reporting it. "
-                     + "Each spool gets a line in its history saying which slot it came off.")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.secondaryLabel)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
             }
+            .labelsHidden()
+            .frame(maxWidth: 220, alignment: .leading)
+            .accessibilityLabel("Where a spool goes when it leaves the printer")
+
+            Text("Applied by the 30-second poll.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.secondaryLabel)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: 20)

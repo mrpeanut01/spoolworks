@@ -205,7 +205,10 @@ private struct InventoryHeaderRow: View {
         case .type: return "Type"
         case .serial: return "Serial"
         case .location: return "Location"
-        case .remaining: return "Remaining"
+        // "Remaining" does not fit the column at its own width and truncated to "REMAINI…".
+        // Shortened rather than widened: the column holds "100%", and "left" is the word the rest
+        // of the app already uses — "How much is left", "Correct what's left".
+        case .remaining: return "Left"
         case .tag: return "Tag"
         }
     }
@@ -400,7 +403,7 @@ private struct InventoryDetailRail: View {
                     env.loadForTagging(spool)
                     env.sidebarSelection = .write
                 }
-                .buttonStyle(.sw(.ghost, block: true))
+                .buttonStyle(.sw(.secondary, block: true))
                 .help("Fills the Write screen from this spool and attaches the tag once verified.")
             }
             // Buying two of something is ordinary, and re-typing a spool you already own to record

@@ -142,26 +142,19 @@ struct IdentifyView: View {
                     Rectangle().fill(Theme.rule).frame(height: Theme.ruleWidth)
                 }
 
+            // "Read tag" is in the screen header and was here too — one screen, one control. The
+            // paragraph about what identity means went with it: the screen states the answer, and
+            // the reasoning lives in `SpoolIdentity`.
             HStack(spacing: 10) {
-                Button("Read tag") { Task { await model.read() } }
-                    .buttonStyle(.sw(.primary, h: 16, v: 10))
-                    .disabled(!model.canRead)
-                // Puts the screen back to "place a tag on the reader" without needing a tag to do
-                // it. Presenting the next spool clears it anyway; this is for stopping.
                 Button("Clear") { model.clearRetainedRead() }
-                    .buttonStyle(.sw(.ghost, h: 14, v: 10))
+                    .buttonStyle(.sw(.secondary, h: 16, v: 10))
                     .disabled(model.lastRead == nil && model.readFailure == nil)
                     .accessibilityLabel("Clear the tag on screen")
                 if let spool = matched {
                     Button("Retire spool") { inventory.retireTarget = spool }
-                        .buttonStyle(.sw(.secondary, h: 16, v: 10))
+                        .buttonStyle(.sw(.outline, h: 16, v: 10))
                 }
-                Spacer(minLength: Theme.Spacing.m)
-                Text("Identity is the tag's serial, filament ID and colour. Either of a spool's two tags resolves the same record.")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.secondaryLabel)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: 320, alignment: .trailing)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -216,11 +209,6 @@ struct IdentifyView: View {
                 Text("Place a spool tag on the reader")
                     .font(Theme.heroTitle)
                     .foregroundStyle(Theme.label)
-                Text("Spoolworks reads Creality factory tags and tags it wrote itself. The record it decodes is matched against your inventory by serial, filament ID and colour.")
-                    .font(Theme.body)
-                    .foregroundStyle(Theme.secondaryLabel)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 560, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
