@@ -42,7 +42,15 @@ func waitForCard(_ ctx: PCSCContext, timeout: TimeInterval = 60) -> CardSession?
     let deadline = Date().addingTimeInterval(timeout)
     var announced = false
     while Date() < deadline {
-        if let session = try? ctx.connectToAnyCard() { return session }
+        do { return try ctx.connectToAnyCard() }
+        catch PCSCError.noReader {
+            // Nothing will ever arrive on a reader that is not there; sixty seconds of "place
+            // it on the reader" followed by "Timed out." is the wrong advice.
+            print("No PC/SC reader is attached.")
+            exit(2)
+        } catch {
+            // No card yet, or the reader is between states. Keep polling.
+        }
         if !announced {
             print("Waiting for a tag — place it on the reader…")
             announced = true
@@ -193,7 +201,7 @@ case "read":
         // Name the colour using the bundled table, ignoring the leading nibble.
         if let matcher = try? ColorMatcher.shared(),
            let name = try? matcher.nearestName(forHex: record.color) {
-            print("  colour name   : \(name ?? "—")")
+            print("  colour name   : \(name)")
         }
     } else {
         print("\nNo valid record: \(result.recordError.map(String.init(describing:)) ?? "unknown")")

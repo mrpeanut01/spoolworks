@@ -61,12 +61,18 @@ MOUNT_POINT=""
 
 # One idempotent cleanup for every exit path. The verify step below mounts the image, and an
 # interrupt between attach and detach would otherwise leave it mounted with a stale mount point.
+# Every command in here tolerates failure explicitly. `set -e` applies inside an EXIT trap too,
+# and an earlier version let a failing `rmdir` (the mount point is already gone on the success
+# path) abort the trap before `rm -rf "${STAGE}"` ran — so every successful build exited 1 and
+# left a copy of the app under $TMPDIR. The detach is unconditional rather than guarded by a
+# `mount | grep`: mount(8) prints the realpath (/private/var/…) while mktemp hands back the
+# /var/… alias, so that guard never matched and an interrupted verify stayed mounted.
 cleanup() {
-    if [[ -n "${MOUNT_POINT}" ]] && mount | grep -q " on ${MOUNT_POINT} "; then
+    if [[ -n "${MOUNT_POINT}" ]]; then
         hdiutil detach "${MOUNT_POINT}" -quiet -force 2>/dev/null || true
+        rmdir "${MOUNT_POINT}" 2>/dev/null || true
     fi
-    [[ -n "${MOUNT_POINT}" ]] && rmdir "${MOUNT_POINT}" 2>/dev/null
-    rm -rf "${STAGE}"
+    rm -rf "${STAGE}" || true
 }
 trap cleanup EXIT
 # Turn a signal into a normal exit so the EXIT trap runs exactly once.
@@ -80,10 +86,11 @@ ln -s /Applications "${STAGE}/Applications"
 # first-time user sees "Spoolworks is damaged and can't be opened", which is what macOS says about an
 # unsigned app carrying a quarantine flag. It is not damaged.
 cat > "${STAGE}/READ ME FIRST.txt" <<'READ_ME'
-K2 RFID for macOS
-=================
+Spoolworks
+==========
 
-Read and write Creality K1/K2/HI filament spool tags with a USB PC/SC NFC reader.
+Read and write Creality K1/K2/HI filament spool tags with a USB PC/SC NFC reader,
+and keep an inventory of the spools you own.
 
 INSTALL
     Drag Spoolworks.app onto the Applications folder in this window.
@@ -114,18 +121,23 @@ WHAT IT DOES, AND DOES NOT, DO
     limitation of this port.
 
 USING IT
-    Tag ▸ Read   Place a tag on the reader. It is read automatically.
-    Tag ▸ Write  Choose filament, weight and colour, then present a tag. It is
-                 written automatically.
+    Read / identify  Place a tag on the reader. It is read automatically and
+                     matched against your inventory.
+    Write tag        Choose filament, weight and colour, then present a tag.
+                     It is written automatically.
+    Intake           Log incoming spools: scan a Creality tag, or describe a
+                     third-party spool and tag it.
 
     Programming a BLANK tag rewrites its sector keys, which cannot be undone.
-    That step always asks first, unless you turn on the advanced option.
+    The confirmation sheet says so before the write, and only a tag that is
+    still on its factory keys is ever programmed that way.
 
     A full backup of every readable sector is captured before any write, and
     every write is verified by reading the tag back.
 
 SOURCE
-    https://github.com/DnG-Crafts/K2-RFID
+    Derived from https://github.com/DnG-Crafts/K2-RFID — the tag format, the
+    material databases and the reverse-engineering groundwork are theirs.
 READ_ME
 
 # ---------------------------------------------------------------------------- build the image
@@ -168,8 +180,11 @@ if ! codesign --verify --deep "${MOUNT_POINT}/${APP_NAME}.app" 2>/dev/null; then
     echo "    signature does not validate inside the image" >&2
     verify_failed=1
 fi
-hdiutil detach "${MOUNT_POINT}" -quiet
+# A first detach can report "Resource busy" while Spotlight is still indexing the volume; the
+# forced retry is what cleanup would do anyway, done here so the script does not abort on it.
+hdiutil detach "${MOUNT_POINT}" -quiet || hdiutil detach "${MOUNT_POINT}" -quiet -force
 rmdir "${MOUNT_POINT}" 2>/dev/null || true
+MOUNT_POINT=""
 
 if [[ "${verify_failed}" -ne 0 ]]; then
     echo "make-dmg.sh: the image is incomplete; refusing to report success" >&2
