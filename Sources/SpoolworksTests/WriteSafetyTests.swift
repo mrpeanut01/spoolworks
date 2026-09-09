@@ -21,6 +21,60 @@ private func writtenBlocks(_ mock: MockTransport) -> [Int] {
 
 let writeSafetyTests = TestSuite(name: "Write safety (review fixes)", cases: [
 
+    // MARK: - Transport failures keep their type
+
+    test("a tag lifted during verification reports the lift, not a key that will not open") { t in
+        // Place the fault on the first APDU after the last write, which is verification's
+        // re-authentication. The count comes from a clean run so it survives changes to the
+        // key order or the backup, rather than being a hard-coded exchange number.
+        let clean = MockTransport()
+        try makeService(clean).writeTag(record: try record(), allowTrailerWrite: true)
+        guard let lastWrite = clean.log.lastIndex(where: { $0.count == 21 && $0[1] == 0xD6 }) else {
+            t.expect(false, "the clean run wrote nothing"); return
+        }
+
+        let mock = MockTransport()
+        mock.failTransmitsAfter = lastWrite + 1
+        mock.transportError = PCSCError.cardReset
+        // The defect: `try?` around the re-authentication turned the reset into
+        // `verificationFailed("the tag would not re-open with the key just written to it")` —
+        // a message that says the keys were bricked, for a tag that merely left the field, and
+        // a type ReaderMonitor cannot retry. The reset must come out as itself.
+        t.throwsError(PCSCError.cardReset) {
+            try makeService(mock).writeTag(record: try record(), allowTrailerWrite: true)
+        }
+    },
+
+    test("a tag lifted while reading sector 2 is reported, not shown as a complete read") { t in
+        let programmed = MockTransport()
+        try makeService(programmed).writeTag(record: try record(), allowTrailerWrite: true)
+        let clean = MockTransport()
+        clean.sectorKeys = programmed.sectorKeys
+        for block in [4, 5, 6] { clean.setBlock(block, to: programmed.blocks[block]) }
+        _ = try makeService(clean).readTag()
+        // The last block read of sector 1; the next exchange belongs to sector 2.
+        guard let lastRecordRead = clean.log.lastIndex(where: { $0.count == 5 && $0[1] == 0xB0 && $0[3] == 6 }) else {
+            t.expect(false, "the clean read never read block 6"); return
+        }
+
+        let mock = MockTransport()
+        mock.sectorKeys = programmed.sectorKeys
+        for block in [4, 5, 6] { mock.setBlock(block, to: programmed.blocks[block]) }
+        mock.failTransmitsAfter = lastRecordRead + 1
+        // The defect: `try? readSector2` swallowed the dropped card along with a genuinely
+        // keyed sector 2, and the read came back looking complete with `sector2 == nil`.
+        t.throwsError(PCSCError.noCard) { _ = try makeService(mock).readTag() }
+    },
+
+    test("the pre-write backup opens the factory sectors without a reset each") { t in
+        // Every failed authentication costs a card reset, and that field churn is what makes
+        // the reader drop a stationary tag. Derived-key-first cost a reset on each of the
+        // fifteen factory-keyed sectors before the factory key was even tried.
+        let mock = MockTransport()
+        try makeService(mock).writeTag(record: try record(), allowTrailerWrite: true)
+        t.expect(mock.resetCount <= 4, "expected at most a handful of resets, saw \(mock.resetCount)")
+    },
+
     // MARK: - Access-bit validation
     //
     // MIFARE stores C1/C2/C3 twice, plain and inverted. The chip PERMANENTLY LOCKS a sector whose
