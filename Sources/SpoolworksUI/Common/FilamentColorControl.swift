@@ -294,7 +294,10 @@ struct FilamentPalettePopover: View {
     private var groups: [(source: PaletteSwatch.Source, swatches: [PaletteSwatch])] {
         var result: [(PaletteSwatch.Source, [PaletteSwatch])] = []
         if let catalogue { result.append((.catalogue, [catalogue])) }
-        if !offered.contains(currentHex) {
+        // No colour chosen yet means no "Current" group: an empty hex is not in `offered`, so
+        // without this guard a fresh Write screen showed a grey square, and — because "" == ""
+        // — showed it selected, with a checkmark, for a colour nobody had picked.
+        if !currentHex.isEmpty, !offered.contains(currentHex) {
             result.append((.current, [PaletteSwatch(hex: currentHex, source: .current)]))
         }
         if !recents.isEmpty { result.append((.recent, recents)) }

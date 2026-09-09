@@ -83,7 +83,7 @@ struct SpoolDraft: Equatable {
             issues.append("Enter a material ID.")
         } else if id.utf8.count != 5 {
             issues.append("Material ID must be exactly 5 characters (it is \(id.utf8.count)).")
-        } else if !id.allSatisfy(\.isNumber) {
+        } else if !id.allSatisfy(Self.isASCIIDigit) {
             issues.append("Material ID must be digits only.")
         }
         // Reported after the material ID because that is the order the form reads in: the ID row
@@ -93,10 +93,17 @@ struct SpoolDraft: Equatable {
             issues.append("Choose a colour.")
         }
         let serial = serialNumber.trimmingCharacters(in: .whitespaces)
-        if serial.utf8.count != 6 || !serial.allSatisfy(\.isNumber) {
+        if serial.utf8.count != 6 || !serial.allSatisfy(Self.isASCIIDigit) {
             issues.append("Serial number must be exactly 6 digits.")
         }
         return issues
+    }
+
+    /// `Character.isNumber` alone is true of `²` and `٣`, which Core's byte-level check then
+    /// rejects with a raw error the form never warned about. Both fields are ASCII digits on the
+    /// wire, so the form has to hold the same line.
+    private static func isASCIIDigit(_ character: Character) -> Bool {
+        character.isASCII && character.isNumber
     }
 
     var isValid: Bool { validationIssues.isEmpty }
@@ -177,23 +184,34 @@ struct WritePlan: Identifiable, Equatable {
     var hasChanges: Bool { rows.contains(where: \.changed) || requiresTrailerWrite }
     var changedRows: [WriteDiffRow] { rows.filter(\.changed) }
 
-    /// Whether this write's trailer rewrite is the harmless kind: programming a blank tag.
+    /// Whether this write is authorised to rewrite the sector-1 keys: the tag's sector 1 is still
+    /// on the factory key.
     ///
-    /// Sector 1 is on the factory key and holds no record, so splicing in the derived key is the
-    /// only thing that can make this tag a spool tag, and there is nothing being overwritten. This
-    /// is the authorisation ``TagService/writeTag(record:printerType:allowTrailerWrite:onBackup:)``
+    /// This is the authorisation ``TagService/writeTag(record:printerType:allowTrailerWrite:onBackup:)``
     /// asks for, and it is a *claim about the tag* rather than a preference — so Core re-checks it
-    /// against its own read and refuses if the two disagree.
+    /// against its own read and refuses if the two disagree. Core's condition is exactly "sector 1
+    /// opened with the factory key" and nothing else, so this has to be the same condition, which
+    /// is why it is `requiresTrailerWrite` and not `requiresTrailerWrite && currentCondition ==
+    /// .blank`.
+    ///
+    /// The two are *not* the same bit. A tag whose blocks 4–6 were written and then lifted before
+    /// block 7 — this app can produce one — opens with the factory key **and** decodes a record.
+    /// Gating on `.blank` as well left that tag unauthorised in the UI while Core would have
+    /// accepted it, so the sheet offered "Program Tag" and every press failed with "this tag is
+    /// blank": a permanent dead end. Programming it is the right thing — the record on it is an
+    /// interrupted attempt, and the keys it never got are what make it a spool tag.
     ///
     /// It used to be an opt-in the user had to find and tick before a blank tag could be written
     /// at all, which put two extra clicks in front of the app's most ordinary operation: tagging a
-    /// new spool.
-    ///
-    /// The two conditions are the same bit today — `requiresTrailerWrite` is defined as "sector 1
-    /// did not open with the derived key", and that is exactly what makes the condition `.blank`.
-    /// Both are named anyway, so that if either definition ever widens this stops being true
-    /// rather than quietly authorising something else.
-    var isBlankTagProgramming: Bool { requiresTrailerWrite && currentCondition == .blank }
+    /// new spool. The name survives because the ordinary case is still a blank tag.
+    var isBlankTagProgramming: Bool { requiresTrailerWrite }
+
+    /// True for the interrupted-programming tag described under ``isBlankTagProgramming``: a record
+    /// decoded, but sector 1 is still on the factory key. The sheet says so in plain words rather
+    /// than calling the tag either blank or programmed, because it is neither.
+    var isInterruptedProgramming: Bool {
+        requiresTrailerWrite && currentCondition.record != nil
+    }
 }
 
 /// The outcome of a completed write.
@@ -510,9 +528,6 @@ final class TagViewModel: ObservableObject {
 
     @Published var draft = SpoolDraft()
 
-    /// Nearest named colour for the draft swatch, resolved off the main actor.
-    @Published private(set) var draftColorName: String?
-
     // MARK: Prefill from the last read
 
     /// The last spool record this app successfully read, kept **after** the tag has left the
@@ -613,9 +628,10 @@ final class TagViewModel: ObservableObject {
     /// Three things keep it from being a hazard, and all three are structural rather than advisory:
     /// it only exists in Write mode (``autoWriteIfNeeded(card:)`` returns
     /// immediately otherwise, so **Read mode can never write**); it fires at most once per UID per
-    /// arrival (see ``autoWriteHandledUID``); and the only trailer write it will do unasked is
-    /// programming a *blank* tag, which is checked per-tag by ``WritePlan/isBlankTagProgramming``
-    /// and re-checked by `TagService` against the card itself.
+    /// arrival (see ``autoWriteHandledUID``); and the only trailer write it will do unasked is on
+    /// a tag whose sector 1 is still on the factory key — a blank tag, or one whose programming
+    /// was interrupted before the keys were written — which is checked per-tag by
+    /// ``WritePlan/isBlankTagProgramming`` and re-checked by `TagService` against the card itself.
     ///
     /// Defaults to on, because that is what was asked for. The off switch is a toggle in Write
     /// mode itself, not a preference pane.
@@ -757,6 +773,12 @@ final class TagViewModel: ObservableObject {
     /// `internal` rather than `private` so a test can drive one response and await it; nothing in
     /// the view layer calls it.
     func respondToCard(_ card: CardIdentity?) async {
+        // Whatever was waiting is being looked at now. Either half below records the arrival
+        // afresh if it still cannot act on it; every other exit — already read, already handled,
+        // wrong mode, no usable card — means the arrival has been superseded. A deferral that
+        // outlived one of those kept the Auto-Write card saying "Queued … will be written as soon
+        // as the read finishes" about a tag nothing was ever going to write.
+        deferredArrival = nil
         await autoReadIfNeeded(card: card)
         await autoWriteIfNeeded(card: card)
     }
@@ -1009,7 +1031,6 @@ final class TagViewModel: ObservableObject {
             deferredArrival = DeferredArrival(uid: card.uid, reason: activity.waitingReason)
             return
         }
-        deferredArrival = nil
         autoReadUID = card.uid
         await read()
     }
@@ -1130,18 +1151,6 @@ final class TagViewModel: ObservableObject {
         draftBaseline = draft
     }
 
-    /// Loads the tag's current contents into the write form and shows it.
-    ///
-    /// The button behind this sits in Read mode, so it switches modes too — otherwise it would
-    /// fill in a form the user cannot see.
-    func loadDraftFromTag() async {
-        guard let record = condition?.record, let read = lastRead else { return }
-        prefill = TagPrefill(uid: read.uid, record: record, printerType: read.printerType)
-        await applyPrefill()
-        mode = .write
-        toasts.info("Tag contents loaded into the write form")
-    }
-
     /// Puts the form back to the app defaults and forgets that it came from a tag.
     ///
     /// ``prefill`` itself survives, so the banner turns from "these are tag X's values" into an
@@ -1240,10 +1249,6 @@ final class TagViewModel: ObservableObject {
     /// - Parameter allowTrailerWrite: authorises the irreversible sector-key rewrite a blank tag
     ///   needs. SpoolworksCore enforces this too, from its own runtime decision, so a stale UI snapshot
     ///   cannot let one through.
-    /// The most recent pre-write dump, captured even when the write then failed. This is the only
-    /// record of what a tag held before an aborted or partial write.
-    @Published private(set) var lastWriteBackup: [MifareClassicCard.SectorDump] = []
-
     func commitWrite(_ plan: WritePlan, allowTrailerWrite: Bool) async {
         // Reported, never silent. The sheet's Write button is also disabled while this is true
         // (see `WriteConfirmationSheet`), but a guard that returns without a word is how a click
@@ -1261,13 +1266,13 @@ final class TagViewModel: ObservableObject {
         // the in-progress state in its place, so the stale values are never shown for an instant.
         invalidateRead(of: plan.uid)
 
-        // Captured via the callback so it survives a throw; a backup reachable only through a
-        // successful return is absent exactly when it is needed. It lives out here, rather than
-        // in the closure, because `withCard` may run that closure twice — it retries a stale card
-        // handle — and two closure-local publications would race with each other on the main
-        // actor. One box, written by whichever attempt got as far as dumping, published once.
+        // Captured via the callback rather than read off the result, and held out here rather
+        // than inside the closure, because `withCard` may run that closure twice — it retries a
+        // stale card handle — and the retry dumps the tag *after* the first attempt may already
+        // have written to it. The box keeps the first attempt's dump, which is the only true
+        // pre-write state, and the summary is built from that rather than from the retry's own
+        // `result.backup`.
         let backup = SectorDumpBox()
-        defer { lastWriteBackup = backup.value }
 
         do {
             let (summary, readback) = try await monitor.withCard { session, identity
@@ -1284,15 +1289,14 @@ final class TagViewModel: ObservableObject {
                                                   onBackup: { backup.set($0) })
                 // Same session, immediately after the write. A failure here is *not* a write
                 // failure and must never be reported as one, so it is captured rather than thrown.
-                return (WriteSummary(result, plan: plan), Result { try service.readTag() })
+                return (WriteSummary(result, plan: plan, backup: backup),
+                        Result { try service.readTag() })
             }
 
             writeOutcome = .succeeded(summary)
             rememberColor(plan.record.rgbHex)
             autoWriteSkipped = nil
-            // The next spool is a different spool. Carrying this serial forward would tag two of
-            // them identically, which is the collision the randomisation exists to avoid.
-            draft.serialNumber = SpoolRecord.randomSerialNumber()
+            rotateSerialAfterWrite()
             // Fired here rather than from the confirmation sheet's completion handler, because a
             // write can also happen through auto-write with no sheet involved — and a spool that
             // reached stock or not depending on which path programmed it would be worse than
@@ -1336,6 +1340,21 @@ final class TagViewModel: ObservableObject {
         if autoReadUID == uid { autoReadUID = nil }
         readFailure = nil
         readback = nil
+    }
+
+    /// Gives the form a fresh serial once the current one has been written.
+    ///
+    /// The next spool is a different spool. Carrying this serial forward would tag two of them
+    /// identically, which is the collision the randomisation exists to avoid.
+    ///
+    /// The baseline moves with it. This is the app changing the form, not the user, and
+    /// ``draftIsEdited`` compares the serial — so leaving the baseline behind marked every form
+    /// "Edited" the moment its write succeeded, though nobody had typed a thing, and from then on
+    /// ``rememberForWriting(_:)`` refused to adopt any read until Reset.
+    private func rotateSerialAfterWrite() {
+        let serial = SpoolRecord.randomSerialNumber()
+        draft.serialNumber = serial
+        draftBaseline.serialNumber = serial
     }
 
     /// Tries the post-write read again, for the "Retry" in the success panel.
@@ -1397,7 +1416,6 @@ final class TagViewModel: ObservableObject {
                 reason: activity.isRunning ? activity.waitingReason : "the confirmation sheet is closed")
             return
         }
-        deferredArrival = nil
 
         // Spent *before* the first `await`. Nothing that happens from here on — a republished
         // identity, a second `onChange`, two overlapping tasks — can produce a second write for
@@ -1494,23 +1512,6 @@ final class TagViewModel: ObservableObject {
         return out
     }
 
-    // MARK: Colour naming
-
-    /// Resolves the nearest named colour for the draft swatch.
-    ///
-    /// Runs off the main actor: the lookup is a 31,861-row linear scan, which is 0.037 ms in a
-    /// release build but ~14 ms in a debug one (`ColorMatcher` docs) — enough to be felt while
-    /// dragging in the colour picker.
-    func refreshDraftColorName() async {
-        let hex = draft.colorHex
-        let name = await Task.detached(priority: .utility) { () -> String? in
-            guard let matcher = try? ColorMatcher.shared() else { return nil }
-            return try? matcher.nearestName(forHex: hex)
-        }.value
-        guard hex == draft.colorHex else { return }   // colour moved on while we scanned
-        draftColorName = name
-    }
-
     // MARK: Plan construction
 
     static func makePlan(current: TagReadResult,
@@ -1573,6 +1574,11 @@ final class TagViewModel: ObservableObject {
         await adopt(result, prefillingDraft: prefillingDraft)
     }
 
+    /// Runs the post-write serial rotation without a write, for the baseline rule it carries.
+    func rotateSerialAfterWriteForTesting() {
+        rotateSerialAfterWrite()
+    }
+
     /// Runs `body` with the model reporting `activity`, then restores `.idle` — which fires the
     /// same deferred-arrival retry a real operation finishing would.
     func withActivityForTesting<T>(_ activity: Activity,
@@ -1614,23 +1620,41 @@ enum WriteAbort: Error, LocalizedError {
 // MARK: - Backup rendering
 
 extension WriteSummary {
-    init(_ result: TagWriteResult, plan: WritePlan) {
+    /// - Parameter backup: the dumps this commit took, of which the first is the pre-write state.
+    ///   Read from the box rather than from `result.backup` because `result` is whichever attempt
+    ///   returned, and after a retry that is not the attempt that saw the tag untouched.
+    init(_ result: TagWriteResult, plan: WritePlan, backup: SectorDumpBox) {
         self.uid = result.uid
         self.record = plan.record
         self.materialLabel = plan.materialLabel
         self.printerTypeString = plan.printerTypeString
-        self.wasAlreadyProgrammed = result.wasAlreadyProgrammed
-        self.wroteTrailer = result.wroteTrailer
+        // Core's `wasAlreadyProgrammed` and `wroteTrailer` describe the attempt that returned.
+        // When `ReaderMonitor.withCard` retried a stale card handle, a first attempt that re-keyed
+        // sector 1 before the reset leaves the retry finding a tag that is "already programmed",
+        // so the result says no keys were written although this commit wrote them. The first
+        // attempt's dump is the tag before any write: sector 1 on the factory key then and on the
+        // derived key now means the keys changed in between, and only this commit was writing.
+        let rekeyedByEarlierAttempt = backup.attempts > 1
+            && backup.firstAttemptFoundFactoryKey
+            && result.wasAlreadyProgrammed
+        self.wasAlreadyProgrammed = result.wasAlreadyProgrammed && !rekeyedByEarlierAttempt
+        self.wroteTrailer = result.wroteTrailer || rekeyedByEarlierAttempt
         self.wroteSector2 = result.wroteSector2
-        self.blocksWritten = result.writtenBlocks.keys.sorted()
-        self.backupSectorCount = result.backup.filter { !$0.authFailed }.count
-        self.backupFailedSectors = result.backup.filter(\.authFailed).map(\.sector)
-        self.backupDump = WriteSummary.renderBackup(result)
+        var blocks = Set(result.writtenBlocks.keys)
+        if rekeyedByEarlierAttempt {
+            blocks.insert(MifareClassicCard.trailerBlock(ofSector: TagService.recordSector))
+        }
+        self.blocksWritten = blocks.sorted()
+        let preWrite = backup.value
+        self.backupSectorCount = preWrite.filter { !$0.authFailed }.count
+        self.backupFailedSectors = preWrite.filter(\.authFailed).map(\.sector)
+        self.backupDump = WriteSummary.renderBackup(result, backup: preWrite)
     }
 
     /// The pre-write dump, in the same shape `spooldiag dump` prints, so the two are comparable and
     /// either can be used to reconstruct a tag by hand.
-    static func renderBackup(_ result: TagWriteResult) -> String {
+    static func renderBackup(_ result: TagWriteResult,
+                             backup: [MifareClassicCard.SectorDump]) -> String {
         var lines: [String] = [
             "# CFS-RFID pre-write backup",
             "# Taken before the first write APDU (DECISIONS D-006).",
@@ -1639,7 +1663,7 @@ extension WriteSummary {
             "# Date: \(ISO8601DateFormatter().string(from: Date()))",
             ""
         ]
-        for dump in result.backup {
+        for dump in backup {
             let sector = String(format: "%02d", dump.sector)
             if dump.authFailed {
                 lines.append("S\(sector): AUTH FAILED — not backed up")
@@ -1659,15 +1683,46 @@ extension WriteSummary {
     }
 }
 
-/// A pre-write sector dump handed across a thread boundary.
+/// The pre-write sector dump of one `commitWrite`, handed across a thread boundary.
 ///
 /// `TagService.writeTag` reports the backup through a synchronous callback that runs on the PC/SC
-/// queue, while the property it ends up in is main-actor state. The box is the handoff.
-private final class SectorDumpBox: @unchecked Sendable {
+/// queue, while the value ends up in main-actor state. The box is the handoff.
+///
+/// It keeps the **first** dump it is given. `ReaderMonitor.withCard` re-runs the whole write
+/// closure when the card handle goes stale, and the retry dumps the tag again — after the first
+/// attempt may already have written blocks 4–6, or the trailer. That second dump describes a
+/// half-written tag, and letting it replace the first would destroy the only record of what the
+/// tag held before any write APDU, which is the one thing a backup exists to be.
+final class SectorDumpBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var dumps: [MifareClassicCard.SectorDump] = []
-    var value: [MifareClassicCard.SectorDump] { lock.lock(); defer { lock.unlock() }; return dumps }
+    private var first: [MifareClassicCard.SectorDump] = []
+    private var attemptCount = 0
+
+    /// The dump taken before the first write APDU of this commit. Empty until an attempt has
+    /// dumped the tag.
+    var value: [MifareClassicCard.SectorDump] {
+        lock.lock(); defer { lock.unlock() }
+        return first
+    }
+
+    /// How many attempts got as far as dumping the tag. More than one means a retry happened.
+    var attempts: Int {
+        lock.lock(); defer { lock.unlock() }
+        return attemptCount
+    }
+
+    /// True when the first attempt found sector 1 on the factory key — the state before this
+    /// commit wrote anything, whatever a retry found afterwards. The dump records whichever of
+    /// the two known keys opened the sector, and a programmed tag's sector 1 answers only to its
+    /// derived key, so the factory key here means the same thing Core's own authentication
+    /// concluded: the tag was not yet programmed.
+    var firstAttemptFoundFactoryKey: Bool {
+        value.first { $0.sector == TagService.recordSector }?.key == .default
+    }
+
     func set(_ newValue: [MifareClassicCard.SectorDump]) {
-        lock.lock(); dumps = newValue; lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        attemptCount += 1
+        if attemptCount == 1 { first = newValue }
     }
 }

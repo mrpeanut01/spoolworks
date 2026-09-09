@@ -266,19 +266,10 @@ struct TagFormCard: View {
         }
     }
 
-    @ViewBuilder
+    /// Only ever built for the read-only row (see `body`): in Write mode the serial is generated,
+    /// not typed, so there is no editable branch to keep.
     private var serial: some View {
-        if isEditable {
-            TextField("Serial number", text: $model.draft.serialNumber)
-                .textFieldStyle(.roundedBorder)
-                .font(Theme.mono)
-                .frame(width: 110)
-                .labelsHidden()
-                .accessibilityLabel("Serial number")
-                .help("Six digits. The Windows app always writes 000001.")
-        } else {
-            readOnly(record?.serialNumber, monospaced: true)
-        }
+        readOnly(record?.serialNumber, monospaced: true)
     }
 
     /// A value, or the placeholder, rendered as plain selectable text.

@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
-Run: `cd macOS && swift run SpoolworksTests` · Hardware: `cd macOS && swift run spooldiag <cmd>`
-Status at last update: **634 automated tests passing**, 0 failing.
+Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
+Status at last update: **694 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -61,6 +61,18 @@ Status at last update: **634 automated tests passing**, 0 failing.
 | Colour | tie-breaks by CSV row order (5 verified vectors) | regression | pass |
 | Colour | 7-char field with non-zero leading nibble rejected | unit | pass |
 | Colour | 600/600 identical vs. independent reimplementation | cross-check | pass |
+| Review fixes | reconcile: twin spools in a slot and on the holder each keep their place across polls | regression | pass |
+| Review fixes | a `remainingPercent` outside 0…100 in the file is clamped on load; a huge usage figure renders blank, not a trap | regression | pass |
+| Review fixes | `MaterialBase` explicit `null` round-trips as `null`; unquoted `version` / quoted `count` still load | regression | pass |
+| Review fixes | record failures survive a failed save's rollback and clear after a good one | regression | pass |
+| Review fixes | a card reset during write verification propagates as itself, not `verificationFailed`; a lifted tag at sector 2 fails the read | regression | pass |
+| Review fixes | the pre-write backup costs a handful of card resets, not one per sector | regression | pass |
+| Review fixes | a child that exits without reading a 512 KiB stdin does not SIGPIPE the process | regression | pass |
+| Review fixes | remote `Permission denied` (exit 1) is not a wrong password; ` 10.0.0.5` is an invalid host; Core errors' `localizedDescription` is their own sentence | regression | pass |
+| Review fixes | stabiliser reports a measured frame on a split window, never a per-component composite | regression | pass |
+| Review fixes | a half-programmed tag (record under the factory key) is authorised and named as interrupted; failed writes show no step "done"; the first attempt's backup survives a retry; the rotated serial does not mark the form edited; a stale deferred arrival is cleared | regression | pass |
+| Review fixes | Intake Method B records the identity its tags actually hold; a drifted form cannot be confirmed; a rewritten tag does not claim both sides; re-arming follows spool size; Method A gets no catalogue pre-fill and no invented type | regression | pass |
+| Review fixes | upload options reach the service unchanged; a printer download is not overwritten by the next Materials edit; removing a printer deletes its password; a password typed before the address survives it | regression | pass |
 
 ## Hardware-in-the-loop (executed on the user's ACS ACR1552)
 

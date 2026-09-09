@@ -48,24 +48,22 @@ struct IntakeView: View {
             // a tag presented anywhere else get written.
             tagModel.mode = .read
         }
-        // Re-arm whenever anything that decides the mode changes.
-        .onChange(of: model.method) { _, _ in arm() }
-        .onChange(of: model.tagsHandled) { _, _ in arm() }
-        .onChange(of: model.materialID) { _, _ in arm() }
-        .onChange(of: model.colorHex) { _, _ in arm() }
-        // Feed the reader's activity through so the slot rows can show it.
-        .onChange(of: tagModel.activity) { _, activity in
+        // Re-arm whenever anything that decides the mode or feeds the written record changes. One
+        // key rather than a list of fields: the list missed the spool size, so a tag auto-written
+        // after the size was changed carried the old length code.
+        .onChange(of: model.armingKey) { _, _ in arm() }
+        // Feed the reader's activity through so the slot rows can show it — and absorb the result
+        // of every read that finishes. This used to key on the UID that came back, which is a
+        // value, not an event: after "Discard" the same tag read again is the same value set
+        // again, SwiftUI reports no change, and "Read now" did nothing however often it was
+        // pressed. The end of a read happens once per read, so that is what is watched. Verified
+        // writes reach the model through `TagViewModel.onWriteSucceeded` (see `AppEnvironment`),
+        // carrying the record that was actually written.
+        .onChange(of: tagModel.activity) { previous, activity in
             model.activityLabel = activity.isRunning ? activity.label : nil
-        }
-        // A verified write ticks off the next slot.
-        .onChange(of: tagModel.writeOutcome) { _, outcome in
-            if case let .succeeded(summary) = outcome { model.absorbWrite(uid: summary.uid) }
-        }
-        // Keyed on the UID rather than the record: a spool's two tags carry the *same* payload, so
-        // watching the record would miss the second one entirely.
-        .onChange(of: tagModel.lastRead?.uid ?? []) { _, _ in
-            guard let result = tagModel.lastRead else { return }
-            model.absorb(result)
+            if previous == .reading, !activity.isRunning, let result = tagModel.lastRead {
+                model.absorb(result)
+            }
         }
         // The same sheet the Write screen raises. A plan must be confirmed on whichever screen
         // built it, or it is raised against a view that is not on screen — the defect documented
@@ -73,26 +71,20 @@ struct IntakeView: View {
         .sheet(item: $tagModel.pendingPlan) { plan in
             WriteConfirmationSheet(plan: plan, model: env.tagModel) { confirmed in
                 if confirmed {
+                    // The slot is not ticked off here. A verified write reaches the model through
+                    // `onWriteSucceeded`, keyed on the tag's UID, whichever path programmed it;
+                    // ticking by slot index as well let "Write now" on the second row claim both
+                    // sides after rewriting the first row's tag.
                     Task {
                         await tagModel.commitWrite(
                             plan, allowTrailerWrite: plan.isBlankTagProgramming)
-                        // Only a verified write counts. `writeOutcome` is set from the read-back,
-                        // so a tag that reported 90 00 without landing the bytes does not tick.
-                        if case .succeeded = tagModel.writeOutcome, let slot = pendingSlot {
-                            model.markTagWritten(slot)
-                        }
-                        pendingSlot = nil
                     }
                 } else {
                     tagModel.cancelPendingWrite()
-                    pendingSlot = nil
                 }
             }
         }
     }
-
-    /// Which of the spool's two tags the open confirmation sheet belongs to.
-    @State private var pendingSlot: IntakeViewModel.TagSlot?
 
     /// Whether the camera colour scanner is open.
     @State private var isScanningColour = false
@@ -116,9 +108,20 @@ struct IntakeView: View {
     /// Loads the intake form into the tag draft and raises the standard write confirmation.
     private func beginWrite(_ slot: IntakeViewModel.TagSlot) {
         guard model.canWriteTags else { return }
-        pendingSlot = slot
         model.loadDraft(into: env.tagModel)
         Task { await tagModel.prepareWrite() }
+    }
+
+    /// Clears the form and, in Method A, looks at the reader again.
+    ///
+    /// `reset()` forgets the tags this intake absorbed, but `TagViewModel` still remembers the
+    /// last one it read and will not auto-read a UID it already holds — so after discarding, the
+    /// tag sitting on the reader was ignored until it was lifted and put back. Forgetting it on
+    /// that side too means a discarded spool's tag is read afresh, which is what "the reader
+    /// stays hot" promises. Method B is left alone: its reader is armed to write, not to read.
+    private func discard() {
+        model.reset()
+        if model.isScan { tagModel.beginIdentification() }
     }
 
     // MARK: Step 1
@@ -155,7 +158,7 @@ struct IntakeView: View {
                 .buttonStyle(.sw(.primary))
                 .disabled(tagModel.activity.isRunning)
 
-                Button("Start over") { model.reset() }
+                Button("Start over") { discard() }
                     .buttonStyle(.sw(.ghost))
             }
 
@@ -184,7 +187,7 @@ struct IntakeView: View {
             HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
                 Text(model.tagPanelLabel).kicker()
                 Spacer()
-                if model.tagsHandled >= 2 {
+                if model.allTagsHandled {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.success)
@@ -192,7 +195,7 @@ struct IntakeView: View {
                 }
                 Text(model.tagSummary)
                     .font(Theme.monoSmall)
-                    .foregroundStyle(model.tagsHandled >= 2 ? Theme.success : Theme.secondaryLabel)
+                    .foregroundStyle(model.allTagsHandled ? Theme.success : Theme.secondaryLabel)
             }
             .padding(.bottom, 12)
 
@@ -268,17 +271,27 @@ struct IntakeView: View {
                 } else {
                     // Method B: the form is authoritative, so the material must resolve to a real
                     // catalogue entry — that is where the tag's filament ID comes from.
-                    FieldBox(label: "Brand", note: "from the catalogue") {
+                    //
+                    // Authoritative only until a tag is written. From then on the tag is a
+                    // physical fact and the form has to describe it, so everything the tag
+                    // encodes — material, colour, spool size, serial — is locked; the name stays
+                    // open because it is not on the tag. Without the lock a colour corrected
+                    // after the first write put a spool in stock under an identity its tags did
+                    // not carry, and the next CFS poll found the tags as a second spool.
+                    FieldBox(label: "Brand",
+                             note: model.isIdentityLocked ? "on the tag" : "from the catalogue") {
                         Picker("", selection: $model.catalogueBrand) {
                             Text("—").tag("")
                             ForEach(model.catalogueBrands, id: \.self) { Text($0).tag($0) }
                         }
                         .labelsHidden()
+                        .disabled(model.isIdentityLocked)
                     }
                     FieldBox(label: "Name", note: "follows the material") {
                         TextField("", text: $model.name).textFieldStyle(.plain).swInput()
                     }
-                    FieldBox(label: "Material", note: "decides the filament ID") {
+                    FieldBox(label: "Material",
+                             note: model.isIdentityLocked ? "on the tag" : "decides the filament ID") {
                         Picker("", selection: $model.materialID) {
                             Text("—").tag("")
                             ForEach(model.materials(for: model.catalogueBrand)) { row in
@@ -286,6 +299,7 @@ struct IntakeView: View {
                             }
                         }
                         .labelsHidden()
+                        .disabled(model.isIdentityLocked)
                     }
                 }
                 // Two questions, and they were one field. "Net weight" beside nothing else about
@@ -293,13 +307,16 @@ struct IntakeView: View {
                 // recorded as full — which is right for a spool out of its box and wrong for the
                 // reason most people count their stock: they already own it, and some of it is
                 // half used. The labels now say which is which, and both are asked.
-                FieldBox(label: "Spool size", note: "what a full one holds") {
+                FieldBox(label: "Spool size",
+                         note: model.isIdentityLocked ? "on the tag" : "what a full one holds") {
                     Picker("", selection: $model.netWeightGrams) {
                         ForEach(IntakeViewModel.weights, id: \.self) {
                             Text(Spool.weightLabel($0)).tag($0)
                         }
                     }
                     .labelsHidden()
+                    // The length code is on the tag, so the size is locked with the rest.
+                    .disabled(model.isIdentityLocked)
                 }
                 FieldBox(label: "How much is left", note: "on the spool now") {
                     Picker("", selection: $model.remainingPercent) {
@@ -319,8 +336,10 @@ struct IntakeView: View {
             .padding(.bottom, 16)
 
             HStack(alignment: .bottom, spacing: 18) {
-                FieldBox(label: "Colour", note: model.isScan ? "from tag" : nil) {
+                FieldBox(label: "Colour",
+                         note: model.isScan ? "from tag" : model.isIdentityLocked ? "on the tag" : nil) {
                     TextField("", text: $model.colorHex).textFieldStyle(.plain).swInput()
+                        .disabled(model.isIdentityLocked)
                 }
                 // Method B only. In Method A the tag is the authority on colour, and colour is
                 // part of how a spool is identified (see the README on serial collisions) — a
@@ -329,6 +348,7 @@ struct IntakeView: View {
                     Button("Scan…") { isScanningColour = true }
                         .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
                         .help("Read the colour off the spool with a camera.")
+                        .disabled(model.isIdentityLocked)
                     // The swatch is the third way in, beside typing a code and scanning one. All
                     // three write the same `colorHex`, which is what makes "the last thing you did
                     // wins" fall out rather than needing to be arbitrated: there is one value, and
@@ -337,6 +357,7 @@ struct IntakeView: View {
                         Swatch(hex: model.colorHex, size: 52, height: 44)
                     }
                     .buttonStyle(.plain)
+                    .disabled(model.isIdentityLocked)
                     .help("Pick the colour from the macOS colour palette.")
                     .accessibilityLabel("Colour \(model.colorHex.isEmpty ? "not set" : model.colorHex)")
                     .accessibilityHint("Opens the macOS colour palette")
@@ -350,13 +371,24 @@ struct IntakeView: View {
                 tagPanel(tinted: true).padding(.bottom, 18)
             }
 
+            // The model's own check behind the lock above. A value can still arrive around the
+            // disabled inputs — the camera sheet commits when it closes, and the colour panel is
+            // a window of its own — and a form that no longer says what the tags say must not be
+            // confirmed. The button puts the tag's values back; "Discard" is the other way out.
+            if !model.isScan, let drift = model.writtenDrift {
+                InlineFailure(text: drift).padding(.bottom, 12)
+                Button("Use the tag's values") { model.restoreWrittenValues() }
+                    .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
+                    .padding(.bottom, 18)
+            }
+
             Rule().padding(.bottom, 16)
 
             HStack(alignment: .top, spacing: 12) {
                 Button(model.confirmTitle) { model.confirm() }
                     .buttonStyle(.sw(.primary, size: 13, h: 20, v: 12))
                     .disabled(!model.canConfirm)
-                Button("Discard") { model.reset() }
+                Button("Discard") { discard() }
                     .buttonStyle(.sw(.ghost, h: 14, v: 11))
                 Spacer(minLength: 0)
                 Text(model.hint)
@@ -381,6 +413,12 @@ struct IntakeView: View {
         // overwrite a colour that had been decoded off a spool.
         .onChange(of: model.isScan) { _, isScan in
             if isScan { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+        }
+        // The same handover once a tag is written: the panel is a window of its own, so disabling
+        // the swatch does not stop a panel already open from pushing a colour into a form whose
+        // colour is now fixed by the tag.
+        .onChange(of: model.isIdentityLocked) { _, locked in
+            if locked { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
         }
         // Unconditional on purpose: `relinquish` is a no-op unless this screen still owns the
         // panel, which is exactly the check that makes it safe to call from here.

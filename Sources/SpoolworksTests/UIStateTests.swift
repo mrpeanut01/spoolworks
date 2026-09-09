@@ -84,15 +84,19 @@ private func blankTagRead() throws -> TagReadResult {
 }
 
 /// A read of a tag that already holds a record, for the prefill rules.
+///
+/// `isProgrammed: false` with a record is the half-programmed tag: blocks 4–6 written, lifted
+/// before block 7, so sector 1 still opens with the factory key and yet a record decodes.
 private func programmedRead(uid: [UInt8], serial: String, materialId: String = "12345",
-                            colour: String = "1188ff") throws -> TagReadResult {
+                            colour: String = "1188ff",
+                            isProgrammed: Bool = true) throws -> TagReadResult {
     let record = try SpoolRecord(materialId: materialId,
                                  colorRGB: colour,
                                  filamentLength: .kg1,
                                  serialNumber: serial)
     return TagReadResult(uid: uid,
                          derivedKey: .default,
-                         isProgrammed: true,
+                         isProgrammed: isProgrammed,
                          sector1Key: .default,
                          sector1KeyType: .keyA,
                          decryptedSector1: [UInt8](repeating: 0, count: 48),
@@ -113,6 +117,36 @@ private func samplePlan() throws -> WritePlan {
                                  record: record,
                                  materialLabel: "Creality · Hyper PLA",
                                  printerTypeString: "K2")
+}
+
+/// A key that is not the factory key, standing in for a UID-derived one.
+private let derivedKeyFixture = MifareKey(bytes: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06])!
+
+/// A sector-1 dump whose `key` says which state the tag was in when it was taken, and whose block
+/// 4 is filled with `marker` so a rendered dump can be told apart from another.
+private func sector1Dump(key: MifareKey, marker: UInt8) -> MifareClassicCard.SectorDump {
+    MifareClassicCard.SectorDump(sector: TagService.recordSector,
+                                 blocks: [4: [UInt8](repeating: marker, count: 16)],
+                                 key: key,
+                                 keyType: .keyA,
+                                 failure: nil)
+}
+
+/// A write result as Core returns it from one attempt, for the summary rules that only matter
+/// once `ReaderMonitor.withCard` has retried.
+private func writeResult(uid: [UInt8],
+                         backup: [MifareClassicCard.SectorDump],
+                         wasAlreadyProgrammed: Bool,
+                         wroteTrailer: Bool) -> TagWriteResult {
+    var written: [Int: [UInt8]] = [4: [], 5: [], 6: [], 8: [], 9: [], 10: []]
+    if wroteTrailer { written[7] = [] }
+    return TagWriteResult(uid: uid,
+                          derivedKey: derivedKeyFixture,
+                          backup: backup,
+                          wasAlreadyProgrammed: wasAlreadyProgrammed,
+                          wroteTrailer: wroteTrailer,
+                          wroteSector2: true,
+                          writtenBlocks: written)
 }
 
 /// The form in a state that can produce a record, so `autoWriteState` gets past `.blocked`.
@@ -183,6 +217,20 @@ let spoolDraftTests = TestSuite(name: "Write form draft", cases: [
         $0.expect(!draft.isValid, "no colour yet")
         $0.expect(draft.validationIssues.contains("Choose a colour."),
                   "and the reason is named")
+    },
+
+    // `Character.isNumber` is true of `²`, and `123²` is five UTF-8 bytes, so it passed the length
+    // check as well and reached Core — which rejected it with a raw error the form had not
+    // warned about. Both fields are ASCII digits on the wire.
+    test("non-ASCII numerals are not digits") {
+        var draft = SpoolDraft()
+        draft.materialID = "123²"
+        draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
+        draft.serialNumber = "1234²"
+        $0.expect(draft.validationIssues.contains("Material ID must be digits only."),
+                  "the material id must be caught by the form, not by Core")
+        $0.expect(draft.validationIssues.contains("Serial number must be exactly 6 digits."),
+                  "and so must the serial")
     },
 ])
 
@@ -281,6 +329,29 @@ let writeFormPrefillTests = TestSuite(name: "Write form prefill", cases: [
             await h.model.adoptForTesting(read)
             t.equal(h.model.draft.materialID, "99999")
             t.expect(h.model.prefill != nil, "the read is still offered as a button")
+        }
+    },
+
+    // After a write the form gets a fresh serial for the next spool. That is the app changing the
+    // form, not the user, and it must not count as an edit: it used to, so the provenance line
+    // read "Edited — started from tag X" after every write and no later read was adopted until
+    // Reset.
+    test("the serial a write rotates in does not count as the user's edit") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212"),
+                  let next = try? programmedRead(uid: tagB.uid, serial: "008888",
+                                                 materialId: "54321") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.adoptForTesting(read)
+            t.expect(!h.model.draftIsEdited, "a form filled from a read is untouched")
+            let before = h.model.draft.serialNumber
+            h.model.rotateSerialAfterWriteForTesting()
+            t.expect(h.model.draft.serialNumber != before, "the next spool gets its own serial")
+            t.expect(!h.model.draftIsEdited, "and the form is still untouched")
+            await h.model.adoptForTesting(next)
+            t.equal(h.model.draft.materialID, "54321", "so the next read is still adopted")
         }
     },
 ])
@@ -409,6 +480,35 @@ let tagAutoWriteStateTests = TestSuite(name: "Auto-write indicator", cases: [
             t.equal(h.model.autoWriteState, .armed)
         }
     },
+
+    // The "Write & verify" panel beside the form. Its rows used to key off `writeOutcome != nil`,
+    // which is also true of a failure, so all five went green beside a red "Write Failed" card.
+    test("the verify panel marks steps done only for a write that succeeded") { t in
+        runOnMain {
+            let failed = WriteVerifyStep.steps(outcome: .failed("card reset"),
+                                               readback: nil, hasCard: true, canWrite: true)
+            t.expect(!failed.contains { $0.state == "done" },
+                     "a failed write completed nothing the panel can vouch for")
+
+            guard let plan = try? samplePlan() else { t.expect(false, "fixture"); return }
+            let box = SectorDumpBox()
+            box.set([sector1Dump(key: .default, marker: 0xAA)])
+            let summary = WriteSummary(writeResult(uid: plan.uid, backup: box.value,
+                                                   wasAlreadyProgrammed: false, wroteTrailer: true),
+                                       plan: plan, backup: box)
+            let confirmed = WriteVerifyStep.steps(outcome: .succeeded(summary), readback: .confirmed,
+                                                  hasCard: true, canWrite: true)
+            t.expect(confirmed.allSatisfy { $0.state == "done" },
+                     "a verified write completed every step")
+
+            let unread = WriteVerifyStep.steps(outcome: .succeeded(summary),
+                                               readback: .unavailable("the tag was lifted"),
+                                               hasCard: true, canWrite: true)
+            t.equal(unread[2].state, "done", "the write itself landed")
+            t.equal(unread[3].state, "unconfirmed",
+                    "but a read-back the app could not take is not reported as done")
+        }
+    },
 ])
 
 // MARK: - Arrivals: arming, deferral, retry
@@ -473,6 +573,36 @@ let identifyLoopTests = TestSuite(name: "Identify loop", cases: [
             h.model.clearRetainedRead()
             t.equal(h.model.lastRead, nil, "and gone")
             t.equal(h.model.readFailure, nil, "along with any failure beside it")
+        }
+    },
+
+    // ⌘R with a tag on the reader, then the identify screen re-appearing mid-read: the arrival is
+    // deferred behind the read, the read itself then lands that tag, and the retry finds it
+    // already read. The deferral has been overtaken and must not outlive that — it used to, and
+    // in Write mode the Auto-Write card then said "Queued … will be written as soon as the read
+    // finishes" about a tag nothing was going to write.
+    test("a deferral the read itself satisfied does not outlive it") { t in
+        runOnMain {
+            let h = makeHarness()
+            guard let read = try? programmedRead(uid: tagA.uid, serial: "004212") else {
+                t.expect(false, "fixture"); return
+            }
+            await h.model.withActivityForTesting(.reading) {
+                h.monitor.injectStateForTesting(.cardPresent(tagA))
+                await h.model.settle()
+                t.equal(h.model.deferredArrival?.uid, tagA.uid, "deferred behind the read")
+                // The read in flight lands, the way `read()` lands it.
+                await h.model.adoptForTesting(read)
+            }
+            await h.model.settle()
+            t.equal(h.model.deferredArrival, nil,
+                    "the retry found the tag already read; nothing is waiting any more")
+
+            h.model.mode = .write
+            makeDraftWritable(h.model)
+            await h.model.settle()
+            t.equal(h.model.autoWriteState, .handled,
+                    "and the indicator does not promise a write that will never come")
         }
     },
 ])
@@ -641,6 +771,91 @@ let tagArrivalTests = TestSuite(name: "Tag arrivals", cases: [
                                              printerTypeString: "K2")
             t.expect(!plan.requiresTrailerWrite)
             t.expect(!plan.isBlankTagProgramming)
+        }
+    },
+
+    // The state between those two: blocks 4–6 written, the tag lifted before block 7. Sector 1
+    // still opens with the factory key *and* a record decodes. Core authorises the trailer write
+    // on the key alone, so the UI must too — gating on `.blank` as well made this tag a permanent
+    // dead end: "Program Tag" on the sheet, and "this tag is blank…" from Core on every press.
+    test("a half-programmed tag is authorised, and the sheet says what it is") { t in
+        runOnMain {
+            guard let current = try? programmedRead(uid: tagA.uid, serial: "004212",
+                                                    isProgrammed: false),
+                  let record = try? SpoolRecord(materialId: "12345",
+                                                colorRGB: "c12e1f",
+                                                filamentLength: .kg1,
+                                                serialNumber: "009999") else {
+                t.expect(false, "fixture")
+                return
+            }
+            let plan = TagViewModel.makePlan(current: current,
+                                             record: record,
+                                             materialLabel: "Creality · Hyper PLA",
+                                             printerTypeString: "K2")
+            t.expect(plan.requiresTrailerWrite, "sector 1 is still on the factory key")
+            t.expect(plan.currentCondition.record != nil, "and yet a record decoded")
+            t.expect(plan.isBlankTagProgramming,
+                     "authorised on the condition Core checks — the key, not the record")
+            t.expect(plan.isInterruptedProgramming)
+            let subtitle = WriteConfirmationSheet.subtitle(for: plan)
+            t.expect(subtitle.contains("keys were never written"),
+                     "the sheet must call this tag neither blank nor programmed: \(subtitle)")
+            t.expect(subtitle.contains("overwrites that record"),
+                     "and must say the record on it goes: \(subtitle)")
+        }
+    },
+
+    // `ReaderMonitor.withCard` re-runs the whole write closure on a stale card handle, so the
+    // backup callback can fire twice — the second time against a tag the first attempt may
+    // already have written to. The box is what keeps the first, genuine, pre-write dump.
+    test("the backup box keeps the first attempt's dump, not the retry's") { t in
+        let box = SectorDumpBox()
+        t.equal(box.attempts, 0)
+        t.expect(!box.firstAttemptFoundFactoryKey, "nothing known yet")
+        box.set([sector1Dump(key: .default, marker: 0xAA)])
+        box.set([sector1Dump(key: derivedKeyFixture, marker: 0xBB)])   // the retry, mid-write
+        t.equal(box.attempts, 2)
+        t.equal(box.value.first?.blocks[4]?.first, 0xAA, "the first dump is the pre-write state")
+        t.expect(box.firstAttemptFoundFactoryKey)
+    },
+
+    test("a retry that found the keys already written still reports the trailer write") { t in
+        runOnMain {
+            guard let plan = try? samplePlan() else { t.expect(false, "fixture"); return }
+            let box = SectorDumpBox()
+            box.set([sector1Dump(key: .default, marker: 0xAA)])
+            let retryDump = [sector1Dump(key: derivedKeyFixture, marker: 0xBB)]
+            box.set(retryDump)
+            // What Core returns from the *second* attempt: it authenticated with the derived key
+            // the first attempt wrote, so as far as it knows nothing rewrote the trailer.
+            let result = writeResult(uid: plan.uid, backup: retryDump,
+                                     wasAlreadyProgrammed: true, wroteTrailer: false)
+            let summary = WriteSummary(result, plan: plan, backup: box)
+            t.expect(summary.wroteTrailer,
+                     "the keys were written by this commit, whichever attempt did it")
+            t.expect(!summary.wasAlreadyProgrammed)
+            t.expect(summary.blocksWritten.contains(7), "and the trailer block is listed")
+            t.expect(summary.backupDump.contains("AA AA"),
+                     "the dump offered to the user is the pre-write one")
+            t.expect(!summary.backupDump.contains("BB BB"), "not the half-written tag's")
+        }
+    },
+
+    // The flake Core documents: the dump saw the factory key and the authentication a moment
+    // later saw the derived key. With no retry, nothing this commit did changed the keys, and
+    // Core's own answer stands.
+    test("a single attempt trusts Core's own answer about the trailer") { t in
+        runOnMain {
+            guard let plan = try? samplePlan() else { t.expect(false, "fixture"); return }
+            let box = SectorDumpBox()
+            box.set([sector1Dump(key: .default, marker: 0xAA)])
+            let result = writeResult(uid: plan.uid, backup: box.value,
+                                     wasAlreadyProgrammed: true, wroteTrailer: false)
+            let summary = WriteSummary(result, plan: plan, backup: box)
+            t.expect(!summary.wroteTrailer)
+            t.expect(summary.wasAlreadyProgrammed)
+            t.expect(!summary.blocksWritten.contains(7))
         }
     },
 

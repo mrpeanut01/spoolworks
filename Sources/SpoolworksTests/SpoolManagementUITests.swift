@@ -165,6 +165,30 @@ let inventoryViewModelTests = TestSuite(name: "Inventory view model", cases: [
             t.equal(after.usage.first?.deltaGrams, -380, "delta derived, not asserted")
         }
     },
+
+    // `selected` follows the filter, so a bare `selectedID` naming a hidden spool showed some
+    // other row. Opening a specific spool has to make it visible.
+    test("revealing a spool the filter hides drops the filter so it is the one shown") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let healthy = sampleSpool("000001", percent: 90)
+            let low = sampleSpool("000002", percent: 10)
+            model.add(healthy)
+            model.add(low)
+            model.filter = .low
+
+            model.reveal(healthy.id)
+            t.equal(model.filter, .all, "the filter that hid it is dropped")
+            t.equal(model.selected?.id, healthy.id, "and it is the one the rail shows")
+
+            // A spool the filter already lists needs no such help, and the filter stands.
+            model.filter = .low
+            model.reveal(low.id)
+            t.equal(model.filter, .low, "a listed spool leaves the filter alone")
+            t.equal(model.selected?.id, low.id, "selected")
+        }
+    },
 ])
 
 // MARK: - Intake
@@ -323,6 +347,268 @@ let intakeViewModelTests = TestSuite(name: "Intake view model", cases: [
             t.equal(added.brand, "Prusament", "description kept")
             t.equal(model.session.count, 1, "shown in the session list")
             t.equal(model.brand, "", "and the form is rearmed for the next spool")
+            // Unplaced, not `Shelf`: that is a seeded place the user can rename or remove, and a
+            // spool at a place the picker no longer offers renders blank. See D-011.
+            t.equal(added.location, .unknown, "lands unplaced like every other way in")
+        }
+    },
+
+    // Method B, and the defect that put phantom spools in the CFS list: the tags were written
+    // with one payload and the spool was stored under whatever the form said at "Add to stock".
+    test("a written spool is identified by what its tags hold, not by the form at confirm") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                 filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.brand = "Creality"
+            model.name = "Hyper PLA"
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: written)
+            t.equal(model.tagsHandled, 2, "both tags written")
+            t.expect(model.isIdentityLocked, "and the fields the tag encodes are locked")
+
+            // The name is not on the tag, so it may still change.
+            model.name = "Hyper PLA, the red one"
+            t.expect(model.canConfirm, "a name edit is allowed")
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "spool") else { return }
+            t.equal(added.identity, SpoolIdentity(record: written), "the identity is the tags'")
+            t.equal(added.tagSource, .spoolworksWritten, "credited as written")
+            t.equal(added.name, "Hyper PLA, the red one", "the edit that was allowed survived")
+            t.equal(added.location, .unknown, "unplaced, like every other way in")
+            t.equal(inventory.existing(for: written)?.id, added.id,
+                    "so reading either tag later finds this spool rather than discovering another")
+        }
+    },
+
+    test("a form that drifts from what was written cannot be confirmed until it is put back") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                 filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.brand = "Creality"
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: written)
+
+            // The colour panel and the camera sheet can both land a value around the view's lock.
+            model.colorHex = "FFFFFF"
+            guard let drift = t.unwrap(model.writtenDrift, "the drift is named") else { return }
+            t.expect(drift.contains("C12E1F"), "and says what the tag holds: \(drift)")
+            t.expect(!model.canConfirm, "which blocks the add")
+            model.confirm()
+            t.equal(inventory.inventory.active.count, 0, "nothing stored under the wrong identity")
+
+            // An invalid value is drift too. It used to store `identity == nil` on a spool
+            // marked `spoolworksWritten`, which no tag could ever match.
+            model.colorHex = "not a colour"
+            t.expect(!model.canConfirm, "an unencodable colour is a mismatch, not a nil identity")
+
+            model.restoreWrittenValues()
+            t.equal(model.colorHex, "C12E1F", "the tag's colour is back")
+            t.equal(model.writtenDrift, nil, "the form agrees with the tags again")
+            t.expect(model.canConfirm, "so it can be added")
+        }
+    },
+
+    test("the first write fixes the form, and the second tag is drafted from the first") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let monitor = ReaderMonitor()
+            let toasts = ToastCenter()
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "sw-test-\(UUID())")!)
+            let tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+            let model = IntakeViewModel(monitor: monitor,
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            model.method = .manual
+            model.colorHex = "E8A0B4"
+            model.netWeightGrams = 1000
+            // What landed differs from the form: the panel moved the colour after the reader
+            // was armed, and the write went out with the draft as it stood.
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "0087BE",
+                                                 filamentLength: .g500, serialNumber: "424242") else { return }
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            t.equal(model.colorHex, "0087BE", "the form takes the tag's colour")
+            t.equal(model.netWeightGrams, 500, "and its size")
+            t.equal(model.serial, "424242", "and its serial")
+            t.equal(model.filamentId, "101001", "and its filament id")
+
+            // A spool's two tags carry the same payload, so the second is drafted from the first
+            // however the form has moved since.
+            model.colorHex = "FFFFFF"
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.colorHex, "0087BE", "the second tag repeats the first")
+            t.equal(tagModel.draft.serialNumber, "424242", "same serial")
+            t.equal(tagModel.draft.weight, .g500, "same length code")
+        }
+    },
+
+    test("a second tag carrying a different payload is refused, not counted") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1, serialNumber: "424242"),
+                  let other = try? SpoolRecord(materialId: "01001", colorRGB: "0087BE",
+                                               filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4], record: first)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: other)
+            t.equal(model.tagsHandled, 1, "a tag that disagrees with the first does not fill the slot")
+            t.expect(model.failure?.contains("different payload") == true, "and the screen says why")
+            t.equal(model.writtenRecord, first, "the first tag stays the authority")
+        }
+    },
+
+    // The reader's arming is driven from one value, so a field that feeds the written record
+    // cannot be left off the list the view watches. The spool size was, and a tag auto-written
+    // after the size changed carried the old length code.
+    test("the arming key moves with every field the tag encodes, size included") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let monitor = ReaderMonitor()
+            let toasts = ToastCenter()
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "sw-test-\(UUID())")!)
+            let tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+            let model = IntakeViewModel(monitor: monitor,
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            model.method = .manual
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.weight, .kg1, "armed for the default size")
+
+            let before = model.armingKey
+            model.netWeightGrams = 500
+            t.expect(model.armingKey != before, "a size change re-arms")
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.weight, .g500, "and the tag would now carry the new length code")
+
+            let afterSize = model.armingKey
+            model.serial = "424242"
+            t.expect(model.armingKey != afterSize, "so does the serial")
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.serialNumber, "424242", "carried through")
+
+            let afterSerial = model.armingKey
+            model.setTagsRequired(0)
+            t.expect(model.armingKey != afterSerial,
+                     "and the tag count, which decides whether anything is armed at all")
+        }
+    },
+
+    // `reset()` picked the first catalogue brand whatever the method, and picking a brand runs
+    // the catalogue pre-fill. Switching back from Method B with another brand chosen therefore
+    // *changed* the brand, and Method A came up describing a filament nothing had read.
+    test("switching back to Method A leaves no catalogue pre-fill behind") { t in
+        onMain {
+            let (model, _, cleanup) = await makeCatalogueIntake()
+            defer { cleanup() }
+            model.method = .manual
+            let brands = model.catalogueBrands
+            guard brands.count > 1 else {
+                t.expect(false, "the bundled catalogue should have more than one brand")
+                return
+            }
+            model.catalogueBrand = brands[1]
+            t.expect(!model.brand.isEmpty, "Method B is pre-filled from the catalogue, as intended")
+
+            model.method = .scan
+            t.equal(model.brand, "", "brand")
+            t.equal(model.name, "", "name")
+            t.equal(model.materialType, "", "type")
+            t.equal(model.materialID, "", "no catalogue material chosen")
+            t.equal(model.filamentId, "", "no filament id")
+            t.expect(model.decoded == nil, "and nothing claims to have been read")
+        }
+    },
+
+    test("Method A does not invent a type for a filament id the catalogue does not know") { t in
+        onMain {
+            // `makeIntake()` uses the preview catalogue, which is empty: no id resolves.
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "99999", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000777") else { return }
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.materialType, "", "nothing resolved, so nothing is claimed")
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "spool") else { return }
+            // The same answer `logWrittenSpool` gives for the same case; the rail can correct it.
+            t.equal(added.materialType, "", "left blank rather than guessed as PLA")
+            t.equal(added.brand, "", "no brand invented either")
+            t.equal(added.identity?.filamentId, "199999", "but the spool is still its tag's")
+        }
+    },
+
+    test("with one tag required the toast says a tag was read, not both") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let toasts = ToastCenter()
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+            model.setTagsRequired(1)
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.expect(model.allTagsHandled, "one of one is finished")
+            guard let text = t.unwrap(toasts.current?.text, "toast") else { return }
+            t.expect(text.hasPrefix("Tag read"), "worded for one tag: \(text)")
+            t.expect(!text.contains("Both"), "and never claims two")
+        }
+    },
+
+    // The name fallback ran only when there was no identity at all, so a spool this app tagged
+    // for a filament the catalogue has since dropped cloned with no material and Method B sat
+    // blocked on "Choose a material".
+    test("a clone whose filament id the catalogue no longer knows finds its material by name") { t in
+        onMain {
+            let (model, _, cleanup) = await makeCatalogueIntake()
+            defer { cleanup() }
+            guard let row = model.materials(for: model.catalogueBrands.first ?? "").first else {
+                t.expect(false, "the bundled catalogue should have a material")
+                return
+            }
+            let source = Spool(identity: SpoolIdentity(vendorId: "0276", filamentId: "199999",
+                                                       colorHex: "C12E1F", serialNumber: "000123"),
+                               brand: row.brand, name: row.name, materialType: row.materialType,
+                               colorHex: "C12E1F",
+                               tagSource: .spoolworksWritten)
+            model.clone(source)
+            t.equal(model.selectedMaterial?.brand, row.brand, "matched by brand")
+            t.equal(model.selectedMaterial?.name, row.name, "and by name")
+            t.equal(model.writeBlocker, nil, "so the tags can be written")
+        }
+    },
+
+    test("Open it on a duplicate shows that spool whatever the filter") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000123") else { return }
+            let owner = inventory.spool(from: record)
+            inventory.add(owner)
+            inventory.add(sampleSpool("000002", percent: 5))
+            inventory.filter = .low
+
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.duplicate?.id, owner.id, "flagged as already in stock")
+            model.openDuplicate()
+            t.equal(inventory.selected?.id, owner.id,
+                    "the duplicate itself is opened, not the first row the filter happens to list")
         }
     },
 ])
@@ -357,6 +643,382 @@ let cfsViewModelTests = TestSuite(name: "CFS view model", cases: [
             t.equal(model.slotSummary, "no reading yet", "before any poll")
             t.equal(model.note, "Poll the printer to read its CFS.", "and the note matches")
         }
+    },
+
+    // "Poll now" pressed while the timer's poll was already talking to the printer opened a
+    // second SSH session and ran a second reconcile pass over the inventory.
+    test("a poll started while one is in flight does nothing") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let transport = CountingBoxInfoTransport()
+            guard let fixture = try? PrinterFixture(transport: transport) else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+            fixture.model.setHost("printer.local", for: .k2)
+            fixture.model.setPassword("hunter2", for: .k2)
+
+            let model = CFSViewModel(transport: transport, printers: fixture.model, inventory: inventory)
+            t.expect(model.canPoll, "the fixture can poll")
+
+            let first = Task { @MainActor in await model.poll() }
+            let second = Task { @MainActor in await model.poll() }
+            await first.value
+            await second.value
+            t.equal(transport.boxInfoCalls, 1, "one session, not two")
+        }
+    },
+])
+
+
+// MARK: - Printer and materials wiring
+
+/// A `PrinterTransporting` that counts CFS reads and takes long enough for a second call to
+/// overlap the first. Everything else fails, as the stand-in does.
+private final class CountingBoxInfoTransport: PrinterTransporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var boxInfoCalls: Int { lock.withLock { count } }
+
+    func remoteDatabaseVersion(_: PrinterCredentials, family _: PrinterType) async throws -> String {
+        throw PrinterUIError.notImplemented
+    }
+
+    func downloadDatabase(_: PrinterCredentials, family _: PrinterType) async throws -> Data {
+        throw PrinterUIError.notImplemented
+    }
+
+    func uploadDatabase(_: Data, credentials _: PrinterCredentials, family _: PrinterType,
+                        options _: UploadOptions,
+                        progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String {
+        throw PrinterUIError.notImplemented
+    }
+
+    func resetDatabase(_: Data, credentials _: PrinterCredentials, family _: PrinterType,
+                       progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws {
+        throw PrinterUIError.notImplemented
+    }
+
+    func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
+        throw PrinterUIError.notImplemented
+    }
+
+    func downloadBoxInfo(_: PrinterCredentials, family _: PrinterType) async throws -> MaterialBoxInfo {
+        lock.withLock { count += 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        throw PrinterUIError.remote("stub printer")
+    }
+}
+
+private func sampleCatalogueFilament(_ id: String, name: String = "Test PLA") -> Filament {
+    Filament(printerIntName: PrinterType.k2.printerIntName,
+             kvParam: ["filament_type": "PLA", "filament_vendor": "Generic"],
+             base: MaterialBase(id: id, brand: "Generic", name: name, materialType: "PLA"))
+}
+
+/// Writes a catalogue straight into `storage`, so a printer is "installed" without going through
+/// the bundled seed.
+private func installCatalogue(_ storage: MaterialStorage, family: PrinterType = .k2,
+                              ids: [String], version: String = "1700000000") throws {
+    let file = MaterialDatabaseFile(list: ids.map { sampleCatalogueFilament($0) }, version: version)
+    try storage.createDirectoryIfNeeded()
+    try MaterialDatabase.encode(file).write(to: storage.url(for: family), options: .atomic)
+}
+
+private func catalogueOnDisk(_ storage: MaterialStorage,
+                             family: PrinterType = .k2) throws -> MaterialDatabaseFile {
+    try MaterialDatabase.decode(Data(contentsOf: storage.url(for: family)))
+}
+
+/// A printer view model over a scratch directory, a scratch defaults suite and an in-memory
+/// credential file — the same three-way wiring as `AppEnvironment`, with nothing shared with the
+/// machine that runs the test.
+@MainActor
+private struct PrinterFixture {
+    let suite: String
+    let dir: URL
+    let defaults: UserDefaults
+    let storage: MaterialStorage
+    let backing: InMemoryCredentialStore
+    let model: PrinterViewModel
+
+    init(transport: PrinterTransporting = UnimplementedPrinterTransport(),
+         ids: [String] = ["00001"]) throws {
+        let suite = "sw-printers-\(UUID().uuidString)"
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(suite, isDirectory: true)
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let storage = MaterialStorage(directory: dir)
+        let backing = InMemoryCredentialStore()
+        // Hosts resolve through the same defaults the view model writes, which is what makes
+        // the order of "forget the address" and "clear the password" observable.
+        let credentials = LocalPrinterCredentialStore(
+            backing: backing,
+            hostForFamily: { PrinterSettings.host(for: $0, in: defaults) })
+        try installCatalogue(storage, ids: ids)
+        self.suite = suite
+        self.dir = dir
+        self.defaults = defaults
+        self.storage = storage
+        self.backing = backing
+        self.model = PrinterViewModel(storage: storage, transport: transport,
+                                      credentials: credentials, defaults: defaults)
+    }
+
+    func cleanup() {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
+/// Polls until `condition` holds or `timeout` passes, for work the model schedules on its own.
+@MainActor
+private func settle(timeout: TimeInterval = 5, until condition: () -> Bool) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() && Date() < deadline {
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+}
+
+let printerViewModelTests = TestSuite(name: "Printer and materials wiring", cases: [
+
+    // Every upload used to run with the service's defaults — prevent on, reboot on — whatever the
+    // sheet said; and the reset path stamped the factory catalogue with the prevent sentinel.
+    test("the sheet's upload options reach the printer service unchanged") { t in
+        onMain {
+            let mock = MockPrinterTransport()
+            let live = LivePrinterTransport(makeTransport: { _, _ in mock })
+            let credentials = PrinterCredentials(host: "printer.local", password: "x")
+            let path = PrinterModel(profileName: "K2", family: PrinterFamily(.k2)).materialDatabasePath
+            let report: @Sendable (PrinterProgress) -> Void = { _ in }
+            guard let local = try? MaterialDatabase.encode(MaterialDatabaseFile(version: "1700000000")),
+                  let remote = try? MaterialDatabase.encode(MaterialDatabaseFile(version: "1600000000"))
+            else { t.record("could not encode fixtures", file: #file, line: #line); return }
+            mock.seed(path, with: remote)
+
+            do {
+                // Updates allowed, no reboot: stamped with the printer's own version, no restart.
+                let stamped = try await live.uploadDatabase(
+                    local, credentials: credentials, family: .k2,
+                    options: UploadOptions(preventDatabaseUpdates: false, reboot: false),
+                    progress: report)
+                t.equal(stamped, "1600000000", "the printer's version is what went on the wire")
+                t.equal(mock.commands, [], "declining the reboot means no reboot")
+
+                // Updates blocked, reboot on: the sentinel, and exactly one reboot — the service's.
+                let sentinel = try await live.uploadDatabase(
+                    local, credentials: credentials, family: .k2,
+                    options: UploadOptions(preventDatabaseUpdates: true, reboot: true),
+                    progress: report)
+                t.equal(sentinel, MaterialDatabaseDocument.preventUpdatesVersion, "the sentinel")
+                t.equal(mock.commands, [PrinterCommand.reboot], "one reboot, issued once")
+
+                // Reset: the factory catalogue keeps its own version, and the printer restarts.
+                try await live.resetDatabase(local, credentials: credentials, family: .k2,
+                                             progress: report)
+                let onPrinter = try t.unwrap(mock.uploads[path], "uploaded reset").map {
+                    try MaterialDatabaseDocument.version(in: $0)
+                }
+                t.equal(onPrinter, "1700000000", "not the sentinel — a reset hands updates back")
+                t.equal(mock.commands.count, 2, "a reset always reboots")
+            } catch {
+                t.record("threw unexpectedly: \(error)", file: #file, line: #line)
+            }
+        }
+    },
+
+    // Removal forgot the address first, so the credential store — keyed by host — had nothing to
+    // delete under, and the root password stayed in the file.
+    test("removing a printer deletes its password from the credential file") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+            fixture.model.setHost("k2.local", for: .k2)
+            fixture.model.setPassword("hunter2", for: .k2)
+            t.equal(try? fixture.backing.password(forHost: "k2.local"), "hunter2", "saved under the host")
+
+            guard let printer = t.unwrap(fixture.model.printers.first, "printer") else { return }
+            fixture.model.requestRemoval(of: printer)
+            await fixture.model.confirmRemoval()
+
+            t.expect(fixture.model.printers.isEmpty, "gone from the list")
+            t.equal(try? fixture.backing.password(forHost: "k2.local"), nil, "and the password went with it")
+            t.equal(PrinterSettings.host(for: .k2, in: fixture.defaults), "", "and so did the address")
+        }
+    },
+
+    // "Use Factory Default", then type the address: the password has to outlive the address being
+    // set, be saved under it, and be reported so the CFS poll runs.
+    test("a password entered before the address is kept, saved under it, and reported") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+
+            let factory = PrinterSettings.factoryPassword(for: .k2)
+            fixture.model.setPassword(factory, for: .k2)
+            t.equal(fixture.model.password(for: .k2), factory, "held while there is no address")
+
+            fixture.model.setHost("192.168.1.42", for: .k2)
+            t.equal(fixture.model.password(for: .k2), factory, "still there once there is one")
+            t.equal(try? fixture.backing.password(forHost: "192.168.1.42"), factory, "and in the file, under it")
+            t.expect(fixture.model.printers.first?.hasStoredPassword == true, "so the CFS poll can run")
+
+            // Re-addressing to a machine nothing is known about says so, rather than keeping the
+            // old answer.
+            fixture.model.setHost("other.local", for: .k2)
+            t.expect(fixture.model.printers.first?.hasStoredPassword == false,
+                     "no password is known for the new machine")
+            t.equal(fixture.model.password(for: .k2), "", "and none is offered")
+        }
+    },
+
+    // The Materials window kept its own copy of the catalogue and wrote that copy back on the next
+    // edit, so a download merged on disk from the Printers window was gone after the next save.
+    test("a download merged on disk is not overwritten by the next filament edit") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            let printers = fixture.model
+            // The wiring `AppEnvironment` makes.
+            printers.onDatabaseChanged = { [weak materials] family in
+                materials?.noteExternalChange(to: family)
+            }
+            await materials.load()
+            await printers.refresh()
+            t.equal(materials.rows.count, 1, "loaded")
+
+            // A download lands on disk through the Printers window.
+            guard let incoming = try? MaterialDatabase.encode(
+                MaterialDatabaseFile(list: [sampleCatalogueFilament("00002")], version: "1800000000"))
+            else { t.record("could not encode the download", file: #file, line: #line); return }
+            t.noThrow("merging the download") {
+                try printers.mergeDownloadedDatabase(incoming, into: .k2)
+            }
+            printers.onDatabaseChanged?(.k2)
+            await settle { materials.rows.count == 2 }
+            t.equal(materials.rows.count, 2, "the browser reloaded")
+            t.equal(materials.version, "1800000000", "with the downloaded version")
+
+            // Then an edit in the browser.
+            guard var edited = materials.rows.first(where: { $0.materialID == "00001" })?.filament
+            else { t.record("the original record is missing", file: #file, line: #line); return }
+            edited.base.name = "Renamed"
+            let failure = await materials.update(edited)
+            t.expect(failure == nil, "saved: \(failure ?? "")")
+
+            let onDisk = try? catalogueOnDisk(fixture.storage)
+            t.equal(onDisk?.result.list.map(\.base.id).sorted(), ["00001", "00002"],
+                    "the download is still on disk")
+            t.equal(onDisk?.result.list.first { $0.base.id == "00001" }?.base.name, "Renamed",
+                    "and so is the edit")
+            t.equal(onDisk?.result.version, "1800000000", "and the version")
+        }
+    },
+
+    // The one case where reloading would lose something: a write that failed and is waiting on
+    // Retry. The banner has promised to keep those edits, so the change is flagged instead.
+    test("a change on disk under unsaved edits is flagged rather than silently reloaded") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            let printers = fixture.model
+            printers.onDatabaseChanged = { [weak materials] family in
+                materials?.noteExternalChange(to: family)
+            }
+            await materials.load()
+            await printers.refresh()
+
+            // Make the write fail, edit, then let writes succeed again.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.dir.path)
+            guard var edited = materials.rows.first?.filament
+            else { t.record("no record", file: #file, line: #line); return }
+            edited.base.name = "Renamed"
+            _ = await materials.update(edited)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.dir.path)
+            t.expect(materials.saveFailure != nil, "the write is reported as pending")
+
+            // A download lands on disk meanwhile.
+            t.noThrow("writing the external change") {
+                try installCatalogue(fixture.storage, ids: ["00001", "00002"], version: "1800000000")
+            }
+            printers.onDatabaseChanged?(.k2)
+            try? await Task.sleep(nanoseconds: 50_000_000)   // room for a wrongly scheduled reload
+
+            t.expect(materials.diskChangedWhileUnsaved, "flagged")
+            t.equal(materials.rows.count, 1, "the unsaved edit is still what is shown")
+            t.equal(materials.rows.first?.name, "Renamed", "unchanged")
+
+            // Retry writes the edits, as the banner promised, and the flag clears.
+            await materials.retrySave()
+            t.expect(materials.saveFailure == nil, "saved")
+            t.expect(!materials.diskChangedWhileUnsaved, "memory and disk agree again")
+            t.equal((try? catalogueOnDisk(fixture.storage))?.result.list.first?.base.name, "Renamed")
+        }
+    },
+
+    // `Table` traps on duplicate identifiers, and a hand-edited file can carry two records with
+    // the same id.
+    test("a file with duplicate ids still gives the table unique rows") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture(ids: ["00001", "00001", "00002"]) else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            await materials.load()
+
+            t.equal(materials.rows.count, 3, "every record is listed")
+            t.equal(Set(materials.rows.map(\.id)).count, 3, "under distinct identifiers")
+            t.equal(materials.rows.map(\.materialID), ["00001", "00001", "00002"],
+                    "without renaming any record")
+            t.equal(materials.existingIDs, ["00001", "00002"], "the duplicate check sees catalogue ids")
+        }
+    },
+
+    // A tag stores the id in five bytes, so a five-character id with an accent was accepted here
+    // and refused at the tag. And the drying fields silently fell back to the original on save.
+    test("the editor refuses ids a tag cannot hold and non-numeric drying fields") { t in
+        var draft = FilamentDraft()
+        draft.id = "É1001"
+        draft.brand = "Generic"
+        draft.name = "Test"
+        draft.materialType = "PLA"
+        draft.minTemp = "190"
+        draft.maxTemp = "240"
+        draft.density = "1.24"
+        draft.diameter = "1.75"
+        draft.softeningTemp = "0"
+        draft.dryingTemp = "warm"
+        draft.dryingTime = "8"
+        draft.params = [KVParam(key: "filament_type", value: "PLA")]
+
+        let errors = draft.errors(existingIDs: [], isEditingExisting: false)
+        t.expect(errors[.id] != nil, "five characters, six bytes")
+        t.expect(errors[.dryingTemp] != nil, "not a number")
+        t.expect(errors[.softeningTemp] == nil, "a plain 0 is fine")
+        t.expect(errors[.dryingTime] == nil, "and so is 8")
+
+        draft.id = "P1001"
+        draft.dryingTemp = "55"
+        t.expect(draft.errors(existingIDs: [], isEditingExisting: false).isEmpty, "all fixed")
     },
 ])
 
@@ -562,6 +1224,25 @@ private func makeIntake() -> (IntakeViewModel, InventoryViewModel, URL) {
     return (model, inventory, dir)
 }
 
+/// An intake model over the bundled catalogue, for the cases that need real brands and ids. The
+/// preview catalogue `makeIntake()` uses is empty, which is what every other case wants.
+@MainActor
+private func makeCatalogueIntake() async -> (IntakeViewModel, InventoryViewModel, () -> Void) {
+    let catalogue = FileManager.default.temporaryDirectory
+        .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+    let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+    await materials.load()
+    let (inventory, _, dir) = makeInventory()
+    let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                inventory: inventory,
+                                materials: materials,
+                                toasts: ToastCenter())
+    return (model, inventory, {
+        try? FileManager.default.removeItem(at: catalogue)
+        try? FileManager.default.removeItem(at: dir)
+    })
+}
+
 private func read(uid: [UInt8], record: SpoolRecord?) -> TagReadResult {
     TagReadResult(uid: uid,
                   derivedKey: MifareKey.default,
@@ -680,6 +1361,29 @@ let intakeAutoReadTests = TestSuite(name: "Intake auto-read", cases: [
             t.equal(model.tagsHandled, 1, "and it counts again")
         }
     },
+
+    // Tag A absorbed, tag B refused as a different spool, Discard — B is still on the reader,
+    // and the next read of it has to count even though it is a UID the model has just seen. The
+    // view used to key absorption on that UID, so an equal value after the reset never fired.
+    test("a tag refused as a mismatch counts once the intake it clashed with is discarded") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1),
+                  let other = try? SpoolRecord(materialId: "02003", colorRGB: "8A8A88",
+                                               filamentLength: .kg1) else { return }
+            model.absorb(read(uid: [1, 2, 3, 4], record: first))
+            model.absorb(read(uid: [5, 6, 7, 8], record: other))
+            t.expect(model.mismatch != nil, "refused while the first spool is in progress")
+
+            model.reset()
+            model.absorb(read(uid: [5, 6, 7, 8], record: other))
+            t.equal(model.tagsHandled, 1, "the same read, presented again, fills the first slot")
+            t.equal(model.mismatch, nil, "no clash left")
+            t.equal(model.filamentId, other.filamentId, "and the form holds the second spool")
+        }
+    },
 ])
 
 
@@ -788,6 +1492,28 @@ let intakeSlotStateTests = TestSuite(name: "Intake slot states", cases: [
             t.expect(!model.isArmedToWrite, "reading is not writing")
             model.absorbWrite(uid: [1, 2, 3, 4])
             t.equal(model.tagsHandled, 0, "and a write outcome is ignored here")
+        }
+    },
+
+    // "Write now" on the second row with the first row's tag still on the reader rewrites that
+    // tag. The confirmation sheet used to tick the second slot off by index regardless; a write
+    // now counts only through the UID, so the same tag stays one side.
+    test("rewriting the first tag from the second slot does not claim both sides") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4], record: record)
+            t.equal(model.tags[1].state, .ready, "the second slot is next")
+
+            // The second slot's write lands on the same physical tag.
+            model.absorbWrite(uid: [1, 2, 3, 4], record: record)
+            t.equal(model.tagsHandled, 1, "still one side")
+            t.equal(model.tags[1].state, .ready, "the second is still outstanding")
+            t.equal(model.tagSummary, "1 of 2 written and verified", "and the summary says so")
+            t.expect(!model.allTagsHandled, "nothing claims the spool is done")
         }
     },
 ])

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One manufacturer's colour, as measured.
 public struct FilamentSwatch: Codable, Hashable, Sendable, Identifiable {
@@ -105,13 +106,23 @@ public struct FilamentSwatchLibrary: Sendable {
     /// Loads the bundled library. Returns an empty one rather than throwing: a missing colour list
     /// should cost the user a convenience, not the ability to write a tag.
     public static func bundled() -> FilamentSwatchLibrary {
+        // Empty is the right outcome, but a silent one is not: `JSONDecoder` fails the whole
+        // array on one bad element, so a single malformed record in a regenerated file would
+        // empty all 2,258 swatches and the picker would simply show nothing, with no way for
+        // anyone to learn why. The reason goes to the log.
+        let log = Logger(subsystem: "com.obsidiang.spoolworks", category: "resources")
         guard let url = SpoolworksCoreResources.bundle?.url(forResource: "filament-swatches",
-                                                            withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let document = try? JSONDecoder().decode(Document.self, from: data) else {
+                                                            withExtension: "json") else {
+            log.error("filament-swatches.json is not in the resource bundle; the swatch picker will be empty")
             return FilamentSwatchLibrary(swatches: [])
         }
-        return FilamentSwatchLibrary(swatches: document.swatches)
+        do {
+            let document = try JSONDecoder().decode(Document.self, from: try Data(contentsOf: url))
+            return FilamentSwatchLibrary(swatches: document.swatches)
+        } catch {
+            log.error("filament-swatches.json could not be read, so the swatch picker will be empty: \(String(describing: error), privacy: .public)")
+            return FilamentSwatchLibrary(swatches: [])
+        }
     }
 
     public func swatches(for manufacturer: String) -> [FilamentSwatch] {

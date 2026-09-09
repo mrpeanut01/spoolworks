@@ -193,7 +193,9 @@ public final class TagService {
             recordError = error
         }
 
-        let sector2 = try? readSector2(derivedKey: derivedKey)
+        // Sector 2 refusing to open is non-fatal; the link to the card failing is not. A `try?`
+        // here used to turn a tag lifted after sector 1 into a read that looked complete.
+        let sector2 = try unlessCardRefuses { try readSector2(derivedKey: derivedKey) }
 
         return TagReadResult(uid: uid,
                              derivedKey: derivedKey,
@@ -252,8 +254,11 @@ public final class TagService {
         let sector2Payload = try Self.sector2Payload(printerType: printerType)
 
         // SAFETY: full dump before anything is written. Both known keys are offered so a
-        // half-programmed tag still backs up completely.
-        let backup = try card.dumpAll(keys: [derivedKey, .default])
+        // half-programmed tag still backs up completely. The factory key goes first: fifteen of
+        // the sixteen sectors are on it whatever the tag's state, and every failed attempt costs
+        // a card reset — which is the field churn that makes the reader drop a stationary tag.
+        // Derived-first cost thirty resets per write on an ordinary tag; this order costs one.
+        let backup = try card.dumpAll(keys: [.default, derivedKey], keyTypes: keyTypeOrder)
         // Deliver it now. Reaching the caller only via a successful return means it is absent in
         // exactly the cases it exists for.
         onBackup?(backup)
@@ -304,10 +309,11 @@ public final class TagService {
         var wroteSector2 = false
         // Windows skips sector 2 in silence if it cannot authenticate (`MainForm.cs:501-511`).
         // The skip is preserved so a tag with a keyed sector 2 still gets a valid sector 1, but
-        // it is reported rather than hidden.
-        if (try? card.authenticateAny(sector: Self.printerSector,
-                                      keys: [.default, derivedKey],
-                                      keyTypes: keyTypeOrder)) != nil {
+        // it is reported rather than hidden — and only the card's refusal is skipped, never a
+        // lifted tag.
+        if try unlessCardRefuses({ try card.authenticateAny(sector: Self.printerSector,
+                                                            keys: [.default, derivedKey],
+                                                            keyTypes: keyTypeOrder) }) != nil {
             for (index, block) in Self.printerBlocks.enumerated() {
                 let chunk = Array(sector2Payload[(index * 16)..<((index + 1) * 16)])
                 try card.writeBlock(block, data: chunk)
@@ -321,9 +327,23 @@ public final class TagService {
         // sector whose keys changed underneath us, both produce a "successful" write that did not
         // land. Reading the record back and comparing is the only honest confirmation, and
         // reporting a silent failure as success is the worst outcome available here.
-        try verifyRecord(expected: cipherBlocks, derivedKey: derivedKey, wroteTrailer: wroteTrailer)
+        // After a trailer write the sector answers only to the derived key. Before one, the key
+        // is unchanged, so offer both rather than assuming which applies.
+        try verify(sector: Self.recordSector,
+                   keys: wroteTrailer ? [derivedKey] : [derivedKey, .default],
+                   blocks: Self.recordBlocks,
+                   expected: cipherBlocks,
+                   reopenFailure: wroteTrailer
+                       ? "the tag would not re-open with the key just written to it"
+                       : "the tag would not re-open after writing")
         if wroteSector2 {
-            try verifySector2(expected: sector2Payload, derivedKey: derivedKey)
+            try verify(sector: Self.printerSector,
+                       keys: [.default, derivedKey],
+                       blocks: Self.printerBlocks,
+                       expected: Self.printerBlocks.indices.map {
+                           Array(sector2Payload[($0 * 16)..<(($0 + 1) * 16)])
+                       },
+                       reopenFailure: "sector 2 would not re-open after writing")
         }
 
         return TagWriteResult(uid: uid,
@@ -335,57 +355,51 @@ public final class TagService {
                               writtenBlocks: written)
     }
 
-    /// Re-reads blocks 8–10 and confirms the plaintext printer-type string landed.
-    ///
-    /// Sector 2 was previously trusted purely because three writes returned 90 00 — the same
-    /// reasoning rejected for sector 1.
-    private func verifySector2(expected: [UInt8], derivedKey: MifareKey) throws {
-        guard (try? card.authenticateAny(sector: Self.printerSector,
-                                         keys: [.default, derivedKey],
-                                         keyTypes: keyTypeOrder)) != nil else {
-            throw TagError.verificationFailed(block: Self.printerBlocks.first ?? 8,
-                                              detail: "sector 2 would not re-open after writing")
-        }
-        for (index, block) in Self.printerBlocks.enumerated() {
-            let want = Array(expected[(index * 16)..<((index + 1) * 16)])
-            let got: [UInt8]
-            do { got = try card.readBlock(block) }
-            catch {
-                throw TagError.verificationFailed(block: block,
-                                                  detail: "could not read it back (\(error.localizedDescription))")
-            }
-            guard got == want else {
-                throw TagError.verificationFailed(
-                    block: block,
-                    detail: "expected \(want.hexString) but the tag holds \(got.hexString)")
-            }
+    /// True for a failure the *card* reported — a status word, every key refused, a short
+    /// answer — as opposed to the link to the card failing.
+    private static func isCardAnswer(_ error: PCSCError) -> Bool {
+        switch error {
+        case .statusWord, .authenticationFailed, .truncatedResponse: return true
+        default: return false
         }
     }
 
-    /// Re-reads blocks 4–6 and confirms they hold exactly what was just written.
+    /// Runs a step whose card-level refusal is an acceptable outcome, returning `nil` for it.
+    ///
+    /// A transport failure — the tag lifted off the antenna, the reader reset underneath us —
+    /// propagates with its own type. Laundering it into "sector 2 unreadable" made a lifted tag
+    /// look like a complete read, and laundering it into ``TagError/verificationFailed`` told
+    /// the user the key just written did not open the tag while also hiding the one error
+    /// `ReaderMonitor` knows how to retry.
+    private func unlessCardRefuses<T>(_ body: () throws -> T) throws -> T? {
+        do { return try body() }
+        catch let error as PCSCError where Self.isCardAnswer(error) { return nil }
+    }
+
+    /// Re-authenticates a sector and confirms each block holds exactly the bytes just written.
     ///
     /// Authentication is re-run first, because a trailer write changes the sector's keys: after
-    /// programming, only the derived key opens the sector, and continuing on the pre-write
-    /// session would read through stale authentication.
-    private func verifyRecord(expected: [[UInt8]], derivedKey: MifareKey, wroteTrailer: Bool) throws {
-        // After a trailer write the sector answers only to the derived key. Before one, the key
-        // is unchanged, so offer both rather than assuming which applies.
-        let keys: [MifareKey] = wroteTrailer ? [derivedKey] : [derivedKey, .default]
-        guard (try? card.authenticateAny(sector: Self.recordSector,
-                                         keys: keys,
-                                         keyTypes: keyTypeOrder)) != nil else {
-            throw TagError.verificationFailed(
-                block: Self.recordBlocks.first ?? 4,
-                detail: wroteTrailer
-                    ? "the tag would not re-open with the key just written to it"
-                    : "the tag would not re-open after writing")
+    /// programming, only the derived key opens sector 1, and continuing on the pre-write session
+    /// would read through stale authentication. Sector 2 was previously trusted purely because
+    /// three writes returned 90 00 — the same reasoning rejected for sector 1.
+    ///
+    /// Only the card's own answers become ``TagError/verificationFailed``; see
+    /// ``unlessCardRefuses(_:)`` for why a transport failure keeps its type.
+    private func verify(sector: Int,
+                        keys: [MifareKey],
+                        blocks: [Int],
+                        expected: [[UInt8]],
+                        reopenFailure: String) throws {
+        guard try unlessCardRefuses({
+            try card.authenticateAny(sector: sector, keys: keys, keyTypes: keyTypeOrder)
+        }) != nil else {
+            throw TagError.verificationFailed(block: blocks.first ?? 0, detail: reopenFailure)
         }
-
-        for (block, want) in zip(Self.recordBlocks, expected) {
+        for (block, want) in zip(blocks, expected) {
             let got: [UInt8]
             do {
                 got = try card.readBlock(block)
-            } catch {
+            } catch let error as PCSCError where Self.isCardAnswer(error) {
                 throw TagError.verificationFailed(block: block,
                                                   detail: "could not read it back (\(error.localizedDescription))")
             }

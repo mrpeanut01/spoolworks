@@ -158,8 +158,12 @@ public struct MaterialDatabaseFile: Codable, Hashable, Sendable {
             }
 
             // `count` is the file's own claim and is preserved as read; `save()` recomputes it.
-            count = try c.decodeIfPresent(Int.self, forKey: key(.count)) ?? list.count
-            version = try c.decodeIfPresent(String.self, forKey: key(.version)) ?? MaterialVersion.unknown
+            // Both are read as leniently as the records are: an unquoted version or a quoted
+            // count from a firmware this app has not met must not refuse the whole catalogue
+            // when every record in it is fine.
+            count = try c.decodeIfPresent(JSONValue.self, forKey: key(.count))?.intValue ?? list.count
+            version = try c.decodeIfPresent(JSONValue.self, forKey: key(.version))?.stringValue
+                ?? MaterialVersion.unknown
 
             let modelled = Set(CodingKeys.allCases.map(\.rawValue))
             var extras: [String: JSONValue] = [:]
@@ -560,7 +564,12 @@ public final class MaterialDatabase {
             rollBackToPersistedState()
             throw error
         }
-        persistedState = file
+        // The records that would not decode were never in `list`, so the file just written no
+        // longer holds them: the catalogue is complete again, in memory and on disk. Until this
+        // point they stay in the snapshot, so a failed save rolls back to a state that still
+        // admits the disk is incomplete rather than one that silently claims it is clean.
+        recordFailures = []
+        persistedState = snapshot()
         hasUnsavedChanges = false
     }
 
@@ -589,6 +598,7 @@ public final class MaterialDatabase {
                                         code: code, msg: msg, additionalFields: envelopeFields)
         file.result.count = filaments.count
         file.result.additionalFields = resultFields
+        file.result.recordFailures = recordFailures
         return file
     }
 

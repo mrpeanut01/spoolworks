@@ -82,7 +82,7 @@ struct RootView: View {
                       printers: env.printerModel, monitor: env.monitor)
             Rule()
             HStack(spacing: 0) {
-                Sidebar(env: env)
+                Sidebar(env: env, inventory: env.inventoryModel)
                 Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -313,6 +313,10 @@ enum ManageWindow: String, CaseIterable, Identifiable {
 
 private struct Sidebar: View {
     @ObservedObject var env: AppEnvironment
+    // Observed directly, for the same reason `HeaderBar` observes its models directly: the
+    // inventory is a plain `let` on `AppEnvironment`, so a change to it does not republish
+    // through `env`, and the badge sat on a stale count until the user changed section.
+    @ObservedObject var inventory: InventoryViewModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -368,7 +372,7 @@ private struct Sidebar: View {
     private func badge(for item: SidebarItem) -> String {
         switch item {
         case .inventory:
-            let n = env.inventoryModel.inventory.active.count
+            let n = inventory.inventory.active.count
             return n == 0 ? "" : "\(n)"
         // Nothing for Printer & CFS. The badge on the row above it is a count of *spools*, so a
         // number here read as spools too — "1×" beside Printer & CFS says one of something, and

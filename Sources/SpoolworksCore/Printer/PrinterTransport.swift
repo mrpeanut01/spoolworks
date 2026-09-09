@@ -259,3 +259,11 @@ public final class MockPrinterTransport: PrinterTransport, @unchecked Sendable {
         if let scheduled, scheduled.0 == index { throw scheduled.1 }
     }
 }
+
+/// `Error.localizedDescription` — which is what every UI surface shows — reads `errorDescription`,
+/// not `description`. Without this the CFS strip and the upload sheets showed "The operation
+/// couldn't be completed. (SpoolworksCore.PrinterTransportError error 3.)" in place of the sentence the case
+/// was written to say.
+extension PrinterTransportError: LocalizedError {
+    public var errorDescription: String? { description }
+}
