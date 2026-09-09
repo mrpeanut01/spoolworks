@@ -97,9 +97,12 @@ final class AppEnvironment: ObservableObject {
                                           materials: self.materialsModel,
                                           toasts: toasts)
         self.intakeModel = intakeModel
+        // Everything the closure reaches is captured weakly, `tagModel` included: the closure is
+        // owned by `tagModel`, which is owned by this environment, so a strong `self` here was a
+        // cycle. Harmless for a process-lifetime object, but not what the other captures say.
         self.tagModel.onWriteSucceeded = {
             [weak inventoryModel, weak intakeModel,
-             weak materials = self.materialsModel] summary in
+             weak materials = self.materialsModel, weak tagModel = self.tagModel] summary in
             guard let inventoryModel else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
             // verified before committing, so a write made there logs nothing on its own. It does
@@ -128,7 +131,7 @@ final class AppEnvironment: ObservableObject {
                 // Without this the second tag was a different serial, so it was a different
                 // identity, so it became a second spool in the inventory — which is what "the tags
                 // did not save" actually was.
-                self.tagModel.draft.serialNumber = summary.record.serialNumber
+                tagModel?.draft.serialNumber = summary.record.serialNumber
                 return
             }
             inventoryModel.logWrittenSpool(record: summary.record,
@@ -160,10 +163,10 @@ final class AppEnvironment: ObservableObject {
         if let colour = Color(tagHex: spool.colorHex) { tagModel.draft.color = colour }
     }
 
-    static let tagMemoryWindowID = "tag-memory"
-    static let materialsWindowID = "materials"
-    static let printersWindowID = "printers"
-    static let locationsWindowID = "locations"
+    nonisolated static let tagMemoryWindowID = "tag-memory"
+    nonisolated static let materialsWindowID = "materials"
+    nonisolated static let printersWindowID = "printers"
+    nonisolated static let locationsWindowID = "locations"
 }
 
 // MARK: - App
@@ -230,7 +233,10 @@ public struct SpoolworksApp: App {
             TagMemoryView(monitor: env.monitor, settings: env.settings).nonRestorableWindow()
         }
         .defaultSize(width: 680, height: 640)
-        .keyboardShortcut("m", modifiers: .command)
+        // ⇧⌘M, not ⌘M: plain ⌘M is Window ▸ Minimize on every Mac, and a menu item earlier in
+        // the bar that claims it wins the dispatch — so with ⌘M here no window could be
+        // minimised from the keyboard, and the shortcut also collided with the Tag menu's copy.
+        .keyboardShortcut("m", modifiers: [.command, .shift])
 
         // There is deliberately no `Settings` scene. §8.1 required that *if* there are app
         // preferences they must be the ⌘, scene rather than a modal dialog — and there are now no
@@ -289,7 +295,7 @@ struct SpoolworksCommands: Commands {
             Button("Read Tag Memory") {
                 openWindow(id: AppEnvironment.tagMemoryWindowID)
             }
-            .keyboardShortcut("m", modifiers: .command)
+            .keyboardShortcut("m", modifiers: [.command, .shift])
 
             Divider()
 
