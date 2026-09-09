@@ -157,13 +157,18 @@ private struct HeaderBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+            HStack(alignment: .center, spacing: Theme.Spacing.s) {
+                // The mark, not an accent square. A 9 pt square of the accent colour beside the
+                // wordmark reads as a red dot — which is exactly what it was called — and says
+                // nothing about what the app is. `SpoolMark` is the app icon's own composition.
+                SpoolMark(size: 20)
                 Text("SPOOLWORKS")
                     .font(.system(size: 19, weight: .heavy))
                     .tracking(-0.4)
                     .foregroundStyle(Theme.label)
-                Rectangle().fill(Theme.accent).frame(width: 9, height: 9)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Spoolworks")
             .frame(width: Theme.sidebarWidth, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
