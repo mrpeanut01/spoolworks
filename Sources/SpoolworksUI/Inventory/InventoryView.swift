@@ -255,17 +255,11 @@ private struct InventoryRow: View {
                             .font(.system(size: 10))
                             .foregroundStyle(spool.remainingPercent < 15 ? Theme.danger : Theme.warning)
                     }
-                    // Both figures. The percentage is what the app stores and what the bar draws;
-                    // grams is what you compare against a print's estimate and what a set of
-                    // scales says. Reading one and having to do the arithmetic for the other is
-                    // work the row can do — and the arithmetic needs the spool's size, which is
-                    // not in this column.
+                    // The percentage alone. Grams was tried here and taken back out: the rail
+                    // already carries it for the selected spool, and in a column you scan down,
+                    // two numbers per row is two numbers to read past.
                     Text(spool.remainingLabel)
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    Text(spool.remainingGramsLabel)
-                        .font(Theme.monoSmall)
-                        .foregroundStyle(Theme.secondaryLabel)
-                        .lineLimit(1)
                 }
                 .frame(width: layout.width(.remaining), alignment: .trailing)
 

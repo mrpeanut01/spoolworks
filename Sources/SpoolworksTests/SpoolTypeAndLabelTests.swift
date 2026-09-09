@@ -433,8 +433,11 @@ let intakeReturnsToScanTests = TestSuite(name: "Intake returns to Method A", cas
 
 let weightLadderTests = TestSuite(name: "Weight ladder", cases: [
 
-    test("every hundred grams from 100 to 1000 has a code") { t in
-        for grams in stride(from: 100, through: 1000, by: 100) {
+    test("every size on the list has a code derived the same way") { t in
+        // Provenance is in `FilamentLength`: 2 kg and 3 kg are Polymaker, 3 kg and 5 kg are Sunlu,
+        // 10 kg is the industrial format, 750 g is Fillamentum and ColorFabb, 250 g is the usual
+        // sample spool. 4 kg was looked for and not found on sale, so it is deliberately absent.
+        for grams in [100, 200, 250, 500, 600, 750, 1000, 2000, 3000, 5000, 10_000] {
             guard let length = t.unwrap(FilamentLength.forGrams(grams), "\(grams) g") else { continue }
             t.equal(length.grams, grams, "\(grams) g round-trips")
             // The codes are not published for the new rungs; they are derived at the ratio the
@@ -443,6 +446,24 @@ let weightLadderTests = TestSuite(name: "Weight ladder", cases: [
                     "\(grams) g derives its own code")
             t.equal(FilamentLength(rawValue: length.rawValue)?.grams, grams, "and decodes back")
         }
+    },
+
+    test("four kilos is absent, because nothing sells one") { t in
+        t.equal(FilamentLength.forGrams(4000), nil,
+                "invented sizes were removed; this one was never found on sale")
+        for invented in [300, 400, 700, 800, 900] {
+            t.equal(FilamentLength.forGrams(invented), nil,
+                    "\(invented) g existed only to make a picker step evenly")
+        }
+    },
+
+    test("the tag can hold the bulk sizes, which is not obvious from a four-digit field") { t in
+        // `floor(grams x 0.33)` metres in four ASCII digits reaches 30 kg, so the ceiling on this
+        // list is the market and not the format.
+        t.equal(FilamentLength.forGrams(10_000)?.rawValue, "3300", "10 kg fits in four digits")
+        t.equal(FilamentLength.forGrams(2000)?.rawValue, "0660", "2 kg")
+        t.equal(FilamentLength.forGrams(3000)?.rawValue, "0990", "3 kg")
+        t.equal(FilamentLength.forGrams(5000)?.rawValue, "1650", "5 kg")
     },
 
     test("only Creality's own five are flagged as standard") { t in
@@ -454,7 +475,7 @@ let weightLadderTests = TestSuite(name: "Weight ladder", cases: [
     test("the label is derived, so a new rung cannot be forgotten") { t in
         t.equal(FilamentLength.kg1.label, "1 KG", "the Windows form for a kilo")
         t.equal(FilamentLength.g750.label, "750 G", "and for grams")
-        t.equal(FilamentLength.g300.label, "300 G", "including one Windows never had")
+        t.equal(FilamentLength.kg3.label, "3 KG", "including one Windows never had")
         for length in FilamentLength.allCases {
             t.expect(!length.label.isEmpty, "\(length.grams) g has a label")
         }

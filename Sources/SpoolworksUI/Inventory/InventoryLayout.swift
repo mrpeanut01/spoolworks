@@ -39,7 +39,7 @@ final class InventoryLayout: ObservableObject {
             case .type: return 52
             case .serial: return 60
             case .location: return 70
-            case .remaining: return 96
+            case .remaining: return 68
             case .tag: return 64
             }
         }
@@ -51,7 +51,7 @@ final class InventoryLayout: ObservableObject {
             case .type: return 70
             case .serial: return 78
             case .location: return 118
-            case .remaining: return 132
+            case .remaining: return 86
             case .tag: return 118
             }
         }
