@@ -1,12 +1,12 @@
 import Foundation
 import SpoolworksCore
 
-/// The Keychain-backed credential store the app actually uses.
+/// The credential store the app actually uses: a file it owns, keyed by host.
 ///
 /// ## Why this file exists
 ///
 /// The same gap as ``LivePrinterTransport``: `SpoolworksCore` shipped a complete, tested
-/// ``SpoolworksCore/KeychainCredentialStore`` and `PrinterViewModel` defaulted to
+/// ``SpoolworksCore/FileCredentialStore`` and `PrinterViewModel` defaulted to
 /// ``InMemoryPrinterCredentialStore``, which keeps passwords for the lifetime of the process and
 /// no longer. The visible symptom was a printer that had to be given its password again on every
 /// launch — and, once the CFS poll existed, a 30 s auto-poll that could never run after a restart
@@ -15,35 +15,35 @@ import SpoolworksCore
 /// ## The two stores key on different things, deliberately
 ///
 /// `PrinterCredentialStoring` is keyed by ``PrinterType`` because that is what the Printers screen
-/// is a list of. The Keychain store is keyed by **host**, because that is what a password actually
+/// is a list of. The backing store is keyed by **host**, because that is what a password actually
 /// belongs to — a machine, not a model of printer. This adapter resolves one to the other through
 /// ``PrinterSettings/host(for:)``.
 ///
-/// Keying the Keychain by host is the better of the two and worth keeping: re-address a printer
-/// and it correctly stops finding the old machine's password, rather than silently offering it to
-/// a different device.
+/// Keying by host is the better of the two and worth keeping: re-address a printer and it correctly
+/// stops finding the old machine's password, rather than silently offering it to a different
+/// device.
 ///
 /// ## Failures are reported, not swallowed
 ///
-/// `PrinterCredentialStoring` is non-throwing, so a Keychain error has nowhere to go through the
-/// protocol. Dropping it would make "the Keychain refused us" look identical to "no password has
+/// `PrinterCredentialStoring` is non-throwing, so a storage error has nowhere to go through the
+/// protocol. Dropping it would make "the file could not be read" look identical to "no password has
 /// been saved" — the exact confusion this app avoids elsewhere. Failures therefore go to
 /// `onFailure`, which the app wires to the toast centre, and the password is kept in memory for
 /// the rest of the session so the user is not blocked mid-task by a storage problem.
-final class KeychainPrinterCredentialStore: PrinterCredentialStoring {
+final class LocalPrinterCredentialStore: PrinterCredentialStoring {
 
-    private let keychain: CredentialStore
+    private let backing: CredentialStore
     private let hostForFamily: (PrinterType) -> String
     private let onFailure: (String) -> Void
 
-    /// Session fallback for a family whose Keychain write failed, plus a small read cache so the
-    /// Printers list does not hit the Keychain once per row per refresh.
+    /// Session fallback for a family whose write failed, plus a small read cache so the Printers
+    /// list does not re-read the file once per row per refresh.
     private var cache: [PrinterType: String?] = [:]
 
-    init(keychain: CredentialStore = KeychainCredentialStore(),
+    init(backing: CredentialStore,
          hostForFamily: @escaping (PrinterType) -> String = { PrinterSettings.host(for: $0) },
          onFailure: @escaping (String) -> Void = { _ in }) {
-        self.keychain = keychain
+        self.backing = backing
         self.hostForFamily = hostForFamily
         self.onFailure = onFailure
     }
@@ -54,12 +54,12 @@ final class KeychainPrinterCredentialStore: PrinterCredentialStoring {
         if let cached = cache[family] { return cached }
 
         let host = trimmedHost(family)
-        // No address means no Keychain account to look under. Not an error — it is the state a
-        // printer is in before it has been configured.
+        // No address means nothing to look the password up under. Not an error — it is the state
+        // a printer is in before it has been configured.
         guard !host.isEmpty else { return nil }
 
         do {
-            let stored = try keychain.password(forHost: host)
+            let stored = try backing.password(forHost: host)
             cache[family] = stored
             return stored
         } catch {
@@ -79,17 +79,17 @@ final class KeychainPrinterCredentialStore: PrinterCredentialStoring {
 
         do {
             if let password, !password.isEmpty {
-                try keychain.setPassword(password, forHost: host)
+                try backing.setPassword(password, forHost: host)
             } else {
-                try keychain.deletePassword(forHost: host)
+                try backing.deletePassword(forHost: host)
             }
             cache[family] = password
         } catch {
             // Keep it usable for this session rather than failing the user's task outright, and
             // say plainly that it will not survive a relaunch.
             cache[family] = password
-            onFailure("The password for \(family.displayName) could not be saved to the Keychain "
-                      + "and will be forgotten when Spoolworks quits: \(error)")
+            onFailure("The password for \(family.displayName) could not be saved and will be "
+                      + "forgotten when Spoolworks quits: \(error)")
         }
     }
 

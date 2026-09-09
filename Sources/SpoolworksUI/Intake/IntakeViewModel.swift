@@ -8,8 +8,9 @@ import SpoolworksCore
 ///
 /// ## The two methods, and the thing they share
 ///
-/// **Method A — scan a Creality tag.** Read either of the spool's two factory tags, check what came
-/// off it, confirm. Nothing is typed.
+/// **Method A — read a tag.** Read either of the spool's two tags, check what came off it, confirm.
+/// Nothing is typed. Usually a Creality factory tag, but a tag this app wrote reads the same way,
+/// which is why the button no longer names one vendor.
 ///
 /// **Method B — enter and tag.** Describe a third-party spool, write both of its blank tags, and
 /// the spool lands in stock with a serial this app allocated.
@@ -34,7 +35,7 @@ final class IntakeViewModel: ObservableObject {
 
         var title: String {
             switch self {
-            case .scan: return "Method A · Scan a Creality tag"
+            case .scan: return "Method A · Read a tag"
             case .manual: return "Method B · Enter and tag"
             }
         }
@@ -62,6 +63,8 @@ final class IntakeViewModel: ObservableObject {
         case working(String)
         /// Written and read back byte for byte, or read and decoded.
         case done
+        /// Deliberately not being done. See ``IntakeViewModel/tagsRequired``.
+        case skipped
 
         var isWorking: Bool { if case .working = self { return true }; return false }
 
@@ -71,6 +74,7 @@ final class IntakeViewModel: ObservableObject {
             case .ready: return "ready"
             case let .working(what): return what
             case .done: return "verified"
+            case .skipped: return "skipped"
             }
         }
     }
@@ -79,8 +83,10 @@ final class IntakeViewModel: ObservableObject {
     struct TagSlot: Identifiable, Equatable {
         let index: Int
         var state: SlotState
+        /// How many tags this intake wants, so a row can name itself honestly.
         var id: Int { index }
-        var name: String { "Tag \(index + 1) of 2" }
+        let total: Int
+        var name: String { "Tag \(index + 1) of \(total)" }
         var isDone: Bool { state == .done }
     }
 
@@ -89,6 +95,24 @@ final class IntakeViewModel: ObservableObject {
     @Published var method: Method = .scan { didSet { reset(keepingMethod: true) } }
     /// How many of the two tags have been read (method A) or written (method B).
     @Published private(set) var tagsHandled = 0
+
+    /// How many of the spool's two tags this intake needs: two, one, or none.
+    ///
+    /// A Creality spool carries a tag on each side of the hub so the printer can read one whichever
+    /// way round it is loaded, and that is why everything here counted to two. Two other cases are
+    /// just as real:
+    ///
+    /// * **One.** A spool that will only ever sit on the external holder is read from the same side
+    ///   every time, and the user may be moving a single reusable tag between such spools rather
+    ///   than committing one to each.
+    /// * **None.** Unopened stock on a shelf. It is inventory before it is ever tagged, and making
+    ///   someone write a tag to admit they own a spool is the wrong shape entirely.
+    ///
+    /// Deliberately a count and not two flags. "How many tags is this waiting for" is one question,
+    /// and as a number every "have we finished" test stays a comparison against one value — as
+    /// zero, it also makes ``isArmedToWrite`` false for free, so the no-tag case cannot leave the
+    /// reader armed to write at a tag that wanders past.
+    @Published private(set) var tagsRequired = 2
     /// The record decoded from the tag, in method A.
     @Published private(set) var decoded: SpoolRecord?
     /// The tag UID, for the "decoded from tag" panel.
@@ -120,7 +144,20 @@ final class IntakeViewModel: ObservableObject {
     @Published var brand = ""
     @Published var name = ""
     @Published var materialType = "PLA"
+    /// What a **full** spool of this filament holds — the spool's size, not how much is on it.
+    ///
+    /// The distinction was not made anywhere and it needed to be: a field labelled "Net weight"
+    /// beside nothing else about quantity reads as "how much is here", and every spool taken in
+    /// was silently recorded as full.
     @Published var netWeightGrams = 1000
+
+    /// How much of it is actually left, as a percentage.
+    ///
+    /// Intake used to assume 100 in both methods, which is right for a spool out of its box and
+    /// wrong for the reason most people count their stock — they already own it, and some of it is
+    /// half used. A tag cannot help here either: the length code is the spool's *size*, and nothing
+    /// on the tag says how much has been printed.
+    @Published var remainingPercent: Double = 100
     @Published var colorHex = "C12E1F"
     /// Allocated by this app in method B; read off the tag in method A.
     @Published var serial = ""
@@ -142,6 +179,11 @@ final class IntakeViewModel: ObservableObject {
             materialID = materials(for: catalogueBrand).first?.id ?? ""
         }
     }
+    /// The eleven "how much is left" rungs for the spool size currently chosen.
+    var remainingOptions: [(grams: Int, percent: Double, label: String)] {
+        Spool.remainingLadder(netWeightGrams: netWeightGrams)
+    }
+
     /// The five weights the tag's length code can express. There is no "other": a weight the tag
     /// cannot encode would be lost the moment the spool was written.
     static let weights: [Int] = FilamentLength.allCases.map(\.grams).sorted(by: >)
@@ -185,12 +227,15 @@ final class IntakeViewModel: ObservableObject {
 
     var tags: [TagSlot] {
         (0..<2).map { index in
-            if tagsHandled > index { return TagSlot(index: index, state: .done) }
+            // Shown, not hidden. A row that vanishes leaves nothing to say the second tag was a
+            // deliberate choice, and nothing to press to change your mind.
+            if index >= tagsRequired { return TagSlot(index: index, state: .skipped, total: tagsRequired) }
+            if tagsHandled > index { return TagSlot(index: index, state: .done, total: tagsRequired) }
             // Only the next undone slot can be in flight — the reader does one tag at a time.
             if index == tagsHandled, let activityLabel {
-                return TagSlot(index: index, state: .working(activityLabel))
+                return TagSlot(index: index, state: .working(activityLabel), total: tagsRequired)
             }
-            return TagSlot(index: index, state: index == tagsHandled ? .ready : .waiting)
+            return TagSlot(index: index, state: index == tagsHandled ? .ready : .waiting, total: tagsRequired)
         }
     }
 
@@ -198,17 +243,29 @@ final class IntakeViewModel: ObservableObject {
     /// claim — a write is only believed here once it has been read back.
     var tagSummary: String {
         let verb = isScan ? "read" : "written and verified"
-        return "\(tagsHandled) of 2 \(verb)"
+        return "\(tagsHandled) of \(tagsRequired) \(verb)"
     }
 
     /// Whether a tag presented now would be written without further asking.
-    var isArmedToWrite: Bool { !isScan && canWriteTags && tagsHandled < 2 }
+    var isArmedToWrite: Bool { !isScan && canWriteTags && tagsHandled < tagsRequired }
+
+    /// Whether this spool ends up with a tag on it at all.
+    ///
+    /// Not the same as "finished". A no-tag intake is finished the moment it starts — `0 of 0` —
+    /// and marking it `spoolworksWritten` on that basis would put "Custom" in the Tag column of a
+    /// spool nobody has written anything to.
+    var willBeTagged: Bool { tagsRequired > 0 && tagsHandled >= tagsRequired }
 
     var isScan: Bool { method == .scan }
 
     /// `"Step 2 · Read either tag"` / `"Step 3 · Write both tags"`.
     var tagPanelLabel: String {
-        isScan ? "Step 2 · Read either tag" : "Step 3 · Write both tags"
+        if isScan { return "Step 2 · Read either tag" }
+        switch tagsRequired {
+        case 0:  return "Step 3 · No tag"
+        case 1:  return "Step 3 · Write one tag"
+        default: return "Step 3 · Write both tags"
+        }
     }
 
     var formLabel: String {
@@ -220,7 +277,11 @@ final class IntakeViewModel: ObservableObject {
     var tagNote: String {
         isScan
             ? "Just present the tags — each is read as it lands and fills the next slot. A Creality spool carries two factory tags with the same payload, so reading either is enough; the second only confirms the pair."
-            : "A spool carries two tags. Both get the same payload, each verified by read-back — either one identifies the spool later. A spool tagged on one side only will fail to read half the time it is loaded."
+            : tagsRequired == 0
+              ? "Nothing is read or written and the reader stays idle. The spool goes into stock untagged; Inventory can write a tag for it whenever you get to it."
+              : tagsRequired == 1
+              ? "One tag only. That is right for a spool that will live on the external holder, where the same side is always presented — and for a reusable tag you move between spools. Loaded into a CFS, a spool tagged on one side reads only half the time."
+              : "A spool carries two tags. Both get the same payload, each verified by read-back — either one identifies the spool later. A spool tagged on one side only will fail to read half the time it is loaded."
     }
 
     var stateLabel: String {
@@ -231,7 +292,7 @@ final class IntakeViewModel: ObservableObject {
 
     private var sourceLabel: String {
         guard let decoded else { return "" }
-        return decoded.vendorId == "0276" ? "Creality factory" : "vendor \(decoded.vendorId)"
+        return decoded.vendorId == "0276" ? "Creality" : "vendor \(decoded.vendorId)"
     }
 
     /// Method A cannot add a spool it has not read. Method B can add before tagging — the design
@@ -245,7 +306,7 @@ final class IntakeViewModel: ObservableObject {
 
     var confirmTitle: String {
         if isScan { return "Confirm and add to stock" }
-        return tagsHandled >= 2 ? "Add to stock" : "Add to stock (tags pending)"
+        return tagsHandled >= tagsRequired ? "Add to stock" : "Add to stock (tags pending)"
     }
 
     var hint: String {
@@ -257,7 +318,15 @@ final class IntakeViewModel: ObservableObject {
                 ? "Place a spool tag on the reader."
                 : "Reader stays hot — the next spool starts a new record."
         }
-        return tagsHandled >= 2 ? "Both tags verified." : "Write both tags first, or add now and tag later."
+        if tagsRequired == 0 {
+            return "No tag. Add it to stock now and write one later from Inventory."
+        }
+        if tagsHandled >= tagsRequired {
+            return tagsRequired == 1 ? "Tag verified." : "Both tags verified."
+        }
+        return tagsRequired == 1
+            ? "Write the tag first, or add now and tag later."
+            : "Write both tags first, or add now and tag later."
     }
 
     /// The 40-character payload, for the "decoded from tag" panel.
@@ -312,7 +381,12 @@ final class IntakeViewModel: ObservableObject {
         filamentId = "1" + row.id
         brand = row.brand
         materialType = row.materialType
-        if name.isEmpty || name == row.name { name = row.name }
+        // Always, not "unless the user has typed something". The old rule kept a hand-edited name
+        // across a change of material, which sounds protective and is the wrong way round: the name
+        // describes the material, so a name that outlives the material it describes is simply
+        // wrong. Picking CR-ABS and keeping "Hyper PLA" writes a tag whose id and whose name
+        // disagree, and the inventory row then reads as a filament the spool is not.
+        name = row.name
         if let hex = row.colorHex.isEmpty ? nil : row.colorHex { colorHex = Spool.normaliseHex(hex) }
     }
 
@@ -351,8 +425,8 @@ final class IntakeViewModel: ObservableObject {
         failure = nil
         uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
         adopt(record)
-        tagsHandled = min(2, absorbedUIDs.count)
-        toasts.success(tagsHandled >= 2
+        tagsHandled = min(tagsRequired, absorbedUIDs.count)
+        toasts.success(tagsHandled >= tagsRequired
                        ? "Both tags read — \(record.filamentId) · \(record.rgbHex)"
                        : "Tag read — \(record.filamentId) · \(record.rgbHex)")
     }
@@ -405,6 +479,8 @@ final class IntakeViewModel: ObservableObject {
     /// Why the tags cannot be written yet, in the user's terms. `nil` when they can.
     var writeBlocker: String? {
         guard !isScan else { return nil }
+        // Nothing is going to be written, so a reason it could not be is not a reason for anything.
+        guard tagsRequired > 0 else { return nil }
         if catalogueIsEmpty {
             return "The material catalogue is empty, so there is no filament ID to write. "
                 + "Load it in Manage ▸ Materials (⇧⌘1)."
@@ -433,10 +509,24 @@ final class IntakeViewModel: ObservableObject {
         guard !isScan else { return }
         guard !writtenUIDs.contains(uid) else { return }
         writtenUIDs.insert(uid)
-        tagsHandled = min(2, writtenUIDs.count)
-        toasts.success(tagsHandled >= 2
-                       ? "Both tags written and verified"
-                       : "Tag \(tagsHandled) of 2 written and verified")
+        tagsHandled = min(tagsRequired, writtenUIDs.count)
+        toasts.success(tagsHandled >= tagsRequired
+                       ? (tagsRequired == 1 ? "Tag written and verified"
+                                            : "Both tags written and verified")
+                       : "Tag \(tagsHandled) of \(tagsRequired) written and verified")
+    }
+
+    /// How many tags this spool needs: two, one, or none.
+    ///
+    /// Reversible in both directions, and it never destroys work: a tag already read or written
+    /// stays that way, and going back up re-derives the count from the UID sets rather than from a
+    /// remembered number that could disagree with them. Going down simply stops counting the
+    /// surplus, which is what keeps "1 of 1" from reading as "2 of 1".
+    func setTagsRequired(_ count: Int) {
+        let wanted = min(2, max(0, count))
+        guard wanted != tagsRequired else { return }
+        tagsRequired = wanted
+        tagsHandled = min(wanted, isScan ? absorbedUIDs.count : writtenUIDs.count)
     }
 
     func markTagWritten(_ slot: TagSlot) {
@@ -453,6 +543,13 @@ final class IntakeViewModel: ObservableObject {
                                     brand: brand,
                                     name: name,
                                     materialType: materialType,
+                                    // What is on the form, not what was on the tag. Both are
+                                    // editable in Method A too, and an edit the confirm silently
+                                    // threw away is worse than not offering it. The tag cannot
+                                    // answer the second one at all: its length code is the spool's
+                                    // *size*, and nothing on it says how much has been printed.
+                                    netWeightGrams: netWeightGrams,
+                                    remainingPercent: remainingPercent,
                                     tagSource: .crealityFactory,
                                     detail: "Intake · tag read")
         } else {
@@ -463,26 +560,90 @@ final class IntakeViewModel: ObservableObject {
                              colorHex: colorHex,
                              colorName: inventory.colorName(forHex: Spool.normaliseHex(colorHex)),
                              netWeightGrams: netWeightGrams,
-                             remainingPercent: 100,
+                             remainingPercent: remainingPercent,
                              location: .shelf("Shelf"),
-                             remainingSource: tagsHandled >= 2
-                                 ? "Intake · tagged, assumed full"
-                                 : "Manual record · tag pending",
-                             tagSource: tagsHandled >= 2 ? .spoolworksWritten : .untagged)
+                             remainingSource: remainingPercent < 100 ? "Set at intake"
+                                 : willBeTagged ? "Intake · tagged, assumed full"
+                                 : tagsRequired == 0 ? "Counted onto the shelf, assumed full"
+                                                     : "Manual record · tag pending",
+                             tagSource: willBeTagged ? .spoolworksWritten : .untagged)
             made.note(kind: .intake,
-                      detail: tagsHandled >= 2 ? "Intake · both tags written" : "Intake · manual entry")
+                      detail: willBeTagged
+                          ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
+                                               : "Intake · both tags written")
+                          : tagsRequired == 0 ? "Intake · counted onto the shelf, no tag"
+                                              : "Intake · manual entry")
             spool = made
         }
 
         inventory.add(spool)
         session.insert(spool, at: 0)
         toasts.success("Added to stock — \(spool.label) · serial \(spool.serialLabel)")
+
+        // Back to Method A once the spool is in stock. Method B is the detour you take *because* a
+        // spool has no tag to read; leaving the screen parked there afterwards starts the next
+        // spool — which probably does have one — on the wrong branch, and the reader is sitting
+        // armed to write rather than to read.
+        //
+        // Both lines on purpose. `method`'s `didSet` already clears the form, but leaning on that
+        // alone would make Method A's own confirm silently stop clearing the day anyone adds an
+        // `oldValue` guard to it.
+        method = .scan
         reset(keepingMethod: true)
     }
 
     func openDuplicate() {
         guard let duplicate else { return }
         inventory.selectedID = duplicate.id
+    }
+
+    /// Fills the form from a spool already in stock, ready to log another like it.
+    ///
+    /// Buying two of something is the ordinary case, and re-typing a spool you already own to
+    /// record the second one is work the app can do. It lands on Method B because a clone is a new
+    /// physical spool with no tag yet — there is nothing to read.
+    ///
+    /// **The serial is not cloned.** It is allocated fresh, because this is a different spool and
+    /// two records sharing a serial, a filament and a colour are indistinguishable — the collision
+    /// ``SpoolIdentity`` exists to avoid, and the one thing a clone must not copy.
+    ///
+    /// Nor is the remaining figure: a clone starts full, which is what Intake gives every spool it
+    /// adds. Cloning a half-used spool to record a fresh one is the point.
+    ///
+    /// The tag count is mirrored from the source rather than defaulted. A clone of a spool sitting
+    /// untagged on a shelf is almost always another unopened spool going onto the same shelf, and a
+    /// clone of a tagged one is a spool about to be tagged.
+    func clone(_ spool: Spool) {
+        // Resets the form through `method`'s `didSet`, so everything below is written onto a clean
+        // one rather than over whatever the last spool left.
+        method = .manual
+
+        // Order matters. Setting `materialID` runs `adoptCatalogueMaterial`, which overwrites
+        // brand, name, type *and* colour from the catalogue — so the catalogue goes first and the
+        // spool's own values go last, or the clone would come back wearing the catalogue's
+        // placeholder colour instead of the one it is a clone of.
+        if let base = spool.identity?.filamentId, !base.isEmpty {
+            let id = base.count == 6 ? String(base.dropFirst()) : base
+            if let row = materials.rows.first(where: { $0.id == id }) {
+                catalogueBrand = row.brand
+                materialID = row.id
+            }
+        } else if let row = materials.rows.first(where: {
+            $0.brand.caseInsensitiveCompare(spool.brand) == .orderedSame
+                && $0.name.caseInsensitiveCompare(spool.name) == .orderedSame
+        }) {
+            // No tag to take a filament id from, so fall back to matching the catalogue by name.
+            catalogueBrand = row.brand
+            materialID = row.id
+        }
+
+        brand = spool.brand
+        name = spool.name
+        materialType = spool.materialType
+        colorHex = Spool.normaliseHex(spool.colorHex)
+        netWeightGrams = spool.netWeightGrams
+        serial = Self.allocateSerial()
+        setTagsRequired(spool.isUntagged ? 0 : 2)
     }
 
     /// Loads the tag draft from the intake form, so the shared write path can build a plan from it.
@@ -502,6 +663,7 @@ final class IntakeViewModel: ObservableObject {
     /// scanning spool after spool without touching anything between them.
     func reset(keepingMethod: Bool = true) {
         tagsHandled = 0
+        tagsRequired = 2
         decoded = nil
         duplicate = nil
         failure = nil
@@ -515,6 +677,7 @@ final class IntakeViewModel: ObservableObject {
         name = ""
         materialType = "PLA"
         netWeightGrams = 1000
+        remainingPercent = 100
         colorHex = "C12E1F"
         filamentId = ""
         materialID = ""

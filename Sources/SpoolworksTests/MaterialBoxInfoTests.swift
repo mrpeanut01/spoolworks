@@ -295,3 +295,50 @@ let liveCFSFixtureTests = TestSuite(name: "Live CFS dump (fw 1.4.2)", cases: [
         t.expect(again.isEmpty, "a repeat poll changes nothing")
     },
 ])
+
+// The grouping key, as the real printer reports it.
+//
+// This exists because the screen showing it read as though the firmware grouped on material alone,
+// which would be a different and much worse behaviour: four slots of one filament in four colours
+// would all be interchangeable. The dump proves otherwise, and the proof is worth keeping.
+let sameMaterialGroupingTests = TestSuite(name: "same_material grouping", cases: [
+
+    test("one filament in three colours makes three groups, not one") { t in
+        guard let data = t.unwrap(BoxFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        let groups = info.material.sameMaterial
+        t.equal(groups.count, 3, "three groups")
+        t.equal(Set(groups.map(\.filamentId)), ["101001"], "all one filament ID")
+        t.equal(Set(groups.map(\.materialType)), ["PLA"], "and all one material type")
+        t.equal(Set(groups.map(\.color)).count, 3, "so only colour can be separating them")
+    },
+
+    test("only the two slots of the same colour are partnered") { t in
+        guard let data = t.unwrap(BoxFixture.data(), "fixture") else { return }
+        let info = try MaterialBoxInfo.decode(from: data)
+        let partnered = info.material.sameMaterial.filter(\.isPartnered)
+        t.equal(partnered.count, 1, "exactly one real pair")
+        t.equal(partnered.first?.slots, ["T1B", "T1D"], "the two red slots")
+        t.equal(partnered.first?.colorHex, "C12E1F", "which are the same colour")
+
+        for group in info.material.sameMaterial where !group.isPartnered {
+            t.equal(group.slots.count, 1, "\(group.colorHex) stands alone")
+        }
+    },
+
+    test("the colour is shown as a colour, not as the raw tag field") { t in
+        // `0C12E1F` is the tag's 7-character colour field — a leading nibble the format never uses,
+        // then the colour. Rendered raw it reads as a second part number, which is what made the
+        // panel look as though colour was not part of the key at all.
+        t.equal(SameMaterialGroup(filamentId: "101001", color: "0C12E1F",
+                                  slots: ["T1B"], materialType: "PLA").colorHex, "C12E1F",
+                "leading nibble dropped")
+        t.equal(SameMaterialGroup(filamentId: "101001", color: "C12E1F",
+                                  slots: ["T1B"], materialType: "PLA").colorHex, "C12E1F",
+                "a plain six-digit value is left alone")
+        // Anything else is passed through rather than truncated into a different colour.
+        t.equal(SameMaterialGroup(filamentId: "101001", color: "",
+                                  slots: ["T1B"], materialType: "PLA").colorHex, "",
+                "empty stays empty")
+    },
+])

@@ -106,10 +106,12 @@ public enum TagSource: String, Codable, Sendable, CaseIterable, CustomStringConv
     /// Typed in. There may be no tag at all, or one that was never read.
     case untagged
 
+    /// Only the *labels* change here, never the cases or their raw values — those are the encoded
+    /// form in `inventory.json`, so renaming one would orphan every spool already recorded under it.
     public var description: String {
         switch self {
-        case .crealityFactory: return "Creality factory"
-        case .spoolworksWritten: return "Spoolworks-written"
+        case .crealityFactory: return "Creality"
+        case .spoolworksWritten: return "Custom"
         case .untagged: return "Untagged · manual"
         }
     }
@@ -408,6 +410,58 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         if s.hasPrefix("#") { s.removeFirst() }
         if s.count == 7 { s.removeFirst() }
         return s
+    }
+
+    /// A single sortable number that puts colours in an order a person would expect.
+    ///
+    /// Sorting on the hex string looks obvious and is useless: it orders by red channel, so black
+    /// sits beside navy and every shade of one colour scatters. What people mean by "sort by
+    /// colour" is *group the similar ones together*, which is hue.
+    ///
+    /// Two ranges in one value, because a sort key has to be one comparable thing:
+    ///
+    /// * **0…1 — the greys**, ordered black to white. Hue is meaningless below a chroma threshold
+    ///   (a grey's hue is whatever rounding survived), so they are collected rather than sprinkled
+    ///   through the spectrum where their arbitrary hue happens to land.
+    /// * **1…2 — everything else**, ordered by hue angle, so reds sit with reds.
+    ///
+    /// Chroma and hue come from CIELAB rather than HSB: HSB's "saturation" is a different quantity
+    /// at every lightness, so a threshold on it would call a dark teal grey and a pale pink
+    /// colourful.
+    public var colourOrder: Double {
+        guard let rgb = try? RGB8(hex: colorHex) else { return 0 }
+        let lab = LabColor(rgb)
+        // 8 is comfortably above the chroma of anything anyone calls grey, and below the chroma of
+        // anything anyone calls a colour — a mid grey lands near 0, a muted brown near 20.
+        guard lab.chroma >= 8 else { return min(1, max(0, lab.l / 100)) }
+        var hue = atan2(lab.b, lab.a) * 180 / .pi
+        if hue < 0 { hue += 360 }
+        return 1 + hue / 360
+    }
+
+    /// The eleven figures a "how much is left" picker offers for a spool of this size.
+    ///
+    /// Fullest first, a tenth of a spool apart, each labelled in **both** units — `700 g · 70%`.
+    /// The two answer different questions and neither is the obvious one: grams is what a set of
+    /// scales says, percent is what the inventory stores and what the bar shows.
+    ///
+    /// Stepped by percent rather than by grams so the count is eleven for *every* spool. A gram
+    /// ladder gave a 1 kg spool the eleven rungs everyone pictures and a 250 g spool three; on the
+    /// 1 kg spool almost everyone is holding, a tenth is 100 g anyway.
+    ///
+    /// The top rung is the spool's own size, never a round number above it. More filament than the
+    /// spool can hold is not a figure anything here would accept.
+    ///
+    /// Lives on `Spool` rather than on either screen because Intake and the Inventory rail both
+    /// ask it, and two ladders that could disagree about what "half" means is exactly the kind of
+    /// drift this app keeps single-sourcing to avoid.
+    public static func remainingLadder(netWeightGrams net: Int)
+        -> [(grams: Int, percent: Double, label: String)] {
+        guard net > 0 else { return [] }
+        return stride(from: 100, through: 0, by: -10).map { percent in
+            let grams = Int((Double(net) * Double(percent) / 100).rounded())
+            return (grams, Double(percent), "\(grams) g · \(percent)%")
+        }
     }
 
     /// `1000 -> "1 kg"`, `750 -> "750 g"`.

@@ -94,6 +94,9 @@ struct IntakeView: View {
     /// Which of the spool's two tags the open confirmation sheet belongs to.
     @State private var pendingSlot: IntakeViewModel.TagSlot?
 
+    /// Whether the camera colour scanner is open.
+    @State private var isScanningColour = false
+
     /// Puts the reader into the mode this screen currently needs.
     ///
     /// Method A reads. Method B **writes on presentation** — the draft is loaded and auto-write
@@ -193,6 +196,8 @@ struct IntakeView: View {
             }
             .padding(.bottom, 12)
 
+            TagCountControl(model: model).padding(.bottom, 12)
+
             if model.isArmedToWrite {
                 HStack(spacing: 7) {
                     StatusDot(level: .ready, size: 8)
@@ -203,17 +208,20 @@ struct IntakeView: View {
                 .padding(.bottom, 10)
             }
 
-            ForEach(model.tags) { slot in
+            if model.tagsRequired > 0 {
+                ForEach(model.tags) { slot in
                 TagRow(slot: slot,
                        isScan: model.isScan,
-                       busy: tagModel.activity.isRunning) {
-                    if model.isScan {
-                        // The one shared reader path. `onChange(of: lastRead.uid)` files the
-                        // result in the next slot, exactly as an untouched tag would be.
-                        Task { await tagModel.read() }
-                    } else {
-                        beginWrite(slot)
-                    }
+                       busy: tagModel.activity.isRunning,
+                       action: {
+                           if model.isScan {
+                               // The one shared reader path. `onChange(of: lastRead.uid)` files
+                               // the result in the next slot, exactly as an untouched tag would.
+                               Task { await tagModel.read() }
+                           } else {
+                               beginWrite(slot)
+                           }
+                       })
                 }
             }
 
@@ -267,7 +275,7 @@ struct IntakeView: View {
                         }
                         .labelsHidden()
                     }
-                    FieldBox(label: "Name", note: "auto from the material, editable") {
+                    FieldBox(label: "Name", note: "follows the material") {
                         TextField("", text: $model.name).textFieldStyle(.plain).swInput()
                     }
                     FieldBox(label: "Material", note: "decides the filament ID") {
@@ -280,10 +288,23 @@ struct IntakeView: View {
                         .labelsHidden()
                     }
                 }
-                FieldBox(label: "Net weight") {
+                // Two questions, and they were one field. "Net weight" beside nothing else about
+                // quantity reads as "how much is here", so every spool taken in was silently
+                // recorded as full — which is right for a spool out of its box and wrong for the
+                // reason most people count their stock: they already own it, and some of it is
+                // half used. The labels now say which is which, and both are asked.
+                FieldBox(label: "Spool size", note: "what a full one holds") {
                     Picker("", selection: $model.netWeightGrams) {
                         ForEach(IntakeViewModel.weights, id: \.self) {
                             Text(Spool.weightLabel($0)).tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                FieldBox(label: "How much is left", note: "on the spool now") {
+                    Picker("", selection: $model.remainingPercent) {
+                        ForEach(model.remainingOptions, id: \.percent) { option in
+                            Text(option.label).tag(option.percent)
                         }
                     }
                     .labelsHidden()
@@ -298,10 +319,30 @@ struct IntakeView: View {
             .padding(.bottom, 16)
 
             HStack(alignment: .bottom, spacing: 18) {
-                FieldBox(label: "Colour") {
+                FieldBox(label: "Colour", note: model.isScan ? "from tag" : nil) {
                     TextField("", text: $model.colorHex).textFieldStyle(.plain).swInput()
                 }
-                Swatch(hex: model.colorHex, size: 52, height: 44)
+                // Method B only. In Method A the tag is the authority on colour, and colour is
+                // part of how a spool is identified (see the README on serial collisions) — a
+                // camera reading laid over a decoded one would quietly break that key.
+                if !model.isScan {
+                    Button("Scan…") { isScanningColour = true }
+                        .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
+                        .help("Read the colour off the spool with a camera.")
+                    // The swatch is the third way in, beside typing a code and scanning one. All
+                    // three write the same `colorHex`, which is what makes "the last thing you did
+                    // wins" fall out rather than needing to be arbitrated: there is one value, and
+                    // no input holds a copy of its own.
+                    Button { openColorPanel() } label: {
+                        Swatch(hex: model.colorHex, size: 52, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Pick the colour from the macOS colour palette.")
+                    .accessibilityLabel("Colour \(model.colorHex.isEmpty ? "not set" : model.colorHex)")
+                    .accessibilityHint("Opens the macOS colour palette")
+                } else {
+                    Swatch(hex: model.colorHex, size: 52, height: 44)
+                }
             }
             .padding(.bottom, 18)
 
@@ -327,6 +368,33 @@ struct IntakeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: 20)
+        .sheet(isPresented: $isScanningColour) {
+            ColorScanSheet(hex: $model.colorHex)
+        }
+        // A colour typed or scanned while the panel is open has to reach the panel too, or its next
+        // click would quietly undo the newer value.
+        .onChange(of: model.colorHex) { _, hex in
+            SystemColorPanel.shared.update(hex: Spool.normaliseHex(hex), owner: colorPanelOwner)
+        }
+        // Switching to Method A hands authority over colour back to the tag, so an open panel must
+        // stop writing to the field. Without this a click in a panel left over from Method B would
+        // overwrite a colour that had been decoded off a spool.
+        .onChange(of: model.isScan) { _, isScan in
+            if isScan { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+        }
+        // Unconditional on purpose: `relinquish` is a no-op unless this screen still owns the
+        // panel, which is exactly the check that makes it safe to call from here.
+        .onDisappear { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+    }
+
+    /// Identifies this screen to the app-wide colour panel. See ``SystemColorPanel``.
+    private var colorPanelOwner: AnyHashable { "intake.colour" }
+
+    private func openColorPanel() {
+        SystemColorPanel.shared.present(hex: Spool.normaliseHex(model.colorHex),
+                                        owner: colorPanelOwner) { hex in
+            model.colorHex = hex
+        }
     }
 
     // MARK: Right column
@@ -409,6 +477,55 @@ private struct MethodButton: View {
     }
 }
 
+/// How many tags this spool takes: both sides, one, or none at all.
+///
+/// Above the rows rather than on them, because it is one decision about the spool and not a
+/// property of a slot — and because "none" is not a thing you can express by skipping rows one at
+/// a time. Each option is a real case: both sides is a spool going into a CFS, one is a spool that
+/// will only ever sit on the external holder (read from the same side every time, often with a
+/// reusable tag), and none is unopened stock you are counting onto a shelf.
+private struct TagCountControl: View {
+    @ObservedObject var model: IntakeViewModel
+
+    private struct Option: Hashable, Identifiable {
+        let count: Int
+        let title: String
+        var id: Int { count }
+    }
+
+    private var options: [Option] {
+        var offered = [Option(count: 2, title: model.isScan ? "Read both" : "Write both"),
+                       Option(count: 1, title: model.isScan ? "Read one" : "Write one")]
+        // Method A cannot finish without a decoded tag, so "no tag" there would be a button that
+        // makes the screen impossible to complete.
+        if !model.isScan { offered.append(Option(count: 0, title: "No tag")) }
+        return offered
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.m) {
+            SegmentedFilter(options: options,
+                            title: \.title,
+                            selection: Binding(get: { options.first { $0.count == model.tagsRequired }
+                                                        ?? options[0] },
+                                               set: { model.setTagsRequired($0.count) }))
+            Text(note)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.secondaryLabel)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var note: String {
+        switch model.tagsRequired {
+        case 0: return "Counted onto the shelf. Nothing is read or written, and the reader stays idle."
+        case 1: return "For a spool that lives on the external holder, or a tag you reuse."
+        default: return "Both sides of the hub, so it reads whichever way it is loaded."
+        }
+    }
+}
+
 private struct TagRow: View {
     let slot: IntakeViewModel.TagSlot
     let isScan: Bool
@@ -446,10 +563,14 @@ private struct TagRow: View {
                 .foregroundStyle(captionColour)
                 .frame(minWidth: 62, alignment: .trailing)
 
-            Button(cta, action: action)
-                .buttonStyle(.sw(.primary, size: 11.5, h: 16, v: 8))
-                .disabled(busy || slot.state == .waiting)
-                .opacity(slot.state == .done ? 0.6 : 1)
+            // A skipped row keeps its shape but has nothing to press: how many tags this spool
+            // takes is decided once, above the rows, not per row.
+            if slot.state != .skipped {
+                Button(cta, action: action)
+                    .buttonStyle(.sw(.primary, size: 11.5, h: 16, v: 8))
+                    .disabled(busy || slot.state == .waiting)
+                    .opacity(slot.state == .done ? 0.6 : 1)
+            }
         }
         .padding(.vertical, 11)
         .overlay(alignment: .bottom) { Hairline() }
@@ -463,6 +584,7 @@ private struct TagRow: View {
         case .working: return Theme.busy
         case .ready: return Theme.accent
         case .waiting: return Theme.kickerLabel
+        case .skipped: return Theme.kickerLabel
         }
     }
 
@@ -478,6 +600,9 @@ private struct TagRow: View {
                           : "present a blank MIFARE Classic 1K tag"
         case .waiting:
             return isScan ? "waiting for the first tag" : "waiting for tag 1"
+        case .skipped:
+            return isScan ? "not needed — one tag is enough for this spool"
+                          : "not needed — this spool gets one tag"
         }
     }
 

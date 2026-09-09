@@ -31,6 +31,14 @@ let exitCode = TestDriver.run([
     colorHexTests,
     colorTableIntegrityTests,
 
+    // Camera colour scan
+    labColorTests,
+    pixelFieldTests,
+    filamentColorEstimatorTests,
+    filamentColorStabiliserTests,
+    scanTargetTests,
+    systemColorPanelTests,
+
     // Printer transport / upload
     printerModelTests,
     sshInvocationTests,
@@ -42,6 +50,7 @@ let exitCode = TestDriver.run([
     printerUpdateTests,
     crealityCloudTests,
     credentialStoreTests,
+    fileCredentialStoreTests,
     integrityFixTests,
 
     // Reader robustness (code-review fixes)
@@ -63,7 +72,9 @@ let exitCode = TestDriver.run([
     spoolInventoryTests,
     inventoryReconcileTests,
     inventoryStoreTests,
+    spoolPlacesTests,
     materialBoxInfoTests,
+    sameMaterialGroupingTests,
     cfsIdentityAmbiguityTests,
     liveCFSFixtureTests,
 
@@ -73,6 +84,8 @@ let exitCode = TestDriver.run([
     tagCascadeTests,
     tagAutoWriteStateTests,
     tagArrivalTests,
+    identifyLoopTests,
+    writeFormPlaceholderTests,
     readerMonitorBusyTests,
 
     // Spool management UI
@@ -86,5 +99,25 @@ let exitCode = TestDriver.run([
     intakeAutoReadTests,
     intakeReaderContentionTests,
     intakeSlotStateTests,
+    inventoryEditingTests,
+    inventoryFilterOptionTests,
+    unloadDestinationTests,
+    retiredSeedTests,
+    tagSourceLabelTests,
+    spoolTypeEditingTests,
+    intakeNameTests,
+    intakeReturnsToScanTests,
+    weightLadderTests,
+    remainingOptionTests,
+    intakeNetWeightTests,
+    tagCountTests,
+    attachTagTests,
+    attachByReadTests,
+    secondSideTests,
+    cloneTests,
+    intakeRemainingTests,
+    inventoryLayoutTests,
+    inventorySortTests,
+    sortToggleTests,
 ])
 exit(exitCode)

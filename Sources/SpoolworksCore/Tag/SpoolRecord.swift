@@ -17,15 +17,30 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     case g250 = "0082"
     // -- beyond Creality's set ------------------------------------------------------------------
     //
-    // Sample and small spools, which the five documented values do not reach. The codes are
-    // derived at the ratio the documented ones use — `floor(grams × 0.33)` metres, which
-    // reproduces all five of them exactly — so the encoding is right even though Creality never
-    // published these.
+    // Sizes Creality never published, kept because they are sizes filament is actually sold in.
+    // The codes are derived at the ratio the documented ones use — `floor(grams × 0.33)` metres,
+    // which reproduces all five of them exactly — so the encoding is right even though Creality
+    // never published these. The field is four ASCII digits, so it reaches 30 kg; the ceiling here
+    // is the market, not the format.
     //
     // **A Creality client reading one of these reports "1 KG."** `Utils.cs:169` defaults any
     // unrecognised length to 1 kg, so the printer, the Windows app and the Android app will all
-    // call a 100 g spool a kilo. Spoolworks reads it correctly. See ``isCrealityStandard``, which
+    // call a 3 kg spool a kilo. Spoolworks reads it correctly. See ``isCrealityStandard``, which
     // is what the write form uses to warn before this is committed to a tag.
+    //
+    // **Provenance of the list.** Bulk sizes: Polymaker sells 2 kg and 3 kg cardboard spools,
+    // Sunlu sells 3 kg and 5 kg, and 10 kg is the industrial format. Small sizes: 750 g is
+    // Fillamentum and ColorFabb, and 250 g is the usual sample spool for an exotic material.
+    // 4 kg was looked for and not found on sale anywhere, so it is deliberately absent.
+    //
+    // An earlier revision carried 300, 400, 700, 800 and 900 g. Those were invented to make the
+    // picker step evenly in 100 g and correspond to no product; they are gone. Nothing that was
+    // ever *written to a tag* is lost — a stored code still decodes, because decoding goes through
+    // `grams` and not through this list.
+    case kg10 = "3300"
+    case kg5  = "1650"
+    case kg3  = "0990"
+    case kg2  = "0660"
     case g200 = "0066"
     case g100 = "0033"
 
@@ -37,6 +52,10 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
         case .g600: return 600
         case .g500: return 500
         case .g250: return 250
+        case .kg10: return 10_000
+        case .kg5:  return 5_000
+        case .kg3:  return 3_000
+        case .kg2:  return 2_000
         case .g200: return 200
         case .g100: return 100
         }
@@ -51,21 +70,17 @@ public enum FilamentLength: String, CaseIterable, Codable, Sendable {
     public var isCrealityStandard: Bool {
         switch self {
         case .kg1, .g750, .g600, .g500, .g250: return true
-        case .g200, .g100: return false
+        case .kg10, .kg5, .kg3, .kg2, .g200, .g100: return false
         }
     }
 
     /// The label the Windows UI shows for this length (`Utils.cs:136-170`).
+    ///
+    /// Derived rather than listed. The five Windows labels are exactly `1 KG` and `<n> G`, so a
+    /// per-case switch was one more place to forget a weight — which is what happened the moment
+    /// the ladder was filled in.
     public var label: String {
-        switch self {
-        case .kg1:  return "1 KG"
-        case .g750: return "750 G"
-        case .g600: return "600 G"
-        case .g500: return "500 G"
-        case .g250: return "250 G"
-        case .g200: return "200 G"
-        case .g100: return "100 G"
-        }
+        grams >= 1000 && grams % 1000 == 0 ? "\(grams / 1000) KG" : "\(grams) G"
     }
 
     public static func forGrams(_ grams: Int) -> FilamentLength? {

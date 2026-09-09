@@ -19,7 +19,27 @@ import SpoolworksCore
 struct WriteTagView: View {
     @ObservedObject var monitor: ReaderMonitor
     @ObservedObject var model: TagViewModel
-    @ObservedObject var settings: AppSettings
+    @ObservedObject var env: AppEnvironment
+    /// Observed individually. `AppEnvironment` holds it as a plain `let`, and a nested
+    /// `ObservableObject` does not republish through its owner — the same trap that made
+    /// Read / identify look as though it never read anything.
+    @ObservedObject var inventory: InventoryViewModel
+
+    /// The spool this write is for, if the user asked for one from Inventory.
+    private var taggingTarget: Spool? {
+        guard let id = inventory.awaitingTagFor else { return nil }
+        return inventory.inventory.spool(id: id)
+    }
+
+    /// The spool a tag was just attached to, so the screen can say so and invite the second tag.
+    ///
+    /// Read off the write outcome rather than remembered: the record on the outcome is the one that
+    /// actually landed, and a spool matching it is one this write is responsible for.
+    private var justTagged: Spool? {
+        guard taggingTarget == nil,
+              case let .succeeded(summary) = model.writeOutcome else { return nil }
+        return inventory.inventory.spool(matching: summary.record)
+    }
 
     var body: some View {
         ScrollView {
@@ -34,16 +54,26 @@ struct WriteTagView: View {
                         if let notice = HardwareNotice(monitor: monitor) {
                             HardwareNoticeBanner(notice: notice, monitor: monitor)
                         }
+                        // Which spool this write belongs to, when it belongs to one. Without it the
+                        // screen looks identical whether the next verified write attaches to a
+                        // spool in stock or creates a new record, and those are very different.
+                        if let target = taggingTarget {
+                            AttachBanner(spool: target, what: "written") {
+                                inventory.cancelTagRequest()
+                            }
+                        } else if let tagged = justTagged {
+                            AttachedBanner(spool: tagged)
+                        }
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)
-                        WriteOptionsCard(settings: settings)
+                        WriteOptionsCard()
                         if let outcome = model.writeOutcome {
                             WriteOutcomeCard(outcome: outcome, model: model)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    WriteVerifyPanel(model: model, monitor: monitor, settings: settings)
+                    WriteVerifyPanel(model: model, monitor: monitor)
                         .frame(width: 420)
                 }
             }
@@ -82,7 +112,6 @@ struct WriteTagView: View {
 private struct WriteVerifyPanel: View {
     @ObservedObject var model: TagViewModel
     @ObservedObject var monitor: ReaderMonitor
-    @ObservedObject var settings: AppSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -134,9 +163,6 @@ private struct WriteVerifyPanel: View {
                         .textSelection(.enabled)
                 }
                 .padding(.top, 4)
-                Text("Seven hex digits — one flag nibble, then RRGGBB.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.secondaryLabel)
             }
             .padding(.top, 16)
             .overlay(alignment: .top) {
@@ -162,8 +188,7 @@ private struct WriteVerifyPanel: View {
                  state: wrote ? "done" : (model.canWrite ? "ready" : "waiting")),
             Step(what: "Read back and compare byte for byte",
                  state: wrote ? "done" : "waiting"),
-            Step(what: "Add the spool to inventory",
-                 state: settings.addWrittenSpoolsToInventory ? (wrote ? "done" : "ready") : "off"),
+            Step(what: "Add the spool to inventory", state: wrote ? "done" : "ready"),
         ]
     }
 
@@ -199,43 +224,59 @@ private struct WriteVerifyPanel: View {
 
 // MARK: - Options
 
-/// The three switches the design puts under the write form.
+/// One line, stating the guarantee the whole screen rests on.
 ///
-/// One is a setting, one is a statement of fact, and the third lives on the Auto-Write card above.
+/// **Verify by read-back is not optional.** The design draws it as a checkbox; making it one would
+/// let someone turn off the check that distinguishes "the reader returned 90 00" from "the bytes
+/// are on the tag". It is shown and always on. The paragraph that used to explain *why* is gone —
+/// it is in the docs, and the reason a screen states a guarantee is so you can see it holds, not so
+/// you can read an essay about it.
 ///
-/// **Verify by read-back is not optional** — the design draws it as a checkbox, but making it one
-/// would let someone turn off the check that distinguishes "the reader returned 90 00" from "the
-/// bytes are on the tag", which is the guarantee this app is built on. It is shown, always on, and
-/// says why.
+/// The "Add to inventory" checkbox that sat beside it is gone too, with the setting behind it: a
+/// verified write now always logs its spool. It existed for re-tagging a spool already in stock,
+/// which the attach flow handles properly — and `logWrittenSpool` matches an existing record by
+/// identity anyway, so leaving it on never created a duplicate.
 private struct WriteOptionsCard: View {
-    @ObservedObject var settings: AppSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            // The design's third switch here is "Write on scan". It is not repeated: the Auto-Write
-            // card above owns that value and surrounds it with the arming state and the sector-key
-            // gate, which a bare checkbox cannot carry. Two controls for one setting on one screen
-            // reads as a bug even when they stay in sync.
-            HStack(spacing: Theme.Spacing.s) {
-                Image(systemName: "checkmark.square.fill")
-                    .foregroundStyle(Theme.success)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Verify by read-back").font(.system(size: 13))
-                    Text("Always on. A reader answering 90 00 means the command was accepted, not that the bytes landed.")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.secondaryLabel)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Verify by read-back, always on")
-
-            Toggle("Add to inventory", isOn: $settings.addWrittenSpoolsToInventory)
-                .help("Log the spool to stock after a verified write. Turn off when replacing a damaged tag on a spool that is already listed.")
+        HStack(spacing: Theme.Spacing.s) {
+            Image(systemName: "checkmark.square.fill")
+                .foregroundStyle(Theme.success)
+                .accessibilityHidden(true)
+            Text("Verify by read-back · always on").font(.system(size: 13))
+            Spacer(minLength: 0)
         }
-        .toggleStyle(.checkbox)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: Theme.Spacing.l)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Says a tag landed on a spool already in stock, and that the second one is ready to write.
+///
+/// The write outcome panel says "written and verified", which is true and answers the wrong
+/// question: the user's question is whether the spool in their hand now *has* this tag. It also
+/// invites the second tag explicitly, because a spool carries one on each side of the hub and the
+/// form is already holding the right payload to write it — the same serial, deliberately, since
+/// both sides must carry the same record.
+private struct AttachedBanner: View {
+    let spool: Spool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Theme.success)
+                .accessibilityHidden(true)
+            Text("Saved to \(spool.label). Present another blank tag to write this spool's second "
+                 + "side — it gets the same payload.")
+                .font(Theme.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.success.opacity(0.10))
+        .overlay(Rectangle().strokeBorder(Theme.success, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }

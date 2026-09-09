@@ -18,6 +18,10 @@ struct SWButtonStyle: ButtonStyle {
         case secondary
         /// Text only, in the accent. For destructive-but-reversible and tertiary actions.
         case ghost
+        /// Accent text *and* an accent border. Same weight as `ghost` in the hierarchy, but drawn
+        /// as a control rather than as a link — for an action that should look deliberate to press.
+        /// Matches ``SWTag``'s own `.outline`, which is where the name comes from.
+        case outline
     }
 
     var variant: Variant = .secondary
@@ -39,7 +43,7 @@ struct SWButtonStyle: ButtonStyle {
                    alignment: block ? .leading : .center)
             .background(background(pressed: configuration.isPressed))
             .overlay(
-                Rectangle().strokeBorder(borderColor, lineWidth: variant == .secondary ? 1 : 0)
+                Rectangle().strokeBorder(borderColor, lineWidth: borderColor == .clear ? 0 : 1)
             )
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
@@ -50,12 +54,16 @@ struct SWButtonStyle: ButtonStyle {
         switch variant {
         case .primary: return Theme.onAccent
         case .secondary: return Theme.label
-        case .ghost: return Theme.accent
+        case .ghost, .outline: return Theme.accent
         }
     }
 
     private var borderColor: Color {
-        variant == .secondary ? Theme.separator : .clear
+        switch variant {
+        case .secondary: return Theme.separator
+        case .outline: return Theme.accent
+        case .primary, .ghost: return .clear
+        }
     }
 
     private func background(pressed: Bool) -> Color {
@@ -69,7 +77,7 @@ struct SWButtonStyle: ButtonStyle {
             if pressed { return Theme.label.opacity(0.14) }
             if hovering { return Theme.label.opacity(0.07) }
             return .clear
-        case .ghost:
+        case .ghost, .outline:
             if pressed { return Theme.accent.opacity(0.18) }
             if hovering { return Theme.accent.opacity(0.10) }
             return .clear

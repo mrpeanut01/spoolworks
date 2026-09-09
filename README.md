@@ -16,16 +16,19 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 
 | Screen | What it does |
 |---|---|
-| **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. |
+| **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. Location and % remaining are edited in place — the places are a list you keep, and every correction to the figure writes the line that explains it. Slots the printer reports stay the printer's to set. |
 | **Printer & CFS** | The printer's live slots, read from `material_box_info.json` over SSH every 30 s, folded into the inventory. |
-| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. |
+| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. Its colour can be read off the spool with a camera. |
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
 | **Write tag** | Program a tag for a third-party spool, or replace a damaged one — and log it to stock. |
 
-**Materials** and **Printers** are windows rather than sidebar entries — `Manage ▸ Materials`
-(⇧⌘1) and `Manage ▸ Printers` (⇧⌘2). The design's sidebar has exactly five entries, but both
-screens are still needed: the catalogue turns a filament id into a name on Intake and Write, and
-the printer list is where the address and password the CFS poll uses are entered.
+**Materials**, **Printers** and **Locations** are windows, not screens — but the sidebar has a
+**Manage** section that opens them, alongside `Manage ▸ Materials` (⇧⌘1), `Printers` (⇧⌘2) and
+`Locations` (⇧⌘3). The design's sidebar has exactly five destinations and these are not
+destinations; a menu is where you look for a command you already know exists, and the sidebar is
+where you look for the parts of an app. All three are parts: the catalogue turns a filament id into
+a name on Intake and Write, the printer list holds the address and password the CFS poll uses, and
+the location list is where a spool can be kept and where one goes when it leaves the printer.
 
 The former **Reader** screen is gone. Its diagnostics are the right-hand column of Read / identify,
 and its one setting — show key material — moved into the Tag Memory window (⌘M), which is the only
@@ -47,6 +50,27 @@ on every poll.
 
 One other correction: **length code `0165` is 500 g, not 1 kg.** The design's decoded-field panel
 says 1 kg; `Utils.cs:172-188`, the ESP32 firmware and the printer dump all disagree. 1 kg is `0330`.
+
+## Reading a spool's colour with the camera
+
+Intake's Method B needs a colour for a spool that has no tag to read it from, and typing a hex code
+means guessing. **Intake ▸ Colour ▸ Scan…** opens the camera instead: fill the small box with
+filament, hold still until the corners turn green, take the reading.
+
+It does not average the pixels, because averaging them is wrong. Filament is a 1.75 mm cylinder
+wound in a spiral, so a close-up of a wrap is a corrugated surface — a specular highlight along
+every strand, deep shadow in every valley, and the spool's core showing through the gaps. Measured
+against a synthetic wrap of known colour, a plain average is **ΔE 7.6** out on shading alone and
+**ΔE 21** once a quarter of the target is core; this reads **ΔE 1.3** and **ΔE 1.4**. It samples 400
+points across the box, finds the dominant colour, and averages the best-lit slice of it — so shadow
+and shine are discarded rather than mixed in. `docs/DECISIONS.md` D-010 has the reasoning and the
+numbers.
+
+**It is not a colorimeter, and the camera's white balance is why.** A spool under a warm lamp reads
+warm, and auto white balance actively tries to neutralise a large field of one colour. The reading
+is a good way to pick a swatch; it is offered into a field you can still type over, never applied
+silently. An iPhone used as a Continuity Camera is much the better instrument — it focuses at a few
+centimetres, which a built-in Mac camera cannot.
 
 ## Requirements
 
@@ -74,7 +98,10 @@ Writing to a tag is the one destructive thing this app does, so:
   `90 00` means the command was accepted, not that the bytes landed.
 - Sector-trailer access bits are validated for the plain/inverted redundancy MIFARE requires — a
   mismatched pair permanently locks the sector.
-- Programming a blank tag rewrites its sector keys irreversibly, and always asks first.
+- Programming a blank tag rewrites its sector keys irreversibly. A blank tag authorises that
+  itself — its sector 1 is still on the factory key and holds no record, so there is nothing
+  on it to lose — and `TagService.writeTag` re-derives the claim from its own authentication
+  and refuses if the two disagree. A tag that is already programmed is never re-keyed.
 - Block 0 is never written.
 
 ## Building
@@ -83,7 +110,7 @@ No Xcode needed — Command Line Tools are enough.
 
 ```bash
 swift build
-swift run SpoolworksTests   # 409 tests, no reader required
+swift run SpoolworksTests   # 648 tests, no reader or camera required
 Tools/make-app.sh           # assemble Spoolworks.app
 Tools/make-dmg.sh           # build the disk image into dist/
 ```
@@ -91,29 +118,24 @@ Tools/make-dmg.sh           # build the disk image into dist/
 The app is signed with a local certificate if you have one and ad-hoc otherwise; either way there
 is no Apple Developer ID, so the first launch needs a right-click ▸ **Open**.
 
-### Stop the app asking for keychain access on every build
+### Where the printer password is kept
 
-A keychain item records which application may read it, and an application is identified by its code
-signature. **An ad-hoc signature has no stable identity** — every rebuild looks like a different
-app, so Spoolworks has to be re-authorised for its own saved SSH password each time.
+In a file this app owns — `~/Library/Application Support/Spoolworks/printer-credentials.json`,
+`0600`, in a `0700` directory, excluded from Time Machine.
 
-Fix it once, with a local self-signed certificate:
+**It is plaintext, and that is a deliberate trade.** It used to be the login Keychain, which is the
+right place for a password. But a Keychain item records which application may read it *by code
+signature*, and Spoolworks has no Apple Developer ID — so with an ad-hoc signature it is a different
+app to the Keychain on every build, and macOS asks for authorisation again each time. For someone
+who has just downloaded an unsigned app, a system password prompt on launch is indistinguishable
+from the thing they were told to be suspicious of.
 
-1. Open **Keychain Access** ▸ menu **Keychain Access** ▸ **Certificate Assistant** ▸
-   **Create a Certificate…**
-2. Name: `Spoolworks Local Signing` · Identity Type: **Self Signed Root** ·
-   Certificate Type: **Code Signing**
-3. Create, then Continue past the self-signed warning.
+So the control was costing more trust than it bought, for a secret that is the root password of a
+3D printer on a home LAN — usually the vendor default, printed on the printer's own touchscreen.
+Anything running as your user account can read it. Do not reuse that file for anything else.
 
-`Tools/make-app.sh` picks it up automatically, and the signature becomes
-
-```
-designated => identifier "com.obsidiang.spoolworks" and certificate leaf = H"…"
-```
-
-which is identical for every build. Authorise once and it holds. Override the name with
-`SPOOLWORKS_SIGN_IDENTITY`; without a certificate the build falls back to ad-hoc and simply keeps
-asking.
+Upgrading from a version that used the Keychain? Enter the password once more. There is no
+migration on purpose: reading the old items back would raise exactly the prompt this removes.
 
 ### Diagnostics
 
@@ -136,7 +158,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 409 tests, runnable without hardware |
+| `SpoolworksTests` | 648 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
@@ -177,7 +199,12 @@ meodai colour-name dataset; and Creality's material data.
   from, a real printer since that wiring landed.
 - **Verify by read-back cannot be switched off.** The design offers it as a checkbox; making it
   one would let someone disable the check that distinguishes "the reader returned `90 00`" from
-  "the bytes are on the tag". It is shown as always-on instead.
+  "the bytes are on the tag". It is shown as always-on instead. A verified write always logs its
+  spool, too — the checkbox that used to gate that is gone.
 - The Creality Cloud profile download validates the CDN host against an allow-list that is an
   educated guess; it fails closed.
+- **The colour scanner has not been checked against a reference.** Its accuracy is measured against
+  synthetic wraps with a known albedo, which validates the algorithm but not the camera in front of
+  it; no reading has been compared with a colorimeter, and the camera's own white balance is an
+  uncorrected error term. See D-010.
 - `Format Tag` and Spoolman integration from the Windows app are not implemented.

@@ -145,10 +145,15 @@ struct TagFormCard: View {
     private var brand: some View {
         if isEditable, model.usesCatalog {
             Picker("Brand", selection: vendorBinding) {
+                // A row for the state the form actually starts in. Both pickers begin with an
+                // empty selection — no brand chosen, no material — and with nothing tagged `""`
+                // they rendered as an empty well, which reads as a control that has failed rather
+                // than one waiting for you. Intake's own pickers have always had this row.
+                Text("—").tag("")
                 ForEach(catalog.vendors, id: \.self) { Text($0).tag($0) }
             }
             .labelsHidden()
-            .frame(maxWidth: 260, alignment: .leading)
+            .frame(minWidth: 180, maxWidth: 260, alignment: .leading)
             .disabled(catalog.vendors.isEmpty)
         } else if isEditable {
             readOnly(nil, hint: "Typing the material ID directly")
@@ -161,12 +166,16 @@ struct TagFormCard: View {
     private var material: some View {
         if isEditable, model.usesCatalog {
             Picker("Material", selection: materialBinding) {
+                Text("—").tag("")
                 ForEach(model.materialsForSelectedVendor) { filament in
                     Text(label(for: filament)).tag(filament.id)
                 }
             }
             .labelsHidden()
-            .frame(maxWidth: 260, alignment: .leading)
+            // A minimum as well as a maximum. Before a brand is chosen this list is empty, and a
+            // popup with no rows collapses to a sliver — the width was saying "broken" while the
+            // emptiness was only saying "not yet".
+            .frame(minWidth: 180, maxWidth: 260, alignment: .leading)
             .disabled(model.materialsForSelectedVendor.isEmpty)
         } else if isEditable {
             readOnly(nil, hint: "Typing the material ID directly")
@@ -499,9 +508,9 @@ struct AutoWriteCard: View {
                     // a blank tag presented with it off raised the confirmation sheet instead of
                     // being written. It gated the app's most ordinary operation — tagging a new
                     // spool — behind a checkbox worded like a hazard, so it is gone.
-                    Text("Blank tags are programmed on presentation. Programming writes sector "
-                         + "1's key, derived from the tag's UID, and that cannot be undone — but "
-                         + "a blank tag has nothing on it to lose.")
+                    // The reasoning — why programming a blank tag needs no confirmation — is in
+                    // `docs/DECISIONS.md` D-006. The screen states what happens, not the argument.
+                    Text("Blank tags are programmed on presentation.")
                         .font(.callout)
                         .foregroundStyle(Theme.secondaryLabel)
                         .fixedSize(horizontal: false, vertical: true)

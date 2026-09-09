@@ -157,7 +157,7 @@ let inventoryViewModelTests = TestSuite(name: "Inventory view model", cases: [
             defer { try? FileManager.default.removeItem(at: dir) }
             let spool = sampleSpool(percent: 100)
             model.add(spool)
-            model.adjust(spool, toPercent: 62)
+            model.adjust(spool, toPercent: 62, method: .weighed)
 
             guard let after = t.unwrap(model.inventory.spool(id: spool.id), "spool") else { return }
             t.equal(after.remainingPercent, 62, "figure moved")
@@ -343,7 +343,6 @@ let cfsViewModelTests = TestSuite(name: "CFS view model", cases: [
             t.expect(!model.canPoll, "cannot poll")
             guard let reason = t.unwrap(model.blockedReason, "reason") else { return }
             t.expect(reason.contains("No printer is configured"), "and says why")
-            t.equal(model.navBadge, "", "no badge rather than a misleading zero")
             t.equal(model.freshness, "not polled", "freshness is honest")
         }
     },
@@ -376,8 +375,7 @@ let writtenSpoolLoggingTests = TestSuite(name: "Logging a written spool", cases:
             }
 
             let logged = model.logWrittenSpool(record: record,
-                                               materialLabel: "Creality · Hyper PLA",
-                                               enabled: true)
+                                               materialLabel: "Creality · Hyper PLA")
             guard let logged = t.unwrap(logged, "logged spool") else { return }
             t.equal(model.inventory.active.count, 1, "in stock")
             t.equal(logged.tagSource, .spoolworksWritten, "credited to this app, not the factory")
@@ -399,8 +397,7 @@ let writtenSpoolLoggingTests = TestSuite(name: "Logging a written spool", cases:
 
             model.add(model.spool(from: record, brand: "Creality", name: "Hyper PLA",
                                   location: .cfs(box: "T1", slot: "B")))
-            model.logWrittenSpool(record: record, materialLabel: "Creality · Hyper PLA",
-                                  enabled: true)
+            model.logWrittenSpool(record: record, materialLabel: "Creality · Hyper PLA")
 
             t.equal(model.inventory.active.count, 1, "still one spool, not two")
             guard let after = t.unwrap(model.inventory.active.first, "spool") else { return }
@@ -411,35 +408,7 @@ let writtenSpoolLoggingTests = TestSuite(name: "Logging a written spool", cases:
         }
     },
 
-    test("the preference being off logs nothing at all") { t in
-        onMain {
-            let (model, _, dir) = makeInventory()
-            defer { try? FileManager.default.removeItem(at: dir) }
-            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
-                                                filamentLength: .kg1) else { return }
-            let logged = model.logWrittenSpool(record: record, materialLabel: "X · Y",
-                                               enabled: false)
-            t.expect(logged == nil, "nothing returned")
-            t.equal(model.inventory.active.count, 0, "and nothing stored")
-        }
-    },
 
-    // `bool(forKey:)` returns false for an absent key, which would make a default-on preference
-    // read as "the user turned it off" on first run.
-    test("the add-to-inventory preference defaults on, not off") { t in
-        onMain {
-            let suite = "sw-defaults-\(UUID().uuidString)"
-            guard let defaults = UserDefaults(suiteName: suite) else { return }
-            defer { defaults.removePersistentDomain(forName: suite) }
-
-            let fresh = AppSettings(defaults: defaults)
-            t.expect(fresh.addWrittenSpoolsToInventory, "on for a first run")
-
-            fresh.addWrittenSpoolsToInventory = false
-            let reloaded = AppSettings(defaults: defaults)
-            t.expect(!reloaded.addWrittenSpoolsToInventory, "and an explicit off survives")
-        }
-    },
 ])
 
 

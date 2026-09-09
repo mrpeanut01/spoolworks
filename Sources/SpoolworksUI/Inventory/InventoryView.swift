@@ -11,13 +11,21 @@ import SpoolworksCore
 struct InventoryView: View {
     @ObservedObject var model: InventoryViewModel
     @ObservedObject var env: AppEnvironment
+    /// Column and rail widths, dragged by the user and remembered. Owned here so the header, every
+    /// row and the splitter read one source — the fixed `Column` constants this replaced existed
+    /// for the same reason, and drifting apart is still the failure it prevents.
+    @StateObject private var layout = InventoryLayout()
 
     var body: some View {
         HStack(spacing: 0) {
             list
-            Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
+            // The rule between the panes is the splitter. Dragging it right narrows the rail, so
+            // the delta is subtracted: the rail's leading edge moving right takes width off it.
+            ResizeHandle(axis: .rail) { delta in
+                layout.setRailWidth(layout.railWidth - delta)
+            }
             InventoryDetailRail(model: model, env: env)
-                .frame(width: Theme.detailRailWidth)
+                .frame(width: layout.railWidth)
         }
         .sheet(item: $model.retireTarget) { spool in
             RetireDialog(spool: spool,
@@ -36,10 +44,14 @@ struct InventoryView: View {
             }
             .padding(.bottom, Theme.Spacing.l)
 
-            SegmentedFilter(options: InventoryFilter.allCases,
-                            title: \.title,
-                            selection: $model.filter)
-                .padding(.bottom, Theme.Spacing.m)
+            ScrollView(.horizontal) {
+                SegmentedFilter(options: model.filterOptions,
+                                title: \.title,
+                                selection: $model.filter)
+            }
+            .scrollIndicators(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, Theme.Spacing.m)
 
             if let error = model.storageError {
                 InlineFailure(text: error).padding(.bottom, Theme.Spacing.m)
@@ -66,11 +78,12 @@ struct InventoryView: View {
 
     private var table: some View {
         VStack(spacing: 0) {
-            InventoryHeaderRow()
+            InventoryHeaderRow(layout: layout, model: model)
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { spool in
                         InventoryRow(spool: spool,
+                                     layout: layout,
                                      isSelected: model.selected?.id == spool.id) {
                             model.selectedID = spool.id
                         }
@@ -83,40 +96,189 @@ struct InventoryView: View {
 
 // MARK: - Table rows
 
-/// Column widths live here, once, so the header and every row cannot drift apart.
-private enum Column {
-    static let swatch: CGFloat = 34
-    static let type: CGFloat = 70
-    static let serial: CGFloat = 78
-    static let location: CGFloat = 118
-    static let remaining: CGFloat = 86
-    static let tag: CGFloat = 118
+/// The grab area between two columns, and the splitter between the table and the rail.
+///
+/// Drawn as the 1 pt or 2 pt rule the design already asks for, with a much wider **invisible** hit
+/// area on top: a 2 pt target is a target you miss, and widening the visible rule to make it
+/// grabbable would put a heavy line through the middle of the table.
+///
+/// The cursor is set on hover rather than left as an arrow — without it a handle is undiscoverable,
+/// because there is nothing to see. `NSCursor.push`/`pop` is paired strictly with the hover
+/// transition; the alternative, `set()`, leaves a resize cursor behind on whatever the pointer
+/// moves to next.
+private struct ResizeHandle: View {
+
+    enum Axis {
+        /// Between two columns: a hairline.
+        case column
+        /// Between the table and the detail rail: the 2 pt rule the design draws there.
+        case rail
+
+        var thickness: CGFloat { self == .rail ? Theme.ruleWidth : Theme.hairline }
+        var colour: Color { self == .rail ? Theme.rule : Theme.separator }
+        /// Total grab width, centred on the rule.
+        var grabWidth: CGFloat { 11 }
+    }
+
+    let axis: Axis
+    /// Horizontal movement since the last callback, in points. Positive is rightward.
+    let onDrag: (CGFloat) -> Void
+
+    @State private var lastTranslation: CGFloat = 0
+    @State private var isHovering = false
+
+    var body: some View {
+        Rectangle()
+            .fill(axis.colour)
+            .frame(width: axis.thickness)
+            .frame(maxHeight: .infinity)
+            // The hit area, not the line. `contentShape` is what makes the transparent overhang
+            // grabbable — without it the gesture only lands on the drawn pixels.
+            .overlay {
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: axis.grabWidth)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        guard hovering != isHovering else { return }
+                        isHovering = hovering
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                // Reported as a delta rather than an absolute, so the caller does
+                                // not have to know where the handle started. `translation` is
+                                // cumulative for the gesture, hence the running subtraction.
+                                onDrag(value.translation.width - lastTranslation)
+                                lastTranslation = value.translation.width
+                            }
+                            .onEnded { _ in lastTranslation = 0 }
+                    )
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// A column heading that sorts the table.
+///
+/// The arrow only appears on the column actually in use. A row of six headings each carrying a
+/// faint chevron says "these are all sorted", which is six times wrong — the affordance is the
+/// hover, and the arrow is the state.
+private struct SortHeader: View {
+    let title: String
+    let sort: InventorySort
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var hovering = false
+
+    private var isActive: Bool { model.sort == sort }
+
+    var body: some View {
+        Button { model.toggleSort(sort) } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                if isActive {
+                    Image(systemName: model.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 7, weight: .black))
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isActive ? Theme.accent : (hovering ? Theme.label : Theme.kickerLabel))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
+    }
+
+    private var name: String { title.isEmpty ? "Colour" : title }
+
+    private var helpText: String {
+        guard isActive else { return "Sort by \(name.lowercased())" }
+        // A third click is the way back to the intake order, and nothing else on screen says so.
+        return model.sortAscending == sort.ascendingIsNaturalFirst
+            ? "Sorted by \(name.lowercased()) — click to reverse"
+            : "Sorted by \(name.lowercased()) — click again for newest first"
+    }
+
+    private var accessibilityLabel: String {
+        guard isActive else { return "\(name), not sorted" }
+        return "\(name), sorted \(model.sortAscending ? "ascending" : "descending")"
+    }
 }
 
 private struct InventoryHeaderRow: View {
+    @ObservedObject var layout: InventoryLayout
+    @ObservedObject var model: InventoryViewModel
+
+    private func sort(for column: InventoryLayout.Column) -> InventorySort {
+        switch column {
+        case .type: return .type
+        case .location: return .location
+        case .remaining: return .left
+        case .tag: return .tag
+        }
+    }
+
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
             // A fixed height as well as a width. `Color` is a flexible view: constrained on one
             // axis only it expands on the other, which stretched this header row to fill the pane
             // and pushed the table halfway down the screen.
-            Color.clear.frame(width: Column.swatch, height: 1)
-            Text("Filament").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Type").frame(width: Column.type, alignment: .leading)
-            Text("Serial").frame(width: Column.serial, alignment: .leading)
-            Text("Location").frame(width: Column.location, alignment: .leading)
-            Text("Remaining").frame(width: Column.remaining, alignment: .trailing)
-            Text("Tag").frame(width: Column.tag, alignment: .leading)
+            // The swatch column has no header text, so its sort control is the space above it.
+            SortHeader(title: "", sort: .colour, model: model)
+                .frame(width: InventoryLayout.swatchWidth, height: 14, alignment: .leading)
+            SortHeader(title: "Filament", sort: .filament, model: model)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(InventoryLayout.Column.allCases, id: \.self) { column in
+                // The handle sits on the column's *leading* edge and sizes the column to its left.
+                // For the first one that is `Filament`, which is flexible — so dragging there
+                // resizes `Type` inversely, and the effect is still "the thing on the left grew".
+                ResizeHandle(axis: .column) { delta in
+                    layout.setWidth(layout.width(column) - delta, for: column)
+                }
+                SortHeader(title: title(column), sort: sort(for: column), model: model)
+                    .frame(width: layout.width(column),
+                           alignment: column == .remaining ? .trailing : .leading)
+            }
         }
         .kicker()
         .padding(.vertical, Theme.Spacing.s)
+        .frame(height: 26)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.rule).frame(height: Theme.ruleWidth)
+        }
+        // The way back. Widths are clamped so they cannot be dragged into an unusable state, but
+        // "usable" is not the same as "what I wanted", and re-dragging six columns by hand to undo
+        // one bad afternoon is not a reasonable ask.
+        .contextMenu {
+            Button("Reset column and rail widths") { layout.reset() }
+        }
+    }
+
+    private func title(_ column: InventoryLayout.Column) -> String {
+        switch column {
+        case .type: return "Type"
+        case .location: return "Location"
+        // "Remaining" does not fit the column at its own width and truncated to "REMAINI…".
+        // Shortened rather than widened: the column holds "100%", and "left" is the word the rest
+        // of the app already uses — "How much is left", "Correct what's left".
+        case .remaining: return "Left"
+        case .tag: return "Tag"
         }
     }
 }
 
 private struct InventoryRow: View {
     let spool: Spool
+    @ObservedObject var layout: InventoryLayout
     let isSelected: Bool
     let select: () -> Void
 
@@ -125,26 +287,27 @@ private struct InventoryRow: View {
     var body: some View {
         Button(action: select) {
             HStack(spacing: Theme.Spacing.s) {
-                Swatch(hex: spool.colorHex).frame(width: Column.swatch, alignment: .leading)
+                Swatch(hex: spool.colorHex)
+                    .frame(width: InventoryLayout.swatchWidth, alignment: .leading)
 
                 Text(spool.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                gap
                 Text(spool.materialType.isEmpty ? "—" : spool.materialType)
                     .font(.system(size: 14))
-                    .frame(width: Column.type, alignment: .leading)
+                    .frame(width: layout.width(.type), alignment: .leading)
 
-                Text(spool.serialLabel)
-                    .font(Theme.monoCaption)
-                    .frame(width: Column.serial, alignment: .leading)
 
+                gap
                 Text(spool.location.description)
                     .font(.system(size: 14))
                     .lineLimit(1)
-                    .frame(width: Column.location, alignment: .leading)
+                    .frame(width: layout.width(.location), alignment: .leading)
 
+                gap
                 HStack(spacing: 5) {
                     // Low stock is called out in words as well as colour — the row is the only
                     // place a spool's condition is visible while scanning the list.
@@ -153,16 +316,20 @@ private struct InventoryRow: View {
                             .font(.system(size: 10))
                             .foregroundStyle(spool.remainingPercent < 15 ? Theme.danger : Theme.warning)
                     }
+                    // The percentage alone. Grams was tried here and taken back out: the rail
+                    // already carries it for the selected spool, and in a column you scan down,
+                    // two numbers per row is two numbers to read past.
                     Text(spool.remainingLabel)
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 }
-                .frame(width: Column.remaining, alignment: .trailing)
+                .frame(width: layout.width(.remaining), alignment: .trailing)
 
+                gap
                 Text(spool.tagSource.description)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.secondaryLabel)
                     .lineLimit(1)
-                    .frame(width: Column.tag, alignment: .leading)
+                    .frame(width: layout.width(.tag), alignment: .leading)
             }
             .foregroundStyle(Theme.label)
             .padding(.vertical, Theme.Spacing.s)
@@ -178,6 +345,13 @@ private struct InventoryRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(spool.label), \(spool.materialType), \(spool.remainingLabel) remaining, \(spool.location.description)")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+    }
+
+    /// Stands in for the header's drag handle, so a row's columns line up with the header's.
+    /// A hairline wide, matching what the handle draws — the handle's grab area overhangs it and
+    /// costs no layout width.
+    private var gap: some View {
+        Color.clear.frame(width: Theme.hairline, height: 1)
     }
 
     private var fill: Color {
@@ -248,8 +422,11 @@ private struct InventoryDetailRail: View {
 
         Rule().padding(.bottom, 14)
 
+        LocationControl(spool: spool, model: model).padding(.bottom, 14)
+
         VStack(spacing: 0) {
-            DataRow("Location", spool.location.description)
+            TypeRow(spool: spool, model: model, materials: env.materialsModel)
+            NetWeightRow(spool: spool, model: model)
             DataRow("Serial", spool.serialLabel, mono: true)
             DataRow("Filament ID", spool.filamentIdLabel, mono: true)
             DataRow("Vendor ID", spool.vendorIdLabel, mono: true)
@@ -258,17 +435,57 @@ private struct InventoryDetailRail: View {
         }
         .padding(.bottom, 18)
 
-        Text("Usage log").kicker().padding(.bottom, 10)
-        UsageLog(entries: spool.usage).padding(.bottom, 18)
+        RemainingControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
 
-        WeighInControl(spool: spool, model: model).padding(.bottom, Theme.Spacing.s)
-
+        // No "Read tag to verify" here. It only switched screens, which the sidebar already does,
+        // and it read as though it would verify *this* spool when Read / identify simply reads
+        // whatever tag is presented.
         VStack(spacing: Theme.Spacing.s) {
-            Button("Read tag to verify") { env.sidebarSelection = .identify }
+            // Only for a spool that has no tag. For one that already carries a payload the Write
+            // screen's own flow applies, and offering this would invite writing a second identity
+            // onto a spool that already has one.
+            if spool.isUntagged {
+                // Two directions, because the spool got here untagged for two different reasons.
+                // A Creality spool arrives already tagged and sealed in mylar the reader cannot
+                // see through, so it is counted onto the shelf and its factory tag is *read* when
+                // the bag is opened. A third-party spool has no tag at all and needs one written.
+                Button("Read its tag") {
+                    model.attachTag(to: spool)
+                    env.sidebarSelection = .identify
+                }
                 .buttonStyle(.sw(.secondary, block: true))
+                .help("Reads the tag already on this spool and attaches it to this record.")
+
+                Button("Write a tag for it") {
+                    model.attachTag(to: spool)
+                    env.loadForTagging(spool)
+                    env.sidebarSelection = .write
+                }
+                .buttonStyle(.sw(.secondary, block: true))
+                .help("Fills the Write screen from this spool and attaches the tag once verified.")
+            }
+            // Buying two of something is ordinary, and re-typing a spool you already own to record
+            // the second one is work the app can do.
+            Button("Clone to a new spool") {
+                env.intakeModel.clone(spool)
+                env.sidebarSelection = .intake
+            }
+            .buttonStyle(.sw(.secondary, block: true))
+            .help("Opens Intake with this spool's details, ready to log another like it.")
+
+            // Outlined rather than a bare link. Retiring is reversible — the spool and its whole
+            // history are kept — but it is still the one button here that takes a spool out of the
+            // list, and it should look like something you press on purpose.
             Button("Retire spool") { model.retireTarget = spool }
-                .buttonStyle(.sw(.ghost, block: true))
+                .buttonStyle(.sw(.outline, block: true))
         }
+
+        // The log goes last. It is the only thing on the rail with no bound on its height, so
+        // anything below it gets pushed off the bottom as a spool accumulates history — and what
+        // was below it was every control on the screen. It is also the part you read rather than
+        // act on, which is the other reason it belongs after the buttons.
+        Text("Usage log").kicker().padding(.top, 18).padding(.bottom, 10)
+        UsageLog(entries: spool.usage)
     }
 }
 
@@ -383,58 +600,68 @@ struct InlineFailure: View {
 }
 
 
-// MARK: - Weigh-in
+// MARK: - Correcting what is left
 
-/// Correct what is left by putting the spool on scales.
+/// Correct the remaining figure by hand — from a set of scales, or as a percentage.
 ///
 /// Not in the design, but the design's own copy asks for it: with no CFS attached it says
 /// "weigh-in corrections carry more weight here", and a spool sitting on a shelf has no other way
 /// to stay accurate — its last reading is however full it was when it left the printer.
 ///
-/// It asks for **filament** grams rather than gross weight. A spool's core is 150–250 g depending
-/// on the maker, and there is nowhere honest to get that number from: it is not on the tag, not in
-/// the material database, and not the same across brands. Asking for gross and guessing the core
-/// would overstate every corrected spool by roughly a fifth, so the label says which is wanted.
-private struct WeighInControl: View {
+/// **One control, two units, one code path.** The percentage edit is a second way of saying the
+/// same thing as the weigh-in, not a second mechanism: both call
+/// ``InventoryViewModel/adjust(_:toPercent:method:)``, which is what guarantees the usage line the
+/// model requires for every change to `remainingPercent`. Adding a separate "set %" affordance
+/// somewhere else on the screen was the obvious alternative and was rejected — two places to
+/// correct one number is how the two paths end up with different clamping rules, and how a user
+/// ends up not knowing which one wrote the line they are reading.
+///
+/// The weight field asks for **filament** grams rather than gross weight. A spool's core is
+/// 150–250 g depending on the maker, and there is nowhere honest to get that number from: it is
+/// not on the tag, not in the material database, and not the same across brands. Asking for gross
+/// and guessing the core would overstate every corrected spool by roughly a fifth, so the label
+/// says which is wanted.
+struct RemainingControl: View {
     let spool: Spool
     @ObservedObject var model: InventoryViewModel
 
     @State private var isOpen = false
-    @State private var entry = ""
-    @State private var problem: String?
+    @State private var chosen: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            Button(isOpen ? "Cancel weigh-in" : "Correct by weighing") {
+            Button(isOpen ? "Cancel correction" : "Correct what's left") {
                 isOpen.toggle()
-                entry = ""
-                problem = nil
+                chosen = nil
             }
             .buttonStyle(.sw(.secondary, block: true))
+            .accessibilityLabel(isOpen
+                                ? "Cancel correcting what is left of \(spool.label)"
+                                : "Correct what is left of \(spool.label)")
 
             if isOpen {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-                    FieldBox(label: "Filament remaining", note: "grams, not including the spool") {
-                        TextField("", text: $entry)
-                            .textFieldStyle(.plain)
-                            .swInput()
-                            .onSubmit(apply)
+                    // One picker, not a unit switch and a field. See
+                    // `InventoryViewModel.remainingOptions(for:)` for why both units are on every
+                    // rung and what this trades away.
+                    FieldBox(label: "How much is left", note: "a tenth of a spool per step") {
+                        Picker("", selection: $chosen) {
+                            Text("—").tag(Int?.none)
+                            ForEach(options, id: \.grams) { option in
+                                Text(option.label).tag(Int?.some(option.grams))
+                            }
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("How much is left of \(spool.label)")
                     }
 
                     HStack(spacing: Theme.Spacing.s) {
                         Button("Apply", action: apply)
                             .buttonStyle(.sw(.primary, size: 12, h: 14, v: 8))
-                            .disabled(entry.isEmpty)
+                            .disabled(chosen == nil)
                         Text("of \(spool.netWeightGrams) g net")
                             .font(Theme.caption)
                             .foregroundStyle(Theme.secondaryLabel)
-                    }
-
-                    if let problem {
-                        Text(problem)
-                            .font(Theme.caption)
-                            .foregroundStyle(Theme.danger)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(Theme.Spacing.m)
@@ -442,20 +669,214 @@ private struct WeighInControl: View {
                 .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
             }
         }
+        // Selecting another spool must not carry a half-made choice across to it.
+        .onChange(of: spool.id) { _, _ in
+            isOpen = false
+            chosen = nil
+        }
     }
 
+    private var options: [(grams: Int, percent: Double, label: String)] {
+        model.remainingOptions(for: spool)
+    }
+
+    /// Every rung is in range by construction, so there is nothing here to refuse — unlike the
+    /// typed field this replaced, where 130 % and a gross weight were both reachable.
     private func apply() {
-        guard let grams = Int(entry.trimmingCharacters(in: .whitespaces)) else {
-            problem = "Enter a whole number of grams."
-            return
-        }
-        guard model.adjust(spool, toGrams: grams) else {
-            problem = "That is more than this spool holds (\(spool.netWeightGrams) g). "
-                + "Weigh the filament only, without the spool it is wound on."
-            return
-        }
+        guard let chosen else { return }
+        _ = model.adjust(spool, toGrams: chosen)
         isOpen = false
-        entry = ""
-        problem = nil
+        self.chosen = nil
+    }
+}
+
+// MARK: - Type
+
+/// The spool's material type, chosen from what the catalogue actually knows.
+///
+/// It has to be editable because it is the one descriptive field with no authority behind it. The
+/// tag stores a filament *id*, not a type; the type is whatever the catalogue calls that id, so a
+/// tag written for an id the catalogue does not know arrives with the field blank. Before this it
+/// was written once at intake and never again, so a spool that landed as `—` stayed `—` for ever —
+/// which is how one got into this repository's own inventory.
+///
+/// **A picker, not a text field.** The first version was a field, and it was wrong twice over. The
+/// options are a closed set in practice — the catalogue is the vocabulary, and typing `PETG ` or
+/// `petg` by hand makes a type that sorts and filters as its own thing. And a free field had to
+/// commit on losing focus, which meant deciding what happens when the rail switches spools
+/// mid-edit; a picker commits on the choice and the question does not arise.
+///
+/// The `—` row exists only while the type is unset. Once a real type is chosen the row disappears,
+/// so the field is *effectively* mandatory from the first edit onward without ever refusing to
+/// represent a state a spool is genuinely in. A type the catalogue does not list — an older spool,
+/// or a database since unloaded — is offered too, so opening the picker can never silently rewrite
+/// a value just by being opened.
+struct TypeRow: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+    @ObservedObject var materials: MaterialsViewModel
+
+    /// Sentinel for "no type recorded". Empty string is the stored form; a `Picker` tag has to be
+    /// something the row can display, and `—` is what every other unset value in this app shows.
+    private static let unset = ""
+
+    var body: some View {
+        // Not `DataRow`, which collapses its contents with `.accessibilityElement(children:
+        // .combine)`. That is right for a key and a static value and wrong for a control: it makes
+        // the picker unreachable — an accessibility probe of this rail found no focusable element
+        // here at all while the row was built that way.
+        HStack(alignment: .firstTextBaseline) {
+            Text("Type")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryLabel)
+            Spacer(minLength: Theme.Spacing.s)
+            Picker("", selection: selection) {
+                if spool.materialType.isEmpty {
+                    Text("—").tag(Self.unset)
+                }
+                ForEach(options, id: \.self) { type in
+                    Text(type).tag(type)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 150)
+            .accessibilityLabel("Material type of \(spool.label)")
+        }
+        .padding(.vertical, Theme.Spacing.s)
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var selection: Binding<String> {
+        Binding(get: { spool.materialType },
+                set: { model.setMaterialType($0, for: spool) })
+    }
+
+    /// Every type the catalogue knows, plus this spool's own if the catalogue has never heard of it.
+    private var options: [String] {
+        var found = Set(materials.rows.map(\.materialType).filter { !$0.isEmpty })
+        if !spool.materialType.isEmpty { found.insert(spool.materialType) }
+        return found.sorted()
+    }
+}
+
+/// What a **full** spool of this holds — its size, not how much is on it. Correctable.
+///
+/// Nominal, and both ways it gets set can be wrong: the tag's length code is what Creality wrote,
+/// and an unrecognised code reports as 1 kg on every Creality client. A row mis-picked at intake is
+/// the other way — a spool recorded at 100 g whose "what's left" picker then offers a tenth of a
+/// spool per rung and looks broken, when the broken thing is this figure.
+struct NetWeightRow: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+    var body: some View {
+        // Not `DataRow`, for the reason `TypeRow` gives: it collapses its contents under
+        // `.accessibilityElement(children: .combine)`, which leaves a control unreachable.
+        HStack(alignment: .firstTextBaseline) {
+            Text("Spool size")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryLabel)
+            Spacer(minLength: Theme.Spacing.s)
+            Picker("", selection: Binding(get: { spool.netWeightGrams },
+                                          set: { model.setNetWeight($0, for: spool) })) {
+                // The spool's own figure is offered even when the tag format has no code for it,
+                // so opening the picker can never quietly change a value just by being opened.
+                if !IntakeViewModel.weights.contains(spool.netWeightGrams) {
+                    Text(Spool.weightLabel(spool.netWeightGrams)).tag(spool.netWeightGrams)
+                }
+                ForEach(IntakeViewModel.weights, id: \.self) { grams in
+                    Text(Spool.weightLabel(grams)).tag(grams)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 150)
+            .accessibilityLabel("Spool size of \(spool.label) — what a full one holds")
+        }
+        .padding(.vertical, Theme.Spacing.s)
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+// MARK: - Location
+
+/// Where the spool is: a picker over the user's own places, plus the list editor.
+///
+/// The picker offers **assertions only** — `Unplaced` and the user's place names. It never offers
+/// a CFS slot or the external holder, because those are measurements the 30-second poll owns and
+/// rewrites; see ``InventoryViewModel/setLocation(_:for:)`` and `docs/DECISIONS.md` D-011. When
+/// the printer is currently holding the spool its position is shown as the selected row, labelled
+/// with where it came from, and the note underneath says plainly that the poll will take it back.
+///
+/// The list of locations is edited in its own window (``LocationsView``), reached from the sidebar
+/// rather than from here. It began inline under this control, then as a link beside it; both put a
+/// way into a *window* inside a panel about one spool, which is the wrong altitude. Windows are
+/// reached from the shell, and the shell is the sidebar.
+struct LocationControl: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            FieldBox(label: "Location", note: note) {
+                Picker("", selection: selection) {
+                    ForEach(model.locationOptions(for: spool)) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Location of \(spool.label)")
+                .accessibilityHint(spool.location.isOnPrinter
+                    ? "The printer reports this spool as loaded. Choosing a place records that you have taken it out; the next poll corrects it if it is still in the printer."
+                    : "Choose where this spool is kept.")
+            }
+
+        }
+    }
+
+    private var selection: Binding<LocationOption> {
+        Binding(get: { model.locationOption(for: spool) },
+                set: { model.setLocation($0, for: spool) })
+    }
+
+    private var note: String {
+        spool.location.isOnPrinter
+            ? "the printer owns this; it is re-read every 30 s"
+            : "where you keep it"
+    }
+}
+
+
+// MARK: - The editable part of a spool, shared
+
+/// Everything about a spool that can be changed by hand: where it is, what it is, how big it is and
+/// how much is left.
+///
+/// Lives here and is used by Read / identify as well as by the Inventory rail. Identifying a tag
+/// and then having to go somewhere else to say "this one is nearly empty" is a round trip through a
+/// screen you were just on, and the spool is already in front of you — so the same controls appear
+/// there, rather than a second set that could disagree about what a tenth of a spool means or which
+/// locations exist.
+///
+/// Deliberately no header of its own: each host frames it, because "Spool detail" and "this is the
+/// spool on the reader" are different sentences about the same controls.
+struct SpoolEditControls: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+    @ObservedObject var materials: MaterialsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            LocationControl(spool: spool, model: model).padding(.bottom, 14)
+            VStack(spacing: 0) {
+                TypeRow(spool: spool, model: model, materials: materials)
+                NetWeightRow(spool: spool, model: model)
+            }
+            .padding(.bottom, 14)
+            RemainingControl(spool: spool, model: model)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

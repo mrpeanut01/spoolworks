@@ -13,15 +13,46 @@ import SpoolworksCore
 /// is broken.
 struct IdentifyView: View {
     @ObservedObject var env: AppEnvironment
+    /// Observed individually, not reached through `env`.
+    ///
+    /// This is the same trap the header bar documents, and it is what made this screen look broken:
+    /// `AppEnvironment` holds these as plain `let`s, and a nested `ObservableObject` does not
+    /// republish through its owner. Reaching `env.tagModel.lastRead` from a computed property
+    /// therefore *read* the right value and never re-rendered when it changed — so a tag was read,
+    /// the record was decoded, and the screen went on showing whatever had been there when it was
+    /// last drawn. Both reported symptoms, "it does not read" and "it starts pre-filled", were the
+    /// one missing subscription.
+    @ObservedObject var model: TagViewModel
+    @ObservedObject var monitor: ReaderMonitor
+    @ObservedObject var inventory: InventoryViewModel
+
     @State private var showDebug = false
 
-    private var model: TagViewModel { env.tagModel }
-    private var monitor: ReaderMonitor { env.monitor }
+    /// The untagged spool waiting for this read, if the user asked for one from Inventory.
+    private var attachTarget: Spool? {
+        guard let id = inventory.awaitingTagFor else { return nil }
+        return inventory.inventory.spool(id: id)
+    }
+
+    /// Binds a freshly read tag to the spool that asked for it.
+    ///
+    /// The source is derived from the tag rather than assumed: `isProgrammed` means sector 1 opened
+    /// with the UID-derived key, which is only true of a tag something in this family wrote. A
+    /// factory tag opens with the default key, and calling it Spoolworks-written would be a claim
+    /// about provenance the app has no basis for.
+    private func attachIfRequested() {
+        guard inventory.awaitingTagFor != nil,
+              let read = model.lastRead, let record = read.record else { return }
+        let type = env.materialsModel.rows.first { $0.id == record.materialId }?.materialType ?? ""
+        inventory.attachTag(record: record,
+                                     materialType: type,
+                                     source: read.isProgrammed ? .spoolworksWritten : .crealityFactory)
+    }
 
     /// The inventory row this tag belongs to, if any.
     private var matched: Spool? {
         guard let record = model.lastRead?.record else { return nil }
-        return env.inventoryModel.existing(for: record)
+        return inventory.existing(for: record)
     }
 
     var body: some View {
@@ -41,8 +72,35 @@ struct IdentifyView: View {
                 .padding(.bottom, 18)
                 Rule().padding(.bottom, 20)
 
+                // Which spool this read is for, when it is for one. Without it the screen looks
+                // identical whether the next tag attaches to a record in stock or merely gets
+                // identified, and those are very different outcomes.
+                if let target = attachTarget {
+                    AttachBanner(spool: target, what: "read") {
+                        inventory.cancelTagRequest()
+                    }
+                    .padding(.bottom, 18)
+                }
+
                 HStack(alignment: .top, spacing: 24) {
-                    hero.frame(maxWidth: .infinity, alignment: .topLeading)
+                    VStack(alignment: .leading, spacing: 18) {
+                        hero
+                        // The spool is already in front of you. Sending someone to Inventory to
+                        // say "this one is nearly empty" is a round trip through a screen they
+                        // were just on, so the same controls appear here — the same ones, not a
+                        // second set that could disagree about what a tenth of a spool means.
+                        if let spool = matched {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Correct this spool").kicker().padding(.bottom, 12)
+                                SpoolEditControls(spool: spool,
+                                                  model: inventory,
+                                                  materials: env.materialsModel)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .cardSurface(padding: 20)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 18) {
                         readerPanel
                         if showDebug { memoryPanel }
@@ -54,7 +112,19 @@ struct IdentifyView: View {
             .padding(.vertical, 22)
         }
         .background(Theme.background)
-        .onAppear { model.mode = .read }
+        // Blank on arrival, then read whatever is on the reader. Verifying a tag you have just
+        // written is the main reason to come here, and the answer has to come from the tag rather
+        // than from what the write left behind — see `beginIdentification`.
+        .onAppear { model.beginIdentification() }
+        // A read asked for from Inventory attaches to the spool that asked. Keyed on the UID rather
+        // than the record, for the same reason Intake is: a spool's two tags carry the *same*
+        // payload, so watching the record would miss the second one entirely.
+        .onChange(of: model.lastRead?.uid ?? []) { _, _ in attachIfRequested() }
+        // The loop. Every arrival is a new presentation, including the *same* tag lifted and put
+        // back — which the model otherwise treats as nothing having happened, deliberately, because
+        // on every other screen one tag means one read. Here re-presenting a tag is the gesture:
+        // check this spool, check the next, check that one again.
+        .onChange(of: monitor.insertionCount) { _, _ in model.beginIdentification() }
     }
 
     // MARK: Hero
@@ -72,20 +142,19 @@ struct IdentifyView: View {
                     Rectangle().fill(Theme.rule).frame(height: Theme.ruleWidth)
                 }
 
+            // "Read tag" is in the screen header and was here too — one screen, one control. The
+            // paragraph about what identity means went with it: the screen states the answer, and
+            // the reasoning lives in `SpoolIdentity`.
             HStack(spacing: 10) {
-                Button("Read tag") { Task { await model.read() } }
-                    .buttonStyle(.sw(.primary, h: 16, v: 10))
-                    .disabled(!model.canRead)
+                Button("Clear") { model.clearRetainedRead() }
+                    .buttonStyle(.sw(.secondary, h: 16, v: 10))
+                    .disabled(model.lastRead == nil && model.readFailure == nil)
+                    .accessibilityLabel("Clear the tag on screen")
                 if let spool = matched {
-                    Button("Retire spool") { env.inventoryModel.retireTarget = spool }
-                        .buttonStyle(.sw(.secondary, h: 16, v: 10))
+                    Button("Retire spool") { inventory.retireTarget = spool }
+                        .buttonStyle(.sw(.outline, h: 16, v: 10))
                 }
-                Spacer(minLength: Theme.Spacing.m)
-                Text("Identity is the tag's serial, filament ID and colour. Either of a spool's two tags resolves the same record.")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.secondaryLabel)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: 320, alignment: .trailing)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -140,11 +209,6 @@ struct IdentifyView: View {
                 Text("Place a spool tag on the reader")
                     .font(Theme.heroTitle)
                     .foregroundStyle(Theme.label)
-                Text("Spoolworks reads Creality factory tags and tags it wrote itself. The record it decodes is matched against your inventory by serial, filament ID and colour.")
-                    .font(Theme.body)
-                    .foregroundStyle(Theme.secondaryLabel)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 560, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

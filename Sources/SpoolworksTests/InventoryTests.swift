@@ -218,7 +218,12 @@ let spoolInventoryTests = TestSuite(name: "Spool inventory", cases: [
 
         t.equal(inventory.filtered(by: .all).count, 4, "all")
         t.equal(inventory.filtered(by: .onPrinter).count, 2, "CFS slot and external holder")
-        t.equal(inventory.filtered(by: .shelf).count, 2, "shelf and unplaced")
+        // `.shelf` — one button meaning "anywhere but the printer" — is gone. A location filter
+        // now names exactly one place, and matches on the value the spool actually holds.
+        t.equal(inventory.filtered(by: .at(.shelf("Shelf · bin 1"))).count, 1, "that one place")
+        t.equal(inventory.filtered(by: .at(.unknown)).count, 1, "and Unplaced is a place like any other")
+        t.equal(inventory.filtered(by: .at(.shelf("Shelf"))).count, 0,
+                "a different name is a different place — no prefix or fuzzy matching")
         t.equal(inventory.filtered(by: .low).count, 1, "low")
         t.equal(inventory.filtered(by: .untagged).count, 1, "untagged")
     },

@@ -19,16 +19,39 @@ public enum InventoryError: Error, Equatable, CustomStringConvertible {
 // MARK: - Filters
 
 /// The Inventory screen's segmented control.
-public enum InventoryFilter: String, CaseIterable, Sendable, Identifiable {
-    case all, onPrinter, shelf, low, untagged
+public enum InventoryFilter: Hashable, Sendable, Identifiable {
 
-    public var id: String { rawValue }
+    case all
+    case onPrinter
+    /// One of the user's own locations.
+    ///
+    /// This replaced a fixed `shelf` case that meant "anywhere but the printer" while being
+    /// *labelled* "Shelf". That was true only while Shelf was the one place a spool could be; once
+    /// locations became a list the user edits, the button named a location it did not filter on and
+    /// kept naming it after the location had been renamed away.
+    ///
+    /// Carries the ``SpoolLocation`` rather than the place's name so matching stays an equality
+    /// check on the value a spool actually holds — a name would have to be resolved back through
+    /// the place list, which ``SpoolInventory`` does not have and should not need.
+    case at(SpoolLocation)
+    case low
+    case untagged
+
+    public var id: String {
+        switch self {
+        case .all: return "all"
+        case .onPrinter: return "onPrinter"
+        case let .at(location): return "at:\(location.description)"
+        case .low: return "low"
+        case .untagged: return "untagged"
+        }
+    }
 
     public var title: String {
         switch self {
         case .all: return "All"
         case .onPrinter: return "On printer"
-        case .shelf: return "Shelf"
+        case let .at(location): return location.description
         case .low: return "Low"
         case .untagged: return "Untagged"
         }
@@ -38,9 +61,38 @@ public enum InventoryFilter: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .all: return true
         case .onPrinter: return spool.location.isOnPrinter
-        case .shelf: return !spool.location.isOnPrinter
+        case let .at(location): return spool.location == location
         case .low: return spool.isLow
         case .untagged: return spool.isUntagged
+        }
+    }
+}
+
+/// What the Inventory table can be ordered by — one case per sortable column.
+public enum InventorySort: String, CaseIterable, Sendable, Identifiable {
+    case colour, filament, type, location, left, tag
+
+    public var id: String { rawValue }
+
+    /// Which way round "ascending" reads for this column, so the arrow means the same thing
+    /// everywhere. Text sorts A→Z; a quantity sorts fullest-first, because a list of spools is
+    /// scanned for the ones running out and putting them at the far end is the wrong default.
+    public var ascendingIsNaturalFirst: Bool { self != .left }
+}
+
+extension Spool {
+    /// The value this spool sorts by for one column, plus a tie-break, as one comparable pair.
+    ///
+    /// The tie-break is always the label, so equal keys never leave rows shuffling between renders
+    /// — twelve spools all reading "100%" would otherwise reorder on every reconcile.
+    func sortKey(_ sort: InventorySort) -> (primary: Double, text: String) {
+        switch sort {
+        case .colour:   return (colourOrder, label)
+        case .filament: return (0, label)
+        case .type:     return (materialType.isEmpty ? 1 : 0, materialType)
+        case .location: return (0, location.description)
+        case .left:     return (remainingPercent, label)
+        case .tag:      return (0, tagSource.description)
         }
     }
 }
@@ -77,6 +129,29 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         if lowCount > 0 { parts.append("\(lowCount) low") }
         if untaggedCount > 0 { parts.append("\(untaggedCount) untagged") }
         return parts.joined(separator: " · ")
+    }
+
+    /// Filtered, then ordered.
+    ///
+    /// `sort` is optional and defaults to nil, which keeps the intake order the list has always
+    /// had — newest first — so a caller that does not care is unchanged.
+    public func filtered(by filter: InventoryFilter,
+                         sortedBy sort: InventorySort?,
+                         ascending: Bool) -> [Spool] {
+        let rows = filtered(by: filter)
+        guard let sort else { return rows }
+        return rows.sorted { a, b in
+            let (lhs, rhs) = (a.sortKey(sort), b.sortKey(sort))
+            if lhs.primary != rhs.primary {
+                return ascending ? lhs.primary < rhs.primary : lhs.primary > rhs.primary
+            }
+            let order = lhs.text.localizedCaseInsensitiveCompare(rhs.text)
+            if order != .orderedSame {
+                return ascending ? order == .orderedAscending : order == .orderedDescending
+            }
+            // Total, so the sort is stable across renders whatever the column.
+            return a.id.uuidString < b.id.uuidString
+        }
     }
 
     public func filtered(by filter: InventoryFilter) -> [Spool] {
@@ -168,9 +243,19 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
     ///
     /// A slot with no identity (unoccupied, or configured by hand with no serial) is skipped.
     @discardableResult
+    /// `unloadTo` is where a spool goes when the printer stops reporting it.
+    ///
+    /// A parameter rather than the constant `.unknown` it used to be, because "off the printer" and
+    /// "nowhere in particular" are not the same claim. A spool you unload almost always goes back
+    /// to the same shelf, and defaulting it there is the difference between an inventory that stays
+    /// true on its own and one that needs correcting after every print.
+    ///
+    /// Still `.unknown` by default: that is the honest answer when nobody has said otherwise, and
+    /// it keeps every existing caller — the tests especially — meaning exactly what it did.
     public mutating func reconcile(with info: MaterialBoxInfo,
                                    at date: Date = .now,
-                                   addingUnknown: Bool = true) -> ReconcileReport {
+                                   addingUnknown: Bool = true,
+                                   unloadTo: SpoolLocation = .unknown) -> ReconcileReport {
         var report = ReconcileReport()
         var seen = Set<UUID>()
 
@@ -288,7 +373,7 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         where spools[index].location.isOnPrinter && !seen.contains(spools[index].id)
                 && !spools[index].isRetired {
             let previous = spools[index].location.description
-            spools[index].location = .unknown
+            spools[index].location = unloadTo
             spools[index].remainingSource = "Last reading from \(previous)"
             spools[index].note(kind: .movement, detail: "Unloaded from \(previous)", date: date)
             report.unloaded.append(spools[index].id)
