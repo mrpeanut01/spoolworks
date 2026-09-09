@@ -243,7 +243,17 @@ main workflow and taught the user to tick the scary box by reflex, which is wors
 Everything else in the clause stands. The write is still authorised per-tag rather than by
 preference: `WritePlan.isBlankTagProgramming` is a claim about the card that was just read, and
 `TagService.writeTag` re-derives the same condition from its own authentication and refuses if the
-two disagree. So a stale UI decision cannot rewrite the keys of a tag that turned out to be
+two disagree.
+
+**Amended again (code review):** the condition is "sector 1 is still on the factory key", full
+stop — not "and holds no record". Those two are not the same bit. `TagService.writeTag` writes
+blocks 4–6 before block 7, so a tag lifted between the two is left holding a record under the
+factory key; this app produces that tag itself. Core's own gate (`wasProgrammed = auth.key ==
+derivedKey`) never looked at the record, but the UI's did, so it showed such a tag as "already
+programmed", offered a write, and every attempt failed with "this tag is blank". The UI now
+authorises on Core's condition exactly, and the confirmation sheet names the case: the tag holds
+a record, its keys were never written, and programming it overwrites that record and writes the
+keys. That is a completion of the interrupted write, not a loss. So a stale UI decision cannot rewrite the keys of a tag that turned out to be
 programmed — which a persisted `true` preference could. The diff, the backup, the access-bit
 preservation and the read-back verification are untouched, and the sheet still states plainly that
 the key is being written.

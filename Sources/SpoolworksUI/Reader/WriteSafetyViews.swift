@@ -171,7 +171,19 @@ struct WriteConfirmationSheet: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var subtitle: String {
+    private var subtitle: String { Self.subtitle(for: plan) }
+
+    /// What the sheet says the write does to the tag in hand. A function of the plan alone so a
+    /// test can check the wording for a tag state that needs no reader to construct.
+    static func subtitle(for plan: WritePlan) -> String {
+        // Checked before the condition, because for this tag the condition reads `.programmed`
+        // and the "already holds a spool record" copy would be a lie by omission: the keys were
+        // never written, so this is a first-time programming that will also overwrite the record.
+        if plan.isInterruptedProgramming {
+            return "This tag holds a spool record, but its sector-1 keys were never written — its "
+                 + "programming was interrupted. Programming it now overwrites that record and "
+                 + "writes the keys."
+        }
         switch plan.currentCondition {
         case .blank:
             return "This tag is blank. Writing programs it for the first time."

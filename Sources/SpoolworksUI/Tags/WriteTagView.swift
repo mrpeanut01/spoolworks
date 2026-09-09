@@ -83,7 +83,6 @@ struct WriteTagView: View {
         .background(Theme.background)
         .onAppear { model.mode = .write }
         .task { await model.prepareCatalog() }
-        .task(id: model.draft.colorHex) { await model.refreshDraftColorName() }
         // The confirmation sheet must be attached to whichever screen builds a plan, or the plan
         // is raised against a view that is not on screen and auto-write stays blocked until
         // something else clears it. That defect is documented in `AppEnvironment.sidebarSelection`.
@@ -173,29 +172,20 @@ private struct WriteVerifyPanel: View {
         .panelSurface(padding: 18)
     }
 
-    private struct Step { let what: String; let state: String }
-
     private var hasCard: Bool { monitor.state.card?.isUsable == true }
-    private var wrote: Bool { model.writeOutcome != nil }
 
-    private var steps: [Step] {
-        [
-            Step(what: "Dump every readable sector",
-                 state: wrote ? "done" : (hasCard ? "ready" : "waiting")),
-            Step(what: "Authenticate sector 1 with the UID key",
-                 state: wrote ? "done" : (hasCard ? "ready" : "waiting")),
-            Step(what: "Write the record to blocks 4–6",
-                 state: wrote ? "done" : (model.canWrite ? "ready" : "waiting")),
-            Step(what: "Read back and compare byte for byte",
-                 state: wrote ? "done" : "waiting"),
-            Step(what: "Add the spool to inventory", state: wrote ? "done" : "ready"),
-        ]
+    private var steps: [WriteVerifyStep] {
+        WriteVerifyStep.steps(outcome: model.writeOutcome,
+                              readback: model.readback,
+                              hasCard: hasCard,
+                              canWrite: model.canWrite)
     }
 
     private func stateColor(_ state: String) -> Color {
         switch state {
         case "done": return Theme.success
         case "ready": return Theme.accent
+        case "unconfirmed": return Theme.warning
         default: return Theme.kickerLabel
         }
     }
@@ -218,6 +208,45 @@ private struct WriteVerifyPanel: View {
             return model.draft.validationIssues.first ?? "— the form is not complete —"
         }
         return record.encoded
+    }
+}
+
+/// One row of the "Write & verify" panel, derived from what the model has actually established.
+///
+/// Internal rather than nested in the panel so the derivation can be tested: the rule that
+/// matters is that a step reads "done" only for a write that **succeeded**. It used to key off
+/// `writeOutcome != nil`, which is also true of `.failed`, so every row went green beside a red
+/// "Write Failed" card.
+struct WriteVerifyStep: Equatable {
+    let what: String
+    let state: String
+
+    static func steps(outcome: WriteOutcome?,
+                      readback: PostWriteReadback?,
+                      hasCard: Bool,
+                      canWrite: Bool) -> [WriteVerifyStep] {
+        let wrote: Bool
+        if case .succeeded = outcome { wrote = true } else { wrote = false }
+        // `TagService` verifies blocks 4–6 against what it sent before it reports success, but
+        // the row promises a read-back, and the read-back the screen can vouch for is the one
+        // whose record is on screen. A success the app could not read back is said to be exactly
+        // that, not quietly counted as verified.
+        let readBack: String
+        switch (wrote, readback) {
+        case (true, .confirmed?): readBack = "done"
+        case (true, _): readBack = "unconfirmed"
+        case (false, _): readBack = "waiting"
+        }
+        return [
+            WriteVerifyStep(what: "Dump every readable sector",
+                            state: wrote ? "done" : (hasCard ? "ready" : "waiting")),
+            WriteVerifyStep(what: "Authenticate sector 1 with the UID key",
+                            state: wrote ? "done" : (hasCard ? "ready" : "waiting")),
+            WriteVerifyStep(what: "Write the record to blocks 4–6",
+                            state: wrote ? "done" : (canWrite ? "ready" : "waiting")),
+            WriteVerifyStep(what: "Read back and compare byte for byte", state: readBack),
+            WriteVerifyStep(what: "Add the spool to inventory", state: wrote ? "done" : "ready"),
+        ]
     }
 }
 
