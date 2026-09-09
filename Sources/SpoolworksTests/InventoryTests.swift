@@ -388,6 +388,44 @@ let inventoryReconcileTests = TestSuite(name: "Inventory reconciliation", cases:
         t.expect(after.remainingSource.contains("no sensor"), "and the source admits it")
     },
 
+    test("twin spools keep their own places: one in a slot, one on the holder") { t in
+        // T1B and T1D in the K2 dump share vendor, filament, colour and serial — a real pairing,
+        // which is why the firmware groups them as auto-refill partners. Put one such pair in a
+        // slot and on the holder and poll twice: each must stay where it is. The holder match
+        // used to take the first spool of that identity, which was the slot's own, and move it;
+        // the real holder spool was then "unloaded", and the next poll reversed both.
+        var inventory = SpoolInventory()
+        let onHolder = makeSpool(serial: "000004", colour: "3E9E4A", percent: 78,
+                                 location: .externalHolder)
+        let inSlot = makeSpool(serial: "000004", colour: "3E9E4A", percent: 60,
+                               location: .cfs(box: "T1", slot: "B"))
+        // Newest first, so the slot spool is the first identity match in the list.
+        inventory.add(onHolder)
+        inventory.add(inSlot)
+
+        var info = boxInfo([slot("B", serial: "000004", percent: "60", colour: "#03E9E4A")])
+        let rackJSON = """
+        {"attach": true, "selected": false, "rfid": 2, "editStatus": 1,
+         "filamentId": "101001", "color": "#03E9E4A", "brand": "Creality", "name": "Ender PLA",
+         "materialType": "PLA", "minTemp": 190, "maxTemp": 240,
+         "venderId": "0276", "serialNum": "000004"}
+        """
+        info.rackMaterial = try JSONDecoder().decode(RackMaterial.self, from: Data(rackJSON.utf8))
+
+        for poll in 1...2 {
+            let report = inventory.reconcile(with: info)
+            t.expect(report.unloaded.isEmpty, "poll \(poll): nothing was unloaded")
+            t.expect(report.updated.isEmpty, "poll \(poll): nothing moved")
+            guard let slotSpool = t.unwrap(inventory.spool(id: inSlot.id), "slot spool"),
+                  let holderSpool = t.unwrap(inventory.spool(id: onHolder.id), "holder spool")
+            else { return }
+            t.equal(slotSpool.location, .cfs(box: "T1", slot: "B"), "poll \(poll): the slot keeps its spool")
+            t.equal(holderSpool.location, .externalHolder, "poll \(poll): the holder keeps its spool")
+            t.equal(slotSpool.usage.count, 0, "poll \(poll): no movement written for the slot spool")
+            t.equal(holderSpool.usage.count, 0, "poll \(poll): no movement written for the holder spool")
+        }
+    },
+
     test("a retired spool is not reclaimed by a poll that still lists its slot") { t in
         var inventory = SpoolInventory()
         let spool = makeSpool(serial: "000001")
@@ -411,6 +449,36 @@ let inventoryStoreTests = TestSuite(name: "Inventory persistence", cases: [
         let store = InventoryStore(directory: dir)
         let loaded = try store.load()
         t.equal(loaded.spools.count, 0, "empty inventory")
+    },
+
+    test("a percentage outside 0…100 in the file is clamped on load, not trusted") { t in
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sw-inv-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = InventoryStore(directory: dir)
+        var inventory = SpoolInventory()
+        inventory.add(makeSpool(serial: "000009", percent: 100))
+        try store.save(inventory)
+
+        // Property observers do not run during decode, so a hand-edited or corrupt figure used
+        // to arrive verbatim and trap in `Int(...)` the first time the row rendered.
+        let text = try String(contentsOf: store.fileURL, encoding: .utf8)
+        t.expect(text.contains("\"remainingPercent\" : 100"), "fixture assumption about the file's layout")
+        try text.replacingOccurrences(of: "\"remainingPercent\" : 100", with: "\"remainingPercent\" : 1e300")
+            .write(to: store.fileURL, atomically: true, encoding: .utf8)
+
+        let loaded = try store.load()
+        guard let spool = t.unwrap(loaded.spools.first, "the spool") else { return }
+        t.equal(spool.remainingPercent, 100, "clamped on the way in")
+        t.equal(spool.remainingLabel, "100%", "and renders without trapping")
+        t.equal(spool.remainingGrams, 1000)
+    },
+
+    test("a usage figure that does not fit an Int renders blank rather than trapping") { t in
+        let entry = UsageEntry(kind: .adjustment, detail: "corrupt", deltaGrams: 1e300)
+        t.equal(entry.amountLabel, "—")
+        t.equal(UsageEntry(kind: .adjustment, detail: "", deltaGrams: -38).amountLabel, "−38 g",
+                "an ordinary figure is unchanged")
     },
 
     test("a saved inventory round-trips with its history intact") { t in

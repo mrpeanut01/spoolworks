@@ -174,7 +174,10 @@ public struct UsageEntry: Identifiable, Hashable, Codable, Sendable {
         if magnitude > 0 && magnitude < 10 {
             return String(format: "%@%.1f g", sign, magnitude)
         }
-        return "\(sign)\(Int(magnitude.rounded())) g"
+        // `Int(Double)` traps on a value that does not fit; a file carrying one should show a
+        // blank, not abort the app.
+        guard let whole = Int(exactly: magnitude.rounded()) else { return "—" }
+        return "\(sign)\(whole) g"
     }
 }
 

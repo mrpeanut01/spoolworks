@@ -114,6 +114,23 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         self.spools = spools
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case spools
+    }
+
+    /// Property observers do not run inside a synthesized `init(from:)`, so a figure outside
+    /// 0…100 in the file — a hand edit, a corrupt write, a client this app has not met — would
+    /// arrive unclamped and trap in `Int(...)` the first time its row rendered. Every decoded
+    /// spool goes through the same clamp a live write gets.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        spools = try container.decode([Spool].self, forKey: .spools).map { spool in
+            var clamped = spool
+            clamped.remainingPercent = Spool.clamp(spool.remainingPercent)
+            return clamped
+        }
+    }
+
     // MARK: Reading
 
     /// Spools that have not been retired.
@@ -356,8 +373,19 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         }
 
         // -- the external holder ------------------------------------------------------------
+        // The same two-pass rule as the slots: the spool already on the holder first, then any
+        // twin not yet bound above. A spool bound to a slot is never re-pointed here. Without
+        // the exclusion, twin spools of one identity — one in a slot, one on the holder — made
+        // the first match the slot's own spool: it was moved to the holder, the real holder
+        // spool was "unloaded", and the next poll reversed both. Two movement lines every 30 s
+        // and the wrong location for both, forever.
         if let rack = info.rackMaterial, rack.attach, let identity = rack.identity,
-           let index = spools.firstIndex(where: { !$0.isRetired && $0.identity == identity }) {
+           let index = spools.firstIndex(where: {
+               !$0.isRetired && $0.identity == identity
+                   && $0.location == .externalHolder && !seen.contains($0.id)
+           }) ?? spools.firstIndex(where: {
+               !$0.isRetired && $0.identity == identity && !seen.contains($0.id)
+           }) {
             seen.insert(spools[index].id)
             if spools[index].location != .externalHolder {
                 spools[index].location = .externalHolder
@@ -467,3 +495,9 @@ public struct InventoryStore: Sendable {
         }
     }
 }
+
+/// The enum already provided `errorDescription`; what it lacked was the conformance that makes
+/// `Error.localizedDescription` — which is what every UI surface shows — read it. Without this
+/// the CFS strip showed "The operation couldn't be completed. (SpoolworksCore.InventoryError error 0.)"
+/// in place of the sentence the case was written to say.
+extension InventoryError: LocalizedError {}
