@@ -353,13 +353,13 @@ let inventoryLayoutTests = TestSuite(name: "Inventory layout", cases: [
         onMain {
             let (layout, defaults, suite) = makeLayout()
             defer { defaults.removePersistentDomain(forName: suite) }
-            layout.setWidth(200, for: .serial)
+            layout.setWidth(200, for: .tag)
             layout.setRailWidth(600)
             layout.reset()
 
-            t.equal(layout.width(.serial), InventoryLayout.Column.serial.defaultWidth, "column")
+            t.equal(layout.width(.tag), InventoryLayout.Column.tag.defaultWidth, "column")
             t.equal(layout.railWidth, InventoryLayout.railDefault, "rail")
-            t.expect(defaults.object(forKey: "SpoolworksInventoryColumn_serial") == nil,
+            t.expect(defaults.object(forKey: "SpoolworksInventoryColumn_tag") == nil,
                      "and the stored value is gone, not merely overwritten")
         }
     },
@@ -1190,6 +1190,146 @@ let intakeRemainingTests = TestSuite(name: "Intake remaining", cases: [
             model.remainingPercent = 20
             model.reset()
             t.equal(model.remainingPercent, 100, "the next spool is full until said otherwise")
+        }
+    },
+])
+
+// MARK: - Sorting the inventory
+
+private func colourSpool(_ hex: String, name: String) -> Spool {
+    Spool(identity: nil, brand: "", name: name, materialType: "PLA",
+          colorHex: hex, colorName: name,
+          netWeightGrams: 1000, remainingPercent: 100,
+          location: .unknown, tagSource: .untagged)
+}
+
+let inventorySortTests = TestSuite(name: "Inventory sorting", cases: [
+
+    test("sorting by colour groups the greys, then runs through the hues") { t in
+        var inventory = SpoolInventory()
+        // Deliberately interleaved on input, and deliberately not orderable by hex string: black
+        // (000000) and navy (0000C8) share a red channel, which is what a naive sort would key on.
+        for (hex, name) in [("0000C8", "navy"), ("FFFFFF", "white"), ("C81E1E", "red"),
+                            ("000000", "black"), ("1EC81E", "green"), ("888888", "grey")] {
+            inventory.add(colourSpool(hex, name: name))
+        }
+        let order = inventory.filtered(by: .all, sortedBy: .colour, ascending: true).map(\.name)
+        t.equal(Array(order.prefix(3)), ["black", "grey", "white"],
+                "the greys come first, dark to light — their hue is whatever rounding survived")
+        t.equal(Set(order.suffix(3)), ["red", "green", "navy"], "and the colours follow")
+        // Hue runs red → green → blue, so the three land in that order rather than alphabetically
+        // or by hex.
+        t.equal(Array(order.suffix(3)), ["red", "green", "navy"], "in hue order")
+    },
+
+    test("reversing gives exactly the opposite order") { t in
+        var inventory = SpoolInventory()
+        for (hex, name) in [("0000C8", "navy"), ("FFFFFF", "white"), ("C81E1E", "red")] {
+            inventory.add(colourSpool(hex, name: name))
+        }
+        let up = inventory.filtered(by: .all, sortedBy: .colour, ascending: true).map(\.name)
+        let down = inventory.filtered(by: .all, sortedBy: .colour, ascending: false).map(\.name)
+        t.equal(down, up.reversed(), "descending is ascending backwards")
+    },
+
+    test("Left sorts fullest first, because a list is scanned for what is running out") { t in
+        var inventory = SpoolInventory()
+        for (percent, name) in [(12.0, "nearly gone"), (100.0, "full"), (60.0, "half")] {
+            var spool = colourSpool("C81E1E", name: name)
+            spool.remainingPercent = percent
+            inventory.add(spool)
+        }
+        // `ascendingIsNaturalFirst` is false for this column: the arrow means the same thing
+        // everywhere, but "first" for a quantity is the top of the range.
+        t.expect(!InventorySort.left.ascendingIsNaturalFirst, "left is the one column that inverts")
+        t.equal(inventory.filtered(by: .all, sortedBy: .left, ascending: false).map(\.name),
+                ["full", "half", "nearly gone"], "fullest first")
+    },
+
+    test("a spool with no type sorts last, not first among the blanks") { t in
+        var inventory = SpoolInventory()
+        var typed = colourSpool("C81E1E", name: "typed")
+        typed.materialType = "PETG"
+        var blank = colourSpool("C81E1E", name: "blank")
+        blank.materialType = ""
+        inventory.add(blank)
+        inventory.add(typed)
+        t.equal(inventory.filtered(by: .all, sortedBy: .type, ascending: true).map(\.name),
+                ["typed", "blank"], "an empty type is not the alphabetically-first type")
+    },
+
+    test("equal keys keep a stable order rather than shuffling between renders") { t in
+        var inventory = SpoolInventory()
+        for i in 0..<12 { inventory.add(colourSpool("C81E1E", name: "spool \(i)")) }
+        // Twelve spools all reading 100% is the ordinary case, and without a total tie-break they
+        // would reorder on every reconcile.
+        let first = inventory.filtered(by: .all, sortedBy: .left, ascending: false).map(\.id)
+        let again = inventory.filtered(by: .all, sortedBy: .left, ascending: false).map(\.id)
+        t.equal(first, again, "same order twice")
+    },
+
+    test("no sort keeps the order the list has always had") { t in
+        var inventory = SpoolInventory()
+        inventory.add(colourSpool("FFFFFF", name: "first"))
+        inventory.add(colourSpool("000000", name: "second"))
+        t.equal(inventory.filtered(by: .all, sortedBy: nil, ascending: true).map(\.name),
+                inventory.filtered(by: .all).map(\.name),
+                "nil is the intake order, unchanged")
+    },
+])
+
+let sortToggleTests = TestSuite(name: "Sort toggling", cases: [
+
+    test("a third click on one column returns to the intake order") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.toggleSort(.filament)
+            t.equal(model.sort, .filament, "first click sorts")
+            t.equal(model.sortAscending, true, "at the column's natural direction")
+
+            model.toggleSort(.filament)
+            t.equal(model.sortAscending, false, "second reverses")
+
+            // Newest-intake-first is a real order and the only one that answers "what did I just
+            // add". Without a way back, sorting once would be permanent.
+            model.toggleSort(.filament)
+            t.equal(model.sort, nil, "third clears it")
+        }
+    },
+
+    test("a different column takes over at its own natural direction") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.toggleSort(.filament)
+            model.toggleSort(.filament)          // now descending
+            model.toggleSort(.left)
+            t.equal(model.sort, .left, "the new column")
+            t.equal(model.sortAscending, false,
+                    "fullest first, not the previous column's direction carried over")
+        }
+    },
+
+    test("the chosen sort survives a relaunch") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeInventory()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            model.toggleSort(.location)
+            let reopened = InventoryViewModel(store: InventoryStore(directory: dir),
+                                              toasts: ToastCenter(),
+                                              defaults: defaults)
+            t.equal(reopened.sort, .location, "column remembered")
+            t.equal(reopened.sortAscending, true, "and direction")
         }
     },
 ])

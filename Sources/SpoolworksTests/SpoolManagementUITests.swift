@@ -343,7 +343,6 @@ let cfsViewModelTests = TestSuite(name: "CFS view model", cases: [
             t.expect(!model.canPoll, "cannot poll")
             guard let reason = t.unwrap(model.blockedReason, "reason") else { return }
             t.expect(reason.contains("No printer is configured"), "and says why")
-            t.equal(model.navBadge, "", "no badge rather than a misleading zero")
             t.equal(model.freshness, "not polled", "freshness is honest")
         }
     },

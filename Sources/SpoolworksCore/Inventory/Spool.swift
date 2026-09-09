@@ -412,6 +412,33 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         return s
     }
 
+    /// A single sortable number that puts colours in an order a person would expect.
+    ///
+    /// Sorting on the hex string looks obvious and is useless: it orders by red channel, so black
+    /// sits beside navy and every shade of one colour scatters. What people mean by "sort by
+    /// colour" is *group the similar ones together*, which is hue.
+    ///
+    /// Two ranges in one value, because a sort key has to be one comparable thing:
+    ///
+    /// * **0…1 — the greys**, ordered black to white. Hue is meaningless below a chroma threshold
+    ///   (a grey's hue is whatever rounding survived), so they are collected rather than sprinkled
+    ///   through the spectrum where their arbitrary hue happens to land.
+    /// * **1…2 — everything else**, ordered by hue angle, so reds sit with reds.
+    ///
+    /// Chroma and hue come from CIELAB rather than HSB: HSB's "saturation" is a different quantity
+    /// at every lightness, so a threshold on it would call a dark teal grey and a pale pink
+    /// colourful.
+    public var colourOrder: Double {
+        guard let rgb = try? RGB8(hex: colorHex) else { return 0 }
+        let lab = LabColor(rgb)
+        // 8 is comfortably above the chroma of anything anyone calls grey, and below the chroma of
+        // anything anyone calls a colour — a mid grey lands near 0, a muted brown near 20.
+        guard lab.chroma >= 8 else { return min(1, max(0, lab.l / 100)) }
+        var hue = atan2(lab.b, lab.a) * 180 / .pi
+        if hue < 0 { hue += 360 }
+        return 1 + hue / 360
+    }
+
     /// The eleven figures a "how much is left" picker offers for a spool of this size.
     ///
     /// Fullest first, a tenth of a spool apart, each labelled in **both** units — `700 g · 70%`.

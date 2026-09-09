@@ -822,6 +822,12 @@ final class TagViewModel: ObservableObject {
     /// for the brand and select index 0.
     func selectVendor(_ vendor: String) {
         selectedVendor = vendor
+        // Same reasoning as `selectMaterial(id:)`: the "—" row means no brand chosen, and it
+        // clears the material rather than reaching for the first one of a brand that is not set.
+        guard !vendor.isEmpty else {
+            selectMaterial(nil)
+            return
+        }
         let materials = catalog.materials(forVendor: vendor)
         if let keep = materials.first(where: { $0.id == draft.materialID }) {
             selectMaterial(keep)          // the current id is still valid under the new brand
@@ -851,6 +857,14 @@ final class TagViewModel: ObservableObject {
     /// well be a valid `base.id` this database simply does not carry — but drops the label, which
     /// would otherwise still be naming whatever was selected before.
     func selectMaterial(id: String) {
+        // The empty id is the picker's "—" row: nothing chosen, which is where the form starts.
+        // It is not an id the catalogue failed to recognise, so it must not switch the form into
+        // manual entry — choosing "no material yet" would otherwise change how the whole field
+        // behaves, which is a mode change nobody asked for.
+        guard !id.isEmpty else {
+            selectMaterial(nil)
+            return
+        }
         guard let filament = catalog.filament(id: id) else {
             draft.materialLabel = ""
             manualMaterialEntry = true

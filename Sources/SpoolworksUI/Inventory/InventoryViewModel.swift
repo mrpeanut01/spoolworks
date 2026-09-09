@@ -198,11 +198,46 @@ final class InventoryViewModel: ObservableObject {
         self.toasts = toasts
         self.defaults = defaults
         self.places = SpoolPlacesStore.load(from: defaults)
+        self.sort = (defaults.string(forKey: Self.sortColumnKey)).flatMap(InventorySort.init(rawValue:))
+        // `bool(forKey:)` is false for an absent key, so the default direction has to come from the
+        // column rather than from the store — the same trap a default-on preference has.
+        self.sortAscending = defaults.object(forKey: Self.sortAscendingKey) as? Bool
+            ?? (self.sort?.ascendingIsNaturalFirst ?? true)
     }
 
     // MARK: Derived
 
-    var rows: [Spool] { inventory.filtered(by: filter) }
+    var rows: [Spool] { inventory.filtered(by: filter, sortedBy: sort, ascending: sortAscending) }
+
+    /// The column the table is ordered by, or nil for the intake order it has always had.
+    @Published private(set) var sort: InventorySort?
+    @Published private(set) var sortAscending = true
+
+    /// Clicking a header: the same column flips direction, a different column takes over at its own
+    /// natural direction, and a third click on the same column drops the sort entirely.
+    ///
+    /// The third click matters. Newest-intake-first is a real order and the only one that answers
+    /// "what did I just add" — without a way back to it, sorting once would be permanent.
+    func toggleSort(_ column: InventorySort) {
+        if sort != column {
+            sort = column
+            sortAscending = column.ascendingIsNaturalFirst
+        } else if sortAscending == column.ascendingIsNaturalFirst {
+            sortAscending.toggle()
+        } else {
+            sort = nil
+            sortAscending = true
+        }
+        persistSort()
+    }
+
+    private func persistSort() {
+        defaults.set(sort?.rawValue, forKey: Self.sortColumnKey)
+        defaults.set(sortAscending, forKey: Self.sortAscendingKey)
+    }
+
+    private static let sortColumnKey = "SpoolworksInventorySortColumn"
+    private static let sortAscendingKey = "SpoolworksInventorySortAscending"
 
     /// The figures the "what's left" picker offers for one spool, fullest first.
     ///

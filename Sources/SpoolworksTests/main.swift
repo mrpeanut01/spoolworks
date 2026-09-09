@@ -85,6 +85,7 @@ let exitCode = TestDriver.run([
     tagAutoWriteStateTests,
     tagArrivalTests,
     identifyLoopTests,
+    writeFormPlaceholderTests,
     readerMonitorBusyTests,
 
     // Spool management UI
@@ -116,5 +117,7 @@ let exitCode = TestDriver.run([
     cloneTests,
     intakeRemainingTests,
     inventoryLayoutTests,
+    inventorySortTests,
+    sortToggleTests,
 ])
 exit(exitCode)

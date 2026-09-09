@@ -31,13 +31,12 @@ final class InventoryLayout: ObservableObject {
 
     /// A resizable column. `Filament` is absent on purpose — see the type's note.
     enum Column: String, CaseIterable {
-        case type, serial, location, remaining, tag
+        case type, location, remaining, tag
 
         /// Narrow enough to be useful, wide enough that the header still reads.
         var minimum: CGFloat {
             switch self {
             case .type: return 52
-            case .serial: return 60
             case .location: return 70
             case .remaining: return 68
             case .tag: return 64
@@ -49,7 +48,6 @@ final class InventoryLayout: ObservableObject {
         var defaultWidth: CGFloat {
             switch self {
             case .type: return 70
-            case .serial: return 78
             case .location: return 118
             case .remaining: return 86
             case .tag: return 118

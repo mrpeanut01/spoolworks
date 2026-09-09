@@ -68,6 +68,35 @@ public enum InventoryFilter: Hashable, Sendable, Identifiable {
     }
 }
 
+/// What the Inventory table can be ordered by — one case per sortable column.
+public enum InventorySort: String, CaseIterable, Sendable, Identifiable {
+    case colour, filament, type, location, left, tag
+
+    public var id: String { rawValue }
+
+    /// Which way round "ascending" reads for this column, so the arrow means the same thing
+    /// everywhere. Text sorts A→Z; a quantity sorts fullest-first, because a list of spools is
+    /// scanned for the ones running out and putting them at the far end is the wrong default.
+    public var ascendingIsNaturalFirst: Bool { self != .left }
+}
+
+extension Spool {
+    /// The value this spool sorts by for one column, plus a tie-break, as one comparable pair.
+    ///
+    /// The tie-break is always the label, so equal keys never leave rows shuffling between renders
+    /// — twelve spools all reading "100%" would otherwise reorder on every reconcile.
+    func sortKey(_ sort: InventorySort) -> (primary: Double, text: String) {
+        switch sort {
+        case .colour:   return (colourOrder, label)
+        case .filament: return (0, label)
+        case .type:     return (materialType.isEmpty ? 1 : 0, materialType)
+        case .location: return (0, location.description)
+        case .left:     return (remainingPercent, label)
+        case .tag:      return (0, tagSource.description)
+        }
+    }
+}
+
 // MARK: - The inventory
 
 /// Every spool the user owns, and the rules for keeping it in step with the printer.
@@ -100,6 +129,29 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         if lowCount > 0 { parts.append("\(lowCount) low") }
         if untaggedCount > 0 { parts.append("\(untaggedCount) untagged") }
         return parts.joined(separator: " · ")
+    }
+
+    /// Filtered, then ordered.
+    ///
+    /// `sort` is optional and defaults to nil, which keeps the intake order the list has always
+    /// had — newest first — so a caller that does not care is unchanged.
+    public func filtered(by filter: InventoryFilter,
+                         sortedBy sort: InventorySort?,
+                         ascending: Bool) -> [Spool] {
+        let rows = filtered(by: filter)
+        guard let sort else { return rows }
+        return rows.sorted { a, b in
+            let (lhs, rhs) = (a.sortKey(sort), b.sortKey(sort))
+            if lhs.primary != rhs.primary {
+                return ascending ? lhs.primary < rhs.primary : lhs.primary > rhs.primary
+            }
+            let order = lhs.text.localizedCaseInsensitiveCompare(rhs.text)
+            if order != .orderedSame {
+                return ascending ? order == .orderedAscending : order == .orderedDescending
+            }
+            // Total, so the sort is stable across renders whatever the column.
+            return a.id.uuidString < b.id.uuidString
+        }
     }
 
     public func filtered(by filter: InventoryFilter) -> [Spool] {

@@ -290,11 +290,6 @@ final class CFSViewModel: ObservableObject {
         return "\(n) boxes daisy-chained as T1–T\(n)."
     }
 
-    /// `"2×"` for the sidebar badge, `"rack"` with no CFS, blank before the first poll.
-    var navBadge: String {
-        guard let info else { return "" }
-        return info.hasNoCFS ? "rack" : "\(info.boxes.count)×"
-    }
 
     /// `"polled 12 s ago"` for the header status strip.
     var freshness: String {

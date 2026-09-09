@@ -705,3 +705,44 @@ let readerMonitorBusyTests = TestSuite(name: "Reader monitor", cases: [
         }
     },
 ])
+
+// The "—" row both write-form pickers start on.
+let writeFormPlaceholderTests = TestSuite(name: "Write form placeholder rows", cases: [
+
+    test("choosing “no material” clears rather than switching to manual entry") { t in
+        runOnMain {
+            let h = makeHarness()
+            await h.model.prepareCatalog()
+            h.model.selectMaterial(id: "")
+            // The empty id is the picker's own placeholder, not an id the catalogue failed to
+            // recognise. Treating the two alike would make "no material yet" silently change how
+            // the whole field behaves.
+            t.expect(!h.model.manualMaterialEntry,
+                     "the form stays on the picker, not in manual entry")
+            t.equal(h.model.draft.materialID, "", "and nothing is selected")
+            t.equal(h.model.draft.materialLabel, "", "nor named")
+        }
+    },
+
+    test("choosing “no brand” clears the material with it") { t in
+        runOnMain {
+            let h = makeHarness()
+            await h.model.prepareCatalog()
+            h.model.selectVendor("")
+            t.equal(h.model.selectedVendor, "", "no brand")
+            t.equal(h.model.draft.materialID, "",
+                    "and no material — reaching for the first of an unset brand would be a guess")
+            t.expect(!h.model.manualMaterialEntry, "still on the picker")
+        }
+    },
+
+    test("an id the catalogue really does not know still means manual entry") { t in
+        runOnMain {
+            let h = makeHarness()
+            await h.model.prepareCatalog()
+            h.model.selectMaterial(id: "99999")
+            // The distinction the placeholder row must not blur: this one *is* a typed id.
+            t.expect(h.model.manualMaterialEntry, "unknown id keeps the manual path")
+        }
+    },
+])

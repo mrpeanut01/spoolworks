@@ -78,7 +78,7 @@ struct InventoryView: View {
 
     private var table: some View {
         VStack(spacing: 0) {
-            InventoryHeaderRow(layout: layout)
+            InventoryHeaderRow(layout: layout, model: model)
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { spool in
@@ -164,16 +164,79 @@ private struct ResizeHandle: View {
     }
 }
 
+/// A column heading that sorts the table.
+///
+/// The arrow only appears on the column actually in use. A row of six headings each carrying a
+/// faint chevron says "these are all sorted", which is six times wrong — the affordance is the
+/// hover, and the arrow is the state.
+private struct SortHeader: View {
+    let title: String
+    let sort: InventorySort
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var hovering = false
+
+    private var isActive: Bool { model.sort == sort }
+
+    var body: some View {
+        Button { model.toggleSort(sort) } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                if isActive {
+                    Image(systemName: model.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 7, weight: .black))
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isActive ? Theme.accent : (hovering ? Theme.label : Theme.kickerLabel))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? [.isSelected, .isButton] : .isButton)
+    }
+
+    private var name: String { title.isEmpty ? "Colour" : title }
+
+    private var helpText: String {
+        guard isActive else { return "Sort by \(name.lowercased())" }
+        // A third click is the way back to the intake order, and nothing else on screen says so.
+        return model.sortAscending == sort.ascendingIsNaturalFirst
+            ? "Sorted by \(name.lowercased()) — click to reverse"
+            : "Sorted by \(name.lowercased()) — click again for newest first"
+    }
+
+    private var accessibilityLabel: String {
+        guard isActive else { return "\(name), not sorted" }
+        return "\(name), sorted \(model.sortAscending ? "ascending" : "descending")"
+    }
+}
+
 private struct InventoryHeaderRow: View {
     @ObservedObject var layout: InventoryLayout
+    @ObservedObject var model: InventoryViewModel
+
+    private func sort(for column: InventoryLayout.Column) -> InventorySort {
+        switch column {
+        case .type: return .type
+        case .location: return .location
+        case .remaining: return .left
+        case .tag: return .tag
+        }
+    }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
             // A fixed height as well as a width. `Color` is a flexible view: constrained on one
             // axis only it expands on the other, which stretched this header row to fill the pane
             // and pushed the table halfway down the screen.
-            Color.clear.frame(width: InventoryLayout.swatchWidth, height: 1)
-            Text("Filament").frame(maxWidth: .infinity, alignment: .leading)
+            // The swatch column has no header text, so its sort control is the space above it.
+            SortHeader(title: "", sort: .colour, model: model)
+                .frame(width: InventoryLayout.swatchWidth, height: 14, alignment: .leading)
+            SortHeader(title: "Filament", sort: .filament, model: model)
+                .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(InventoryLayout.Column.allCases, id: \.self) { column in
                 // The handle sits on the column's *leading* edge and sizes the column to its left.
                 // For the first one that is `Filament`, which is flexible — so dragging there
@@ -181,7 +244,7 @@ private struct InventoryHeaderRow: View {
                 ResizeHandle(axis: .column) { delta in
                     layout.setWidth(layout.width(column) - delta, for: column)
                 }
-                Text(title(column))
+                SortHeader(title: title(column), sort: sort(for: column), model: model)
                     .frame(width: layout.width(column),
                            alignment: column == .remaining ? .trailing : .leading)
             }
@@ -203,7 +266,6 @@ private struct InventoryHeaderRow: View {
     private func title(_ column: InventoryLayout.Column) -> String {
         switch column {
         case .type: return "Type"
-        case .serial: return "Serial"
         case .location: return "Location"
         // "Remaining" does not fit the column at its own width and truncated to "REMAINI…".
         // Shortened rather than widened: the column holds "100%", and "left" is the word the rest
@@ -238,10 +300,6 @@ private struct InventoryRow: View {
                     .font(.system(size: 14))
                     .frame(width: layout.width(.type), alignment: .leading)
 
-                gap
-                Text(spool.serialLabel)
-                    .font(Theme.monoCaption)
-                    .frame(width: layout.width(.serial), alignment: .leading)
 
                 gap
                 Text(spool.location.description)

@@ -370,8 +370,10 @@ private struct Sidebar: View {
         case .inventory:
             let n = env.inventoryModel.inventory.active.count
             return n == 0 ? "" : "\(n)"
-        case .printerCFS:
-            return env.cfsModel.navBadge
+        // Nothing for Printer & CFS. The badge on the row above it is a count of *spools*, so a
+        // number here read as spools too — "1×" beside Printer & CFS says one of something, and
+        // the something it was counting was CFS units. How many boxes are attached is on the
+        // screen itself, where it can be labelled.
         default:
             return ""
         }
