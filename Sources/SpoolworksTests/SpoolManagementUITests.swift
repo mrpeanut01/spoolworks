@@ -644,6 +644,382 @@ let cfsViewModelTests = TestSuite(name: "CFS view model", cases: [
             t.equal(model.note, "Poll the printer to read its CFS.", "and the note matches")
         }
     },
+
+    // "Poll now" pressed while the timer's poll was already talking to the printer opened a
+    // second SSH session and ran a second reconcile pass over the inventory.
+    test("a poll started while one is in flight does nothing") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let transport = CountingBoxInfoTransport()
+            guard let fixture = try? PrinterFixture(transport: transport) else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+            fixture.model.setHost("printer.local", for: .k2)
+            fixture.model.setPassword("hunter2", for: .k2)
+
+            let model = CFSViewModel(transport: transport, printers: fixture.model, inventory: inventory)
+            t.expect(model.canPoll, "the fixture can poll")
+
+            let first = Task { @MainActor in await model.poll() }
+            let second = Task { @MainActor in await model.poll() }
+            await first.value
+            await second.value
+            t.equal(transport.boxInfoCalls, 1, "one session, not two")
+        }
+    },
+])
+
+
+// MARK: - Printer and materials wiring
+
+/// A `PrinterTransporting` that counts CFS reads and takes long enough for a second call to
+/// overlap the first. Everything else fails, as the stand-in does.
+private final class CountingBoxInfoTransport: PrinterTransporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var boxInfoCalls: Int { lock.withLock { count } }
+
+    func remoteDatabaseVersion(_: PrinterCredentials, family _: PrinterType) async throws -> String {
+        throw PrinterUIError.notImplemented
+    }
+
+    func downloadDatabase(_: PrinterCredentials, family _: PrinterType) async throws -> Data {
+        throw PrinterUIError.notImplemented
+    }
+
+    func uploadDatabase(_: Data, credentials _: PrinterCredentials, family _: PrinterType,
+                        options _: UploadOptions,
+                        progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String {
+        throw PrinterUIError.notImplemented
+    }
+
+    func resetDatabase(_: Data, credentials _: PrinterCredentials, family _: PrinterType,
+                       progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws {
+        throw PrinterUIError.notImplemented
+    }
+
+    func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
+        throw PrinterUIError.notImplemented
+    }
+
+    func downloadBoxInfo(_: PrinterCredentials, family _: PrinterType) async throws -> MaterialBoxInfo {
+        lock.withLock { count += 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        throw PrinterUIError.remote("stub printer")
+    }
+}
+
+private func sampleCatalogueFilament(_ id: String, name: String = "Test PLA") -> Filament {
+    Filament(printerIntName: PrinterType.k2.printerIntName,
+             kvParam: ["filament_type": "PLA", "filament_vendor": "Generic"],
+             base: MaterialBase(id: id, brand: "Generic", name: name, materialType: "PLA"))
+}
+
+/// Writes a catalogue straight into `storage`, so a printer is "installed" without going through
+/// the bundled seed.
+private func installCatalogue(_ storage: MaterialStorage, family: PrinterType = .k2,
+                              ids: [String], version: String = "1700000000") throws {
+    let file = MaterialDatabaseFile(list: ids.map { sampleCatalogueFilament($0) }, version: version)
+    try storage.createDirectoryIfNeeded()
+    try MaterialDatabase.encode(file).write(to: storage.url(for: family), options: .atomic)
+}
+
+private func catalogueOnDisk(_ storage: MaterialStorage,
+                             family: PrinterType = .k2) throws -> MaterialDatabaseFile {
+    try MaterialDatabase.decode(Data(contentsOf: storage.url(for: family)))
+}
+
+/// A printer view model over a scratch directory, a scratch defaults suite and an in-memory
+/// credential file — the same three-way wiring as `AppEnvironment`, with nothing shared with the
+/// machine that runs the test.
+@MainActor
+private struct PrinterFixture {
+    let suite: String
+    let dir: URL
+    let defaults: UserDefaults
+    let storage: MaterialStorage
+    let backing: InMemoryCredentialStore
+    let model: PrinterViewModel
+
+    init(transport: PrinterTransporting = UnimplementedPrinterTransport(),
+         ids: [String] = ["00001"]) throws {
+        let suite = "sw-printers-\(UUID().uuidString)"
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(suite, isDirectory: true)
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let storage = MaterialStorage(directory: dir)
+        let backing = InMemoryCredentialStore()
+        // Hosts resolve through the same defaults the view model writes, which is what makes
+        // the order of "forget the address" and "clear the password" observable.
+        let credentials = LocalPrinterCredentialStore(
+            backing: backing,
+            hostForFamily: { PrinterSettings.host(for: $0, in: defaults) })
+        try installCatalogue(storage, ids: ids)
+        self.suite = suite
+        self.dir = dir
+        self.defaults = defaults
+        self.storage = storage
+        self.backing = backing
+        self.model = PrinterViewModel(storage: storage, transport: transport,
+                                      credentials: credentials, defaults: defaults)
+    }
+
+    func cleanup() {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
+/// Polls until `condition` holds or `timeout` passes, for work the model schedules on its own.
+@MainActor
+private func settle(timeout: TimeInterval = 5, until condition: () -> Bool) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() && Date() < deadline {
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+}
+
+let printerViewModelTests = TestSuite(name: "Printer and materials wiring", cases: [
+
+    // Every upload used to run with the service's defaults — prevent on, reboot on — whatever the
+    // sheet said; and the reset path stamped the factory catalogue with the prevent sentinel.
+    test("the sheet's upload options reach the printer service unchanged") { t in
+        onMain {
+            let mock = MockPrinterTransport()
+            let live = LivePrinterTransport(makeTransport: { _, _ in mock })
+            let credentials = PrinterCredentials(host: "printer.local", password: "x")
+            let path = PrinterModel(profileName: "K2", family: PrinterFamily(.k2)).materialDatabasePath
+            let report: @Sendable (PrinterProgress) -> Void = { _ in }
+            guard let local = try? MaterialDatabase.encode(MaterialDatabaseFile(version: "1700000000")),
+                  let remote = try? MaterialDatabase.encode(MaterialDatabaseFile(version: "1600000000"))
+            else { t.record("could not encode fixtures", file: #file, line: #line); return }
+            mock.seed(path, with: remote)
+
+            do {
+                // Updates allowed, no reboot: stamped with the printer's own version, no restart.
+                let stamped = try await live.uploadDatabase(
+                    local, credentials: credentials, family: .k2,
+                    options: UploadOptions(preventDatabaseUpdates: false, reboot: false),
+                    progress: report)
+                t.equal(stamped, "1600000000", "the printer's version is what went on the wire")
+                t.equal(mock.commands, [], "declining the reboot means no reboot")
+
+                // Updates blocked, reboot on: the sentinel, and exactly one reboot — the service's.
+                let sentinel = try await live.uploadDatabase(
+                    local, credentials: credentials, family: .k2,
+                    options: UploadOptions(preventDatabaseUpdates: true, reboot: true),
+                    progress: report)
+                t.equal(sentinel, MaterialDatabaseDocument.preventUpdatesVersion, "the sentinel")
+                t.equal(mock.commands, [PrinterCommand.reboot], "one reboot, issued once")
+
+                // Reset: the factory catalogue keeps its own version, and the printer restarts.
+                try await live.resetDatabase(local, credentials: credentials, family: .k2,
+                                             progress: report)
+                let onPrinter = try t.unwrap(mock.uploads[path], "uploaded reset").map {
+                    try MaterialDatabaseDocument.version(in: $0)
+                }
+                t.equal(onPrinter, "1700000000", "not the sentinel — a reset hands updates back")
+                t.equal(mock.commands.count, 2, "a reset always reboots")
+            } catch {
+                t.record("threw unexpectedly: \(error)", file: #file, line: #line)
+            }
+        }
+    },
+
+    // Removal forgot the address first, so the credential store — keyed by host — had nothing to
+    // delete under, and the root password stayed in the file.
+    test("removing a printer deletes its password from the credential file") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+            fixture.model.setHost("k2.local", for: .k2)
+            fixture.model.setPassword("hunter2", for: .k2)
+            t.equal(try? fixture.backing.password(forHost: "k2.local"), "hunter2", "saved under the host")
+
+            guard let printer = t.unwrap(fixture.model.printers.first, "printer") else { return }
+            fixture.model.requestRemoval(of: printer)
+            await fixture.model.confirmRemoval()
+
+            t.expect(fixture.model.printers.isEmpty, "gone from the list")
+            t.equal(try? fixture.backing.password(forHost: "k2.local"), nil, "and the password went with it")
+            t.equal(PrinterSettings.host(for: .k2, in: fixture.defaults), "", "and so did the address")
+        }
+    },
+
+    // "Use Factory Default", then type the address: the password has to outlive the address being
+    // set, be saved under it, and be reported so the CFS poll runs.
+    test("a password entered before the address is kept, saved under it, and reported") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            await fixture.model.refresh()
+
+            let factory = PrinterSettings.factoryPassword(for: .k2)
+            fixture.model.setPassword(factory, for: .k2)
+            t.equal(fixture.model.password(for: .k2), factory, "held while there is no address")
+
+            fixture.model.setHost("192.168.1.42", for: .k2)
+            t.equal(fixture.model.password(for: .k2), factory, "still there once there is one")
+            t.equal(try? fixture.backing.password(forHost: "192.168.1.42"), factory, "and in the file, under it")
+            t.expect(fixture.model.printers.first?.hasStoredPassword == true, "so the CFS poll can run")
+
+            // Re-addressing to a machine nothing is known about says so, rather than keeping the
+            // old answer.
+            fixture.model.setHost("other.local", for: .k2)
+            t.expect(fixture.model.printers.first?.hasStoredPassword == false,
+                     "no password is known for the new machine")
+            t.equal(fixture.model.password(for: .k2), "", "and none is offered")
+        }
+    },
+
+    // The Materials window kept its own copy of the catalogue and wrote that copy back on the next
+    // edit, so a download merged on disk from the Printers window was gone after the next save.
+    test("a download merged on disk is not overwritten by the next filament edit") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            let printers = fixture.model
+            // The wiring `AppEnvironment` makes.
+            printers.onDatabaseChanged = { [weak materials] family in
+                materials?.noteExternalChange(to: family)
+            }
+            await materials.load()
+            await printers.refresh()
+            t.equal(materials.rows.count, 1, "loaded")
+
+            // A download lands on disk through the Printers window.
+            guard let incoming = try? MaterialDatabase.encode(
+                MaterialDatabaseFile(list: [sampleCatalogueFilament("00002")], version: "1800000000"))
+            else { t.record("could not encode the download", file: #file, line: #line); return }
+            t.noThrow("merging the download") {
+                try printers.mergeDownloadedDatabase(incoming, into: .k2)
+            }
+            printers.onDatabaseChanged?(.k2)
+            await settle { materials.rows.count == 2 }
+            t.equal(materials.rows.count, 2, "the browser reloaded")
+            t.equal(materials.version, "1800000000", "with the downloaded version")
+
+            // Then an edit in the browser.
+            guard var edited = materials.rows.first(where: { $0.materialID == "00001" })?.filament
+            else { t.record("the original record is missing", file: #file, line: #line); return }
+            edited.base.name = "Renamed"
+            let failure = await materials.update(edited)
+            t.expect(failure == nil, "saved: \(failure ?? "")")
+
+            let onDisk = try? catalogueOnDisk(fixture.storage)
+            t.equal(onDisk?.result.list.map(\.base.id).sorted(), ["00001", "00002"],
+                    "the download is still on disk")
+            t.equal(onDisk?.result.list.first { $0.base.id == "00001" }?.base.name, "Renamed",
+                    "and so is the edit")
+            t.equal(onDisk?.result.version, "1800000000", "and the version")
+        }
+    },
+
+    // The one case where reloading would lose something: a write that failed and is waiting on
+    // Retry. The banner has promised to keep those edits, so the change is flagged instead.
+    test("a change on disk under unsaved edits is flagged rather than silently reloaded") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture() else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            let printers = fixture.model
+            printers.onDatabaseChanged = { [weak materials] family in
+                materials?.noteExternalChange(to: family)
+            }
+            await materials.load()
+            await printers.refresh()
+
+            // Make the write fail, edit, then let writes succeed again.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.dir.path)
+            guard var edited = materials.rows.first?.filament
+            else { t.record("no record", file: #file, line: #line); return }
+            edited.base.name = "Renamed"
+            _ = await materials.update(edited)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.dir.path)
+            t.expect(materials.saveFailure != nil, "the write is reported as pending")
+
+            // A download lands on disk meanwhile.
+            t.noThrow("writing the external change") {
+                try installCatalogue(fixture.storage, ids: ["00001", "00002"], version: "1800000000")
+            }
+            printers.onDatabaseChanged?(.k2)
+            try? await Task.sleep(nanoseconds: 50_000_000)   // room for a wrongly scheduled reload
+
+            t.expect(materials.diskChangedWhileUnsaved, "flagged")
+            t.equal(materials.rows.count, 1, "the unsaved edit is still what is shown")
+            t.equal(materials.rows.first?.name, "Renamed", "unchanged")
+
+            // Retry writes the edits, as the banner promised, and the flag clears.
+            await materials.retrySave()
+            t.expect(materials.saveFailure == nil, "saved")
+            t.expect(!materials.diskChangedWhileUnsaved, "memory and disk agree again")
+            t.equal((try? catalogueOnDisk(fixture.storage))?.result.list.first?.base.name, "Renamed")
+        }
+    },
+
+    // `Table` traps on duplicate identifiers, and a hand-edited file can carry two records with
+    // the same id.
+    test("a file with duplicate ids still gives the table unique rows") { t in
+        onMain {
+            guard let fixture = try? PrinterFixture(ids: ["00001", "00001", "00002"]) else {
+                t.record("could not build the printer fixture", file: #file, line: #line); return
+            }
+            defer { fixture.cleanup() }
+            let materials = MaterialsViewModel(storage: fixture.storage, printerType: .k2)
+            await materials.load()
+
+            t.equal(materials.rows.count, 3, "every record is listed")
+            t.equal(Set(materials.rows.map(\.id)).count, 3, "under distinct identifiers")
+            t.equal(materials.rows.map(\.materialID), ["00001", "00001", "00002"],
+                    "without renaming any record")
+            t.equal(materials.existingIDs, ["00001", "00002"], "the duplicate check sees catalogue ids")
+        }
+    },
+
+    // A tag stores the id in five bytes, so a five-character id with an accent was accepted here
+    // and refused at the tag. And the drying fields silently fell back to the original on save.
+    test("the editor refuses ids a tag cannot hold and non-numeric drying fields") { t in
+        var draft = FilamentDraft()
+        draft.id = "É1001"
+        draft.brand = "Generic"
+        draft.name = "Test"
+        draft.materialType = "PLA"
+        draft.minTemp = "190"
+        draft.maxTemp = "240"
+        draft.density = "1.24"
+        draft.diameter = "1.75"
+        draft.softeningTemp = "0"
+        draft.dryingTemp = "warm"
+        draft.dryingTime = "8"
+        draft.params = [KVParam(key: "filament_type", value: "PLA")]
+
+        let errors = draft.errors(existingIDs: [], isEditingExisting: false)
+        t.expect(errors[.id] != nil, "five characters, six bytes")
+        t.expect(errors[.dryingTemp] != nil, "not a number")
+        t.expect(errors[.softeningTemp] == nil, "a plain 0 is fine")
+        t.expect(errors[.dryingTime] == nil, "and so is 8")
+
+        draft.id = "P1001"
+        draft.dryingTemp = "55"
+        t.expect(draft.errors(existingIDs: [], isEditingExisting: false).isEmpty, "all fixed")
+    },
 ])
 
 

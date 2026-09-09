@@ -95,6 +95,7 @@ let exitCode = TestDriver.run([
     keychainCredentialAdapterTests,
     writtenSpoolLoggingTests,
     uploadDefaultsTests,
+    printerViewModelTests,
     writeFormDefaultsTests,
     intakeAutoReadTests,
     intakeReaderContentionTests,

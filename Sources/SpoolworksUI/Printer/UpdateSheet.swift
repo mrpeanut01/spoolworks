@@ -377,7 +377,7 @@ struct UpdateSheet: View {
                                  isNewer: MaterialVersion.isNewer(remote, than: installed),
                                  unreadable: unreadable)
             } catch is CancellationError {
-                phase = .failed(PrinterTransportError.cancelled.localizedDescription)
+                phase = .failed(PrinterUIError.cancelled.localizedDescription)
             } catch {
                 // Windows collapses every failure here into "Error checking version".
                 phase = .failed("Error checking version: \(MaterialsViewModel.message(for: error))")
@@ -423,7 +423,7 @@ struct UpdateSheet: View {
                 // Windows string preserved, with the counts the original never reported.
                 phase = .succeeded("Database Updated — \(result.added) added, \(result.updated) updated")
             } catch is CancellationError {
-                phase = .failed(PrinterTransportError.cancelled.localizedDescription)
+                phase = .failed(PrinterUIError.cancelled.localizedDescription)
             } catch {
                 phase = .failed("Error updating database: \(MaterialsViewModel.message(for: error))")
             }

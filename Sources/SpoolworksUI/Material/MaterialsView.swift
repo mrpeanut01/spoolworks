@@ -14,8 +14,9 @@ import SpoolworksCore
 /// window, the sidebar and the menu bar.
 struct MaterialsView: View {
     @ObservedObject var model: MaterialsViewModel
-    // RootView attaches `.toast(env.toasts)` once per scene, so this view forwards its
-    // view-model's messages into that shared centre rather than presenting its own overlay.
+    // The scene that hosts this view attaches `.toast(env.toasts)` at its root (the Materials
+    // window in `App.swift`), so this view forwards its view-model's messages into that shared
+    // centre rather than presenting its own overlay.
     @EnvironmentObject private var toasts: ToastCenter
 
     @State private var hasLoaded = false
@@ -146,8 +147,18 @@ struct MaterialsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    if model.diskChangedWhileUnsaved {
+                        // Both sides have something the other lacks, so the choice is the user's.
+                        Text("The database on disk was also changed from the Printers window while these edits were unsaved. Retry writes your edits over that change; Reload discards your edits and shows what is on disk.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 8)
+                if model.diskChangedWhileUnsaved {
+                    Button("Reload") { Task { await model.load() } }
+                }
                 Button("Retry") { Task { await model.retrySave() } }
                 Button {
                     model.saveFailure = nil
@@ -178,8 +189,8 @@ struct MaterialsView: View {
             }
             .width(min: 34, ideal: 34, max: 40)
 
-            TableColumn("ID", value: \.id) { row in
-                Text(row.id)
+            TableColumn("ID", value: \.materialID) { row in
+                Text(row.materialID)
                     .font(.system(.body, design: .monospaced))
             }
             .width(min: 60, ideal: 70)
@@ -270,7 +281,7 @@ struct MaterialsView: View {
             Button("Duplicate as New…") { model.editor = .add(template: only.filament) }
             Divider()
             Button("Copy Colour Hex") { copy(only.colorHex) }
-            Button("Copy Filament ID") { copy(only.id) }
+            Button("Copy Filament ID") { copy(only.materialID) }
             Divider()
         }
         if !selected.isEmpty {

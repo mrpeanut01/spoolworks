@@ -24,15 +24,31 @@ struct LivePrinterTransport: PrinterTransporting {
     /// Trust on first use. The alternative, `.strict`, would refuse every printer until the user
     /// hand-pinned a host key, which no Creality client has ever asked for; `.acceptNew` still
     /// fails loudly if a pinned key later *changes*, which is the attack worth catching.
-    var hostKeyPolicy: HostKeyPolicy = .acceptNew
+    let hostKeyPolicy: HostKeyPolicy
 
-    private func service(_ credentials: PrinterCredentials) -> PrinterService {
+    /// Builds the session for one call. Injectable so the option plumbing between the sheet and
+    /// `PrinterService` can be exercised against `MockPrinterTransport` — that plumbing is exactly
+    /// what went wrong once already, when every upload ran with the service's defaults whatever
+    /// the sheet said.
+    private let makeTransport: @Sendable (PrinterCredentials, HostKeyPolicy) -> PrinterTransport
+
+    init(hostKeyPolicy: HostKeyPolicy = .acceptNew,
+         makeTransport: @escaping @Sendable (PrinterCredentials, HostKeyPolicy) -> PrinterTransport
+            = { LivePrinterTransport.ssh($0, policy: $1) }) {
+        self.hostKeyPolicy = hostKeyPolicy
+        self.makeTransport = makeTransport
+    }
+
+    private static func ssh(_ credentials: PrinterCredentials, policy: HostKeyPolicy) -> PrinterTransport {
         let configuration = SSHConfiguration(host: credentials.host,
                                              port: credentials.port,
                                              username: credentials.username,
-                                             hostKeyPolicy: hostKeyPolicy)
-        return PrinterService(transport: SSHTransport(configuration: configuration,
-                                                      password: credentials.password))
+                                             hostKeyPolicy: policy)
+        return SSHTransport(configuration: configuration, password: credentials.password)
+    }
+
+    private func service(_ credentials: PrinterCredentials) -> PrinterService {
+        PrinterService(transport: makeTransport(credentials, hostKeyPolicy))
     }
 
     /// The printer family's own idea of itself. `PrinterModel` is constructed with the family the
@@ -51,14 +67,33 @@ struct LivePrinterTransport: PrinterTransporting {
         try await service(credentials).downloadDatabaseFromPrinter(model(family))
     }
 
+    /// The sheet's choices go through as given. This used to call `upload` with `UploadOptions()`
+    /// — prevent on, reboot on — so the "Allow printer database updates" switch changed nothing
+    /// on the wire, declining the reboot still rebooted, and accepting it made the sheet open a
+    /// second session to reboot a printer that was already going down.
     func uploadDatabase(_ data: Data,
                         credentials: PrinterCredentials,
                         family: PrinterType,
-                        progress: @escaping @Sendable (Double) -> Void) async throws {
-        _ = try await service(credentials).upload(database: data,
-                                                  to: model(family)) { report in
-            progress(report.fractionCompleted)
-        }
+                        options: UploadOptions,
+                        progress: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String {
+        let result = try await service(credentials).upload(database: data,
+                                                           to: model(family),
+                                                           options: options,
+                                                           progress: progress)
+        return result.version
+    }
+
+    /// `PrinterService.reset` owns the reset semantics — the document's own version is kept, the
+    /// K1 side-car is written, and the reboot is unconditional — so nothing here second-guesses
+    /// it. Stamping the prevent sentinel on a factory catalogue, as the old upload path did, would
+    /// have blocked the very updates a reset exists to hand back to the printer.
+    func resetDatabase(_ data: Data,
+                       credentials: PrinterCredentials,
+                       family: PrinterType,
+                       progress: @escaping @Sendable (PrinterProgress) -> Void) async throws {
+        _ = try await service(credentials).reset(to: model(family),
+                                                 withCloudDatabase: data,
+                                                 progress: progress)
     }
 
     func reboot(_ credentials: PrinterCredentials, family _: PrinterType) async throws {

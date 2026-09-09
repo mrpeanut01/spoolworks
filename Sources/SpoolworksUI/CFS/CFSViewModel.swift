@@ -68,6 +68,10 @@ final class CFSViewModel: ObservableObject {
     private let printers: PrinterViewModel
     private let inventory: InventoryViewModel
     private var timer: Task<Void, Never>?
+    /// True while a poll is between its start and its reconcile. "Poll now" pressed while the
+    /// timer's poll was in flight used to open a second SSH session and run a second reconcile
+    /// pass over the inventory; the second call is now a no-op.
+    private var pollInFlight = false
 
     init(transport: PrinterTransporting,
          printers: PrinterViewModel,
@@ -122,12 +126,14 @@ final class CFSViewModel: ObservableObject {
     // MARK: Polling
 
     func poll() async {
-        guard let target, canPoll else { return }
+        guard !pollInFlight, let target, canPoll else { return }
         let password = printers.password(for: target.family)
         guard !password.isEmpty else {
             state = .failed("No saved password for \(target.displayName).")
             return
         }
+        pollInFlight = true
+        defer { pollInFlight = false }
         state = .polling
         do {
             let credentials = printers.makeCredentials(host: target.host, password: password)
@@ -153,8 +159,8 @@ final class CFSViewModel: ObservableObject {
         timer = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let ready = await self.canPoll
-                if await self.autoPoll, ready { await self.poll() }
+                let ready = self.canPoll
+                if self.autoPoll, ready { await self.poll() }
                 // Retry sooner while there is nothing to poll, so adding a printer or its password
                 // takes effect in seconds rather than at the end of a full interval.
                 let delay = ready ? Self.pollInterval : Self.retryInterval
@@ -180,7 +186,10 @@ final class CFSViewModel: ObservableObject {
     func pollJob() async {
         guard let target, target.isReachableOnPaper else { return }
         do {
-            let snapshot = try await jobReader.snapshot(host: target.host)
+            // Trimmed the way the CFS poll's credentials are: the address field is free text and
+            // a trailing space is invisible in it.
+            let host = target.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            let snapshot = try await jobReader.snapshot(host: host)
             job = snapshot
             guard let charge = tracker.accept(snapshot) else { return }
             apply(charge)

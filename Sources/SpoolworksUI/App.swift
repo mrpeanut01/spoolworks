@@ -72,6 +72,14 @@ final class AppEnvironment: ObservableObject {
                                             transport: LivePrinterTransport(),
                                             credentials: credentials)
         self.printerModel = printerModel
+        // The Printers window rewrites the catalogue on disk — a download merged in, a reset, a
+        // family added or removed — while the Materials window edits its own in-memory copy and
+        // writes that copy back on the next save. Left unwired, the next filament edit persisted
+        // the pre-download catalogue and the download was gone.
+        let materialsModel = self.materialsModel
+        printerModel.onDatabaseChanged = { [weak materialsModel] family in
+            materialsModel?.noteExternalChange(to: family)
+        }
 
         // Same fallback reasoning as the material storage above: a broken Application Support
         // must leave the app usable and the failure visible, not trap at launch.
@@ -193,13 +201,18 @@ public struct SpoolworksApp: App {
         // list is where the address and password the CFS poll needs are entered. Dropping them
         // from the sidebar without rehousing them made the Printer & CFS screen tell users to
         // "add one on the Printers screen" while offering no way to reach it.
+        //
+        // Each window is its own scene, so each needs its own `.toast(env.toasts)`: the one in
+        // `RootView` only reaches the main window's hierarchy, and both of these views read the
+        // centre through `@EnvironmentObject`, which traps when it is missing. Adding a printer
+        // from this window used to crash on exactly that.
         Window("Materials", id: AppEnvironment.materialsWindowID) {
-            MaterialsView(model: env.materialsModel).nonRestorableWindow()
+            MaterialsView(model: env.materialsModel).toast(env.toasts).nonRestorableWindow()
         }
         .defaultSize(width: 900, height: 640)
 
         Window("Printers", id: AppEnvironment.printersWindowID) {
-            PrintersView(model: env.printerModel).nonRestorableWindow()
+            PrintersView(model: env.printerModel).toast(env.toasts).nonRestorableWindow()
         }
         .defaultSize(width: 820, height: 600)
 

@@ -66,6 +66,13 @@ struct UploadSheet: View {
         return false
     }
 
+    /// Whether this run restarts the printer. A reset always does — the Windows reboot switch is
+    /// hidden and ignored in reset mode (`Utils.cs:470`) — and an upload does only when updates
+    /// are allowed *and* the switch is on, because a restart is when the printer's updater runs.
+    private var willReboot: Bool {
+        isResetMode || (!prevent && reboot)
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -83,7 +90,10 @@ struct UploadSheet: View {
             host = printer.host
             password = model.password(for: printer.family)
             prevent = !printer.allowDatabaseUpdates
-            reboot = printer.rebootAfterUpload
+            // The stored choice, not the derived one: `printer.rebootAfterUpload` reads false
+            // while updates are blocked, and persisting that back after the user allowed updates
+            // in this sheet overwrote the preference they had actually made.
+            reboot = PrinterSettings.storedRebootAfterUpload(for: printer.family, in: model.defaults)
         }
         .onDisappear { work?.cancel() }
         .interactiveDismissDisabled(isRunning)
@@ -175,7 +185,7 @@ struct UploadSheet: View {
                 if isResetMode {
                     Toggle(isOn: $resetLocalDatabaseToo) {
                         Text("Also reset this Mac's database")
-                        Text("Replaces the local \(printer.displayName) catalogue with the bundled factory copy. Any filaments you added are lost.")
+                        Text("Once the printer has been reset, replaces the local \(printer.displayName) catalogue with the bundled factory copy. Any filaments you added are lost.")
                     }
                     Label("The printer always reboots after a reset.", systemImage: "info.circle")
                         .font(.callout)
@@ -185,7 +195,10 @@ struct UploadSheet: View {
                         Text("Allow printer database updates")
                         Text("Off stamps the upload with version \(MaterialVersion.preventUpdateSentinel), so the printer's own updater never replaces it.")
                     }
-                    Toggle(isOn: $reboot) {
+                    // Shows off while it is disabled, like the Printers screen, so the sheet never
+                    // displays a switched-on control that the upload will ignore; the stored choice
+                    // comes back the moment updates are allowed.
+                    Toggle(isOn: Binding(get: { !prevent && reboot }, set: { reboot = $0 })) {
                         Text("Reboot the printer afterwards")
                         Text(prevent
                              ? "Unavailable while updates are blocked — a restart is when the printer's updater runs."
@@ -256,7 +269,7 @@ struct UploadSheet: View {
             } icon: {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             }
-            if reboot || isResetMode {
+            if willReboot {
                 Text("The printer will be unreachable for a minute or so while it restarts.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -342,13 +355,14 @@ struct UploadSheet: View {
         guard canRun else { return }
 
         // Persist the non-secret settings the way the Windows dialog does (`UploadForm.cs:137`).
-        // The password goes to the Keychain-backed credential store, never to defaults.
+        // The password goes to the credential file through the store, never to defaults.
         model.setHost(host, for: printer.family)
         model.setPassword(password, for: printer.family)
         if !isResetMode {
             // `prevent` is the sheet's own local sense; the stored preference is its inverse.
-            // Reboot is written *after*, and only when updates are allowed — otherwise
-            // setAllowDatabaseUpdates's own clearing of it would be undone on the next line.
+            // The reboot switch is only live while updates are allowed, so that is the only time
+            // its value is something the user chose; while blocked it is left alone rather than
+            // overwritten with the derived "off".
             model.setAllowDatabaseUpdates(!prevent, for: printer.family)
             if !prevent { model.setRebootAfterUpload(reboot, for: printer.family) }
         }
@@ -358,78 +372,90 @@ struct UploadSheet: View {
         let transport = model.transport
         let reset = isResetMode
         let alsoResetLocal = resetLocalDatabaseToo
-        let preventUpdates = prevent
-        let shouldReboot = reboot
+        // Everything the service needs to know, decided here and handed over once. The service
+        // stamps the version (reading the printer's own when updates are allowed — Windows
+        // swallows a failed read there and stamps "0", `Utils.cs:678-681`; here the failure stops
+        // the upload), writes the K1 side-car, and reboots — or does not — at the end.
+        let options = UploadOptions(preventDatabaseUpdates: prevent, reboot: willReboot)
+        let restarts = willReboot
 
         phase = .running(step: reset ? "Resetting…" : "Preparing…", fraction: nil)
 
         work = Task { @MainActor in
+            let report: @Sendable (PrinterProgress) -> Void = { progress in
+                Task { @MainActor in
+                    phase = .running(step: Self.step(for: progress.stage, reset: reset),
+                                     fraction: progress.fractionCompleted)
+                }
+            }
             do {
-                let payload: Data
+                var note = ""
                 if reset {
                     // Windows fetches a fresh catalogue from Creality Cloud (`Utils.cs:454`).
                     // SpoolworksCore ships the factory catalogues in the bundle, so this works offline.
-                    payload = try BundledMaterialSeed().seedData(for: family)
+                    let payload = try BundledMaterialSeed().seedData(for: family)
+                    try await transport.resetDatabase(payload,
+                                                      credentials: credentials,
+                                                      family: family,
+                                                      progress: report)
+                    // Only once the printer has it. Writing the local file first meant a cancelled
+                    // or failed reset had already thrown away this Mac's catalogue.
                     if alsoResetLocal {
                         try payload.write(to: model.storage.url(for: family), options: .atomic)
-                        model.onDatabaseChanged?(family)
                     }
                 } else {
-                    if preventUpdates {
-                        try model.setLocalVersion(MaterialVersion.preventUpdateSentinel, for: family)
-                    } else {
-                        // Windows swallows a failed version read and stamps "0"
-                        // (`Utils.cs:678-681`), silently making the local database look ancient.
-                        // Here the failure stops the upload and says so.
-                        phase = .running(step: "Reading the printer's database version…", fraction: nil)
-                        let remote = try await transport.remoteDatabaseVersion(credentials, family: family)
-                        try model.setLocalVersion(remote, for: family)
+                    let payload = try model.localDatabaseData(for: family)
+                    let version = try await transport.uploadDatabase(payload,
+                                                                     credentials: credentials,
+                                                                     family: family,
+                                                                     options: options,
+                                                                     progress: report)
+                    // Mirror on the local file what was stamped on the wire, so the Printers
+                    // screen's "Locked" reading and the Download sheet's comparison describe the
+                    // database the printer actually has. The printer has it either way, so a
+                    // failure here is a footnote on a success, not a failed upload.
+                    do {
+                        try model.setLocalVersion(version, for: family)
+                    } catch {
+                        note = "\nThe local copy's version could not be updated: "
+                            + MaterialsViewModel.message(for: error)
                     }
-                    payload = try model.localDatabaseData(for: family)
-                }
-
-                try Task.checkCancellation()
-                phase = .running(step: reset ? "Resetting…" : "Uploading…", fraction: nil)
-
-                try await transport.uploadDatabase(payload,
-                                                   credentials: credentials,
-                                                   family: family) { fraction in
-                    Task { @MainActor in
-                        if case .running(let step, _) = phase {
-                            phase = .running(step: step, fraction: fraction)
-                        }
-                    }
-                }
-
-                // TODO(wire): K1 also expects a `material_option.json` side-car next to the database
-                // (SPEC/04 §2, `PrinterType.usesMaterialOptionSidecar`). Building and pushing it
-                // belongs in SpoolworksCore's PrinterService, not in a view — wire it here once that exists.
-
-                try Task.checkCancellation()
-
-                // A reset always reboots — the Windows reboot switch is hidden and ignored in reset
-                // mode (`Utils.cs:470`).
-                let willReboot = reset || shouldReboot
-                if willReboot {
-                    phase = .running(step: "Rebooting the printer…", fraction: nil)
-                    try await transport.reboot(credentials, family: family)
                 }
 
                 await model.refresh()
-                if reset { model.onDatabaseChanged?(family) }
+                model.onDatabaseChanged?(family)
 
                 if reset {
                     phase = .succeeded("Reset complete\nRebooting printer")
-                } else if willReboot {
-                    phase = .succeeded("Upload complete\nRebooting printer")
+                } else if restarts {
+                    phase = .succeeded("Upload complete\nRebooting printer" + note)
                 } else {
-                    phase = .succeeded("Upload complete")
+                    phase = .succeeded("Upload complete" + note)
                 }
             } catch is CancellationError {
-                phase = .failed(PrinterTransportError.cancelled.localizedDescription)
+                phase = .failed(PrinterUIError.cancelled.localizedDescription)
             } catch {
                 phase = .failed(MaterialsViewModel.message(for: error))
             }
+        }
+    }
+
+    /// The service's stages in the user's words. Preserves the Windows completion strings'
+    /// register — "Rebooting printer" — and the sheet's own earlier step names.
+    private static func step(for stage: PrinterProgress.Stage, reset: Bool) -> String {
+        switch stage {
+        case .preparing:
+            return reset ? "Resetting…" : "Preparing…"
+        case .readingPrinterVersion:
+            return "Reading the printer's database version…"
+        case .uploadingDatabase:
+            return reset ? "Sending the factory catalogue…" : "Uploading…"
+        case .uploadingMaterialOption:
+            return "Writing material_option.json…"
+        case .rebooting:
+            return "Rebooting the printer…"
+        case .downloadingDatabase, .finished:
+            return "Finishing…"
         }
     }
 }
