@@ -94,8 +94,13 @@ final class AppEnvironment: ObservableObject {
              weak materials = self.materialsModel] summary in
             guard let inventoryModel else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
-            // verified before committing, so a write made there logs nothing on its own.
-            guard intakeModel?.isActive != true else { return }
+            // verified before committing, so a write made there logs nothing on its own. It does
+            // need to know *what* was written: the spool it later adds has to carry the identity
+            // the tags actually hold, not whatever its form says by then.
+            if let intakeModel, intakeModel.isActive {
+                intakeModel.absorbWrite(uid: summary.uid, record: summary.record)
+                return
+            }
             // Resolved here rather than inside the inventory, which holds no catalogue. The tag
             // stores a filament *id*; the type is whatever the catalogue calls that id, and an id
             // it does not know genuinely has no type to report.

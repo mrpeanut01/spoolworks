@@ -165,6 +165,30 @@ let inventoryViewModelTests = TestSuite(name: "Inventory view model", cases: [
             t.equal(after.usage.first?.deltaGrams, -380, "delta derived, not asserted")
         }
     },
+
+    // `selected` follows the filter, so a bare `selectedID` naming a hidden spool showed some
+    // other row. Opening a specific spool has to make it visible.
+    test("revealing a spool the filter hides drops the filter so it is the one shown") { t in
+        onMain {
+            let (model, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let healthy = sampleSpool("000001", percent: 90)
+            let low = sampleSpool("000002", percent: 10)
+            model.add(healthy)
+            model.add(low)
+            model.filter = .low
+
+            model.reveal(healthy.id)
+            t.equal(model.filter, .all, "the filter that hid it is dropped")
+            t.equal(model.selected?.id, healthy.id, "and it is the one the rail shows")
+
+            // A spool the filter already lists needs no such help, and the filter stands.
+            model.filter = .low
+            model.reveal(low.id)
+            t.equal(model.filter, .low, "a listed spool leaves the filter alone")
+            t.equal(model.selected?.id, low.id, "selected")
+        }
+    },
 ])
 
 // MARK: - Intake
@@ -323,6 +347,268 @@ let intakeViewModelTests = TestSuite(name: "Intake view model", cases: [
             t.equal(added.brand, "Prusament", "description kept")
             t.equal(model.session.count, 1, "shown in the session list")
             t.equal(model.brand, "", "and the form is rearmed for the next spool")
+            // Unplaced, not `Shelf`: that is a seeded place the user can rename or remove, and a
+            // spool at a place the picker no longer offers renders blank. See D-011.
+            t.equal(added.location, .unknown, "lands unplaced like every other way in")
+        }
+    },
+
+    // Method B, and the defect that put phantom spools in the CFS list: the tags were written
+    // with one payload and the spool was stored under whatever the form said at "Add to stock".
+    test("a written spool is identified by what its tags hold, not by the form at confirm") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                 filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.brand = "Creality"
+            model.name = "Hyper PLA"
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: written)
+            t.equal(model.tagsHandled, 2, "both tags written")
+            t.expect(model.isIdentityLocked, "and the fields the tag encodes are locked")
+
+            // The name is not on the tag, so it may still change.
+            model.name = "Hyper PLA, the red one"
+            t.expect(model.canConfirm, "a name edit is allowed")
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "spool") else { return }
+            t.equal(added.identity, SpoolIdentity(record: written), "the identity is the tags'")
+            t.equal(added.tagSource, .spoolworksWritten, "credited as written")
+            t.equal(added.name, "Hyper PLA, the red one", "the edit that was allowed survived")
+            t.equal(added.location, .unknown, "unplaced, like every other way in")
+            t.equal(inventory.existing(for: written)?.id, added.id,
+                    "so reading either tag later finds this spool rather than discovering another")
+        }
+    },
+
+    test("a form that drifts from what was written cannot be confirmed until it is put back") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                 filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.brand = "Creality"
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: written)
+
+            // The colour panel and the camera sheet can both land a value around the view's lock.
+            model.colorHex = "FFFFFF"
+            guard let drift = t.unwrap(model.writtenDrift, "the drift is named") else { return }
+            t.expect(drift.contains("C12E1F"), "and says what the tag holds: \(drift)")
+            t.expect(!model.canConfirm, "which blocks the add")
+            model.confirm()
+            t.equal(inventory.inventory.active.count, 0, "nothing stored under the wrong identity")
+
+            // An invalid value is drift too. It used to store `identity == nil` on a spool
+            // marked `spoolworksWritten`, which no tag could ever match.
+            model.colorHex = "not a colour"
+            t.expect(!model.canConfirm, "an unencodable colour is a mismatch, not a nil identity")
+
+            model.restoreWrittenValues()
+            t.equal(model.colorHex, "C12E1F", "the tag's colour is back")
+            t.equal(model.writtenDrift, nil, "the form agrees with the tags again")
+            t.expect(model.canConfirm, "so it can be added")
+        }
+    },
+
+    test("the first write fixes the form, and the second tag is drafted from the first") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let monitor = ReaderMonitor()
+            let toasts = ToastCenter()
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "sw-test-\(UUID())")!)
+            let tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+            let model = IntakeViewModel(monitor: monitor,
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            model.method = .manual
+            model.colorHex = "E8A0B4"
+            model.netWeightGrams = 1000
+            // What landed differs from the form: the panel moved the colour after the reader
+            // was armed, and the write went out with the draft as it stood.
+            guard let written = try? SpoolRecord(materialId: "01001", colorRGB: "0087BE",
+                                                 filamentLength: .g500, serialNumber: "424242") else { return }
+            model.absorbWrite(uid: [1, 2, 3, 4], record: written)
+            t.equal(model.colorHex, "0087BE", "the form takes the tag's colour")
+            t.equal(model.netWeightGrams, 500, "and its size")
+            t.equal(model.serial, "424242", "and its serial")
+            t.equal(model.filamentId, "101001", "and its filament id")
+
+            // A spool's two tags carry the same payload, so the second is drafted from the first
+            // however the form has moved since.
+            model.colorHex = "FFFFFF"
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.colorHex, "0087BE", "the second tag repeats the first")
+            t.equal(tagModel.draft.serialNumber, "424242", "same serial")
+            t.equal(tagModel.draft.weight, .g500, "same length code")
+        }
+    },
+
+    test("a second tag carrying a different payload is refused, not counted") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1, serialNumber: "424242"),
+                  let other = try? SpoolRecord(materialId: "01001", colorRGB: "0087BE",
+                                               filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4], record: first)
+            model.absorbWrite(uid: [9, 9, 9, 9], record: other)
+            t.equal(model.tagsHandled, 1, "a tag that disagrees with the first does not fill the slot")
+            t.expect(model.failure?.contains("different payload") == true, "and the screen says why")
+            t.equal(model.writtenRecord, first, "the first tag stays the authority")
+        }
+    },
+
+    // The reader's arming is driven from one value, so a field that feeds the written record
+    // cannot be left off the list the view watches. The spool size was, and a tag auto-written
+    // after the size changed carried the old length code.
+    test("the arming key moves with every field the tag encodes, size included") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let monitor = ReaderMonitor()
+            let toasts = ToastCenter()
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "sw-test-\(UUID())")!)
+            let tagModel = TagViewModel(monitor: monitor, toasts: toasts, settings: settings)
+            let model = IntakeViewModel(monitor: monitor,
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            model.method = .manual
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.weight, .kg1, "armed for the default size")
+
+            let before = model.armingKey
+            model.netWeightGrams = 500
+            t.expect(model.armingKey != before, "a size change re-arms")
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.weight, .g500, "and the tag would now carry the new length code")
+
+            let afterSize = model.armingKey
+            model.serial = "424242"
+            t.expect(model.armingKey != afterSize, "so does the serial")
+            model.loadDraft(into: tagModel)
+            t.equal(tagModel.draft.serialNumber, "424242", "carried through")
+
+            let afterSerial = model.armingKey
+            model.setTagsRequired(0)
+            t.expect(model.armingKey != afterSerial,
+                     "and the tag count, which decides whether anything is armed at all")
+        }
+    },
+
+    // `reset()` picked the first catalogue brand whatever the method, and picking a brand runs
+    // the catalogue pre-fill. Switching back from Method B with another brand chosen therefore
+    // *changed* the brand, and Method A came up describing a filament nothing had read.
+    test("switching back to Method A leaves no catalogue pre-fill behind") { t in
+        onMain {
+            let (model, _, cleanup) = await makeCatalogueIntake()
+            defer { cleanup() }
+            model.method = .manual
+            let brands = model.catalogueBrands
+            guard brands.count > 1 else {
+                t.expect(false, "the bundled catalogue should have more than one brand")
+                return
+            }
+            model.catalogueBrand = brands[1]
+            t.expect(!model.brand.isEmpty, "Method B is pre-filled from the catalogue, as intended")
+
+            model.method = .scan
+            t.equal(model.brand, "", "brand")
+            t.equal(model.name, "", "name")
+            t.equal(model.materialType, "", "type")
+            t.equal(model.materialID, "", "no catalogue material chosen")
+            t.equal(model.filamentId, "", "no filament id")
+            t.expect(model.decoded == nil, "and nothing claims to have been read")
+        }
+    },
+
+    test("Method A does not invent a type for a filament id the catalogue does not know") { t in
+        onMain {
+            // `makeIntake()` uses the preview catalogue, which is empty: no id resolves.
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "99999", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000777") else { return }
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.materialType, "", "nothing resolved, so nothing is claimed")
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "spool") else { return }
+            // The same answer `logWrittenSpool` gives for the same case; the rail can correct it.
+            t.equal(added.materialType, "", "left blank rather than guessed as PLA")
+            t.equal(added.brand, "", "no brand invented either")
+            t.equal(added.identity?.filamentId, "199999", "but the spool is still its tag's")
+        }
+    },
+
+    test("with one tag required the toast says a tag was read, not both") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let toasts = ToastCenter()
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: toasts)
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1) else { return }
+            model.setTagsRequired(1)
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.expect(model.allTagsHandled, "one of one is finished")
+            guard let text = t.unwrap(toasts.current?.text, "toast") else { return }
+            t.expect(text.hasPrefix("Tag read"), "worded for one tag: \(text)")
+            t.expect(!text.contains("Both"), "and never claims two")
+        }
+    },
+
+    // The name fallback ran only when there was no identity at all, so a spool this app tagged
+    // for a filament the catalogue has since dropped cloned with no material and Method B sat
+    // blocked on "Choose a material".
+    test("a clone whose filament id the catalogue no longer knows finds its material by name") { t in
+        onMain {
+            let (model, _, cleanup) = await makeCatalogueIntake()
+            defer { cleanup() }
+            guard let row = model.materials(for: model.catalogueBrands.first ?? "").first else {
+                t.expect(false, "the bundled catalogue should have a material")
+                return
+            }
+            let source = Spool(identity: SpoolIdentity(vendorId: "0276", filamentId: "199999",
+                                                       colorHex: "C12E1F", serialNumber: "000123"),
+                               brand: row.brand, name: row.name, materialType: row.materialType,
+                               colorHex: "C12E1F",
+                               tagSource: .spoolworksWritten)
+            model.clone(source)
+            t.equal(model.selectedMaterial?.brand, row.brand, "matched by brand")
+            t.equal(model.selectedMaterial?.name, row.name, "and by name")
+            t.equal(model.writeBlocker, nil, "so the tags can be written")
+        }
+    },
+
+    test("Open it on a duplicate shows that spool whatever the filter") { t in
+        onMain {
+            let (model, inventory, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "000123") else { return }
+            let owner = inventory.spool(from: record)
+            inventory.add(owner)
+            inventory.add(sampleSpool("000002", percent: 5))
+            inventory.filter = .low
+
+            model.absorb(read(uid: [1, 2, 3, 4], record: record))
+            t.equal(model.duplicate?.id, owner.id, "flagged as already in stock")
+            model.openDuplicate()
+            t.equal(inventory.selected?.id, owner.id,
+                    "the duplicate itself is opened, not the first row the filter happens to list")
         }
     },
 ])
@@ -562,6 +848,25 @@ private func makeIntake() -> (IntakeViewModel, InventoryViewModel, URL) {
     return (model, inventory, dir)
 }
 
+/// An intake model over the bundled catalogue, for the cases that need real brands and ids. The
+/// preview catalogue `makeIntake()` uses is empty, which is what every other case wants.
+@MainActor
+private func makeCatalogueIntake() async -> (IntakeViewModel, InventoryViewModel, () -> Void) {
+    let catalogue = FileManager.default.temporaryDirectory
+        .appendingPathComponent("sw-cat-\(UUID().uuidString)", isDirectory: true)
+    let materials = MaterialsViewModel(storage: MaterialStorage(directory: catalogue))
+    await materials.load()
+    let (inventory, _, dir) = makeInventory()
+    let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                inventory: inventory,
+                                materials: materials,
+                                toasts: ToastCenter())
+    return (model, inventory, {
+        try? FileManager.default.removeItem(at: catalogue)
+        try? FileManager.default.removeItem(at: dir)
+    })
+}
+
 private func read(uid: [UInt8], record: SpoolRecord?) -> TagReadResult {
     TagReadResult(uid: uid,
                   derivedKey: MifareKey.default,
@@ -680,6 +985,29 @@ let intakeAutoReadTests = TestSuite(name: "Intake auto-read", cases: [
             t.equal(model.tagsHandled, 1, "and it counts again")
         }
     },
+
+    // Tag A absorbed, tag B refused as a different spool, Discard — B is still on the reader,
+    // and the next read of it has to count even though it is a UID the model has just seen. The
+    // view used to key absorption on that UID, so an equal value after the reset never fired.
+    test("a tag refused as a mismatch counts once the intake it clashed with is discarded") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let first = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                               filamentLength: .kg1),
+                  let other = try? SpoolRecord(materialId: "02003", colorRGB: "8A8A88",
+                                               filamentLength: .kg1) else { return }
+            model.absorb(read(uid: [1, 2, 3, 4], record: first))
+            model.absorb(read(uid: [5, 6, 7, 8], record: other))
+            t.expect(model.mismatch != nil, "refused while the first spool is in progress")
+
+            model.reset()
+            model.absorb(read(uid: [5, 6, 7, 8], record: other))
+            t.equal(model.tagsHandled, 1, "the same read, presented again, fills the first slot")
+            t.equal(model.mismatch, nil, "no clash left")
+            t.equal(model.filamentId, other.filamentId, "and the form holds the second spool")
+        }
+    },
 ])
 
 
@@ -788,6 +1116,28 @@ let intakeSlotStateTests = TestSuite(name: "Intake slot states", cases: [
             t.expect(!model.isArmedToWrite, "reading is not writing")
             model.absorbWrite(uid: [1, 2, 3, 4])
             t.equal(model.tagsHandled, 0, "and a write outcome is ignored here")
+        }
+    },
+
+    // "Write now" on the second row with the first row's tag still on the reader rewrites that
+    // tag. The confirmation sheet used to tick the second slot off by index regardless; a write
+    // now counts only through the UID, so the same tag stays one side.
+    test("rewriting the first tag from the second slot does not claim both sides") { t in
+        onMain {
+            let (model, _, dir) = makeIntake()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "424242") else { return }
+            model.method = .manual
+            model.absorbWrite(uid: [1, 2, 3, 4], record: record)
+            t.equal(model.tags[1].state, .ready, "the second slot is next")
+
+            // The second slot's write lands on the same physical tag.
+            model.absorbWrite(uid: [1, 2, 3, 4], record: record)
+            t.equal(model.tagsHandled, 1, "still one side")
+            t.equal(model.tags[1].state, .ready, "the second is still outstanding")
+            t.equal(model.tagSummary, "1 of 2 written and verified", "and the summary says so")
+            t.expect(!model.allTagsHandled, "nothing claims the spool is done")
         }
     },
 ])
