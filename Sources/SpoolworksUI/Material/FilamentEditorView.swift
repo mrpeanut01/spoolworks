@@ -38,7 +38,8 @@ struct FilamentDraft {
     var original: Filament?
 
     enum Field: Hashable {
-        case id, brand, name, materialType, minTemp, maxTemp, density, diameter, params
+        case id, brand, name, materialType, minTemp, maxTemp, softeningTemp, dryingTemp, dryingTime,
+             density, diameter, params
     }
 
     // MARK: Construction
@@ -133,6 +134,9 @@ struct FilamentDraft {
     /// them, write them to a tag, and refuse to let you create another one like them. The rule
     /// enforced here is what the data actually is: **exactly five alphanumeric characters**
     /// (`SPEC/02-material-db.md §1.1` — "5 characters, zero-padded, not necessarily numeric").
+    /// ASCII ones: a tag stores the id in five *bytes* (`SpoolRecord` checks `utf8.count == 5`),
+    /// so a five-character id with an accented letter would be accepted here and refused at the
+    /// point of writing the tag.
     func errors(existingIDs: Set<String>, isEditingExisting: Bool) -> [Field: String] {
         var out: [Field: String] = [:]
 
@@ -141,8 +145,11 @@ struct FilamentDraft {
             out[.id] = "An ID is required."
         } else if trimmedID.count != 5 {
             out[.id] = "ID must be exactly 5 characters (letters or digits), for example 01001 or P1001."
-        } else if !trimmedID.allSatisfy({ $0.isLetter || $0.isNumber }) {
-            out[.id] = "ID may contain only letters and digits."
+        } else if !trimmedID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) {
+            // Capitals, as the message has always said. `isLetter` also accepted lowercase, which
+            // let the catalogue hold an id (`p1003`) that `SpoolRecord.Field.filamentId`'s `0-9A-Z`
+            // alphabet then refused — a filament you could create and never write a tag for.
+            out[.id] = "ID may contain only the capital letters A–Z and the digits 0–9."
         } else if !isEditingExisting, existingIDs.contains(trimmedID) {
             // Windows string, preserved: `Filament ID Exists\nDuplicate IDs are not allowed`.
             out[.id] = "Filament ID exists. Duplicate IDs are not allowed."
@@ -172,6 +179,21 @@ struct FilamentDraft {
         }
         if let min, let max, min > max, out[.minTemp] == nil, out[.maxTemp] == nil {
             out[.maxTemp] = "Max temp must be at least the min temp (\(min) °C)."
+        }
+
+        // Whole numbers, like the print temperatures. These went unvalidated and quietly fell back
+        // to the original record's value on save, so a typo was neither refused nor kept.
+        let wholeNumberFields: [(Field, String, String)] = [
+            (.softeningTemp, softeningTemp, "Softening temp"),
+            (.dryingTemp, dryingTemp, "Drying temp"),
+            (.dryingTime, dryingTime, "Drying time"),
+        ]
+        for (field, text, label) in wholeNumberFields {
+            guard let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                out[field] = "\(label) must be a whole number; use 0 if it is not known."
+                continue
+            }
+            if value < 0 { out[field] = "\(label) cannot be negative." }
         }
 
         // `density` is a JSON number and `diameter` a JSON *string* — easy to swap, and swapping
@@ -416,24 +438,9 @@ struct FilamentEditorView: View {
             Section("Temperatures") {
                 numericField("Min temp", unit: "°C", text: $draft.minTemp, field: .minTemp)
                 numericField("Max temp", unit: "°C", text: $draft.maxTemp, field: .maxTemp)
-                LabeledContent("Softening temp") {
-                    TextField("Softening temp", text: $draft.softeningTemp)
-                        .labelsHidden()
-                        .frame(maxWidth: 100)
-                }
-                LabeledContent("Drying temp") {
-                    TextField("Drying temp", text: $draft.dryingTemp)
-                        .labelsHidden()
-                        .frame(maxWidth: 100)
-                }
-                LabeledContent("Drying time") {
-                    HStack(spacing: 6) {
-                        TextField("Drying time", text: $draft.dryingTime)
-                            .labelsHidden()
-                            .frame(maxWidth: 100)
-                        Text("hours").foregroundStyle(.secondary)
-                    }
-                }
+                numericField("Softening temp", unit: "°C", text: $draft.softeningTemp, field: .softeningTemp)
+                numericField("Drying temp", unit: "°C", text: $draft.dryingTemp, field: .dryingTemp)
+                numericField("Drying time", unit: "hours", text: $draft.dryingTime, field: .dryingTime)
             }
 
             Section("Physical") {
@@ -491,15 +498,20 @@ struct FilamentEditorView: View {
                 Text("No parameters. The printer will reject a filament with an empty slicer profile.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            } else if visibleParamIndices.isEmpty {
+            } else if visibleParams.isEmpty {
                 Text("No parameter matches “\(paramSearch)”.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 4) {
-                        ForEach(visibleParamIndices, id: \.self) { index in
-                            paramRow(index)
+                        // Rows are identified by the parameter's own id, never by its position.
+                        // An index-keyed row held a `$draft.params[index]` binding, and removing a
+                        // row while the list was filtered shrank the array under a row that was
+                        // still animating out — whose text field then read a subscript that no
+                        // longer existed.
+                        ForEach(visibleParams) { param in
+                            paramRow(param)
                         }
                     }
                     .padding(.vertical, 2)
@@ -515,37 +527,46 @@ struct FilamentEditorView: View {
         }
     }
 
-    private func paramRow(_ index: Int) -> some View {
+    private func paramRow(_ param: KVParam) -> some View {
         HStack(spacing: 8) {
-            TextField("Key", text: $draft.params[index].key)
+            TextField("Key", text: paramBinding(param.id, \.key))
                 .font(.system(.callout, design: .monospaced))
                 .frame(width: 230)
                 .accessibilityLabel("Parameter key")
-            TextField("Value", text: $draft.params[index].value)
+            TextField("Value", text: paramBinding(param.id, \.value))
                 .font(.system(.callout, design: .monospaced))
-                .accessibilityLabel("Value for \(draft.params[index].key)")
+                .accessibilityLabel("Value for \(param.key)")
             Button(role: .destructive) {
-                // Remove by identity, not by index: `visibleParamIndices` is recomputed on the next
-                // pass and an index captured by a stale row would point at the wrong element.
-                let doomed = draft.params[index].id
-                withAnimation { draft.params.removeAll { $0.id == doomed } }
+                withAnimation { draft.params.removeAll { $0.id == param.id } }
             } label: {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("Remove parameter \(draft.params[index].key)")
+            .accessibilityLabel("Remove parameter \(param.key)")
             .help("Remove this parameter")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
     }
 
-    private var visibleParamIndices: [Int] {
+    /// A binding into one parameter, found by id on every access. Tolerates the parameter being
+    /// gone — reads as empty, writes are dropped — which is the state a row is in while it
+    /// animates out after removal.
+    private func paramBinding(_ id: UUID, _ keyPath: WritableKeyPath<KVParam, String>) -> Binding<String> {
+        Binding(
+            get: { draft.params.first { $0.id == id }?[keyPath: keyPath] ?? "" },
+            set: { newValue in
+                guard let index = draft.params.firstIndex(where: { $0.id == id }) else { return }
+                draft.params[index][keyPath: keyPath] = newValue
+            }
+        )
+    }
+
+    private var visibleParams: [KVParam] {
         let needle = paramSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return Array(draft.params.indices) }
-        return draft.params.indices.filter {
-            draft.params[$0].key.lowercased().contains(needle)
-                || draft.params[$0].value.lowercased().contains(needle)
+        guard !needle.isEmpty else { return draft.params }
+        return draft.params.filter {
+            $0.key.lowercased().contains(needle) || $0.value.lowercased().contains(needle)
         }
     }
 
@@ -593,7 +614,8 @@ struct FilamentEditorView: View {
         guard errors.isEmpty else {
             // Focus the first offending field so keyboard users are taken to the problem.
             let order: [FilamentDraft.Field] = [.id, .brand, .name, .materialType,
-                                                .minTemp, .maxTemp, .density, .diameter, .params]
+                                                .minTemp, .maxTemp, .softeningTemp, .dryingTemp,
+                                                .dryingTime, .density, .diameter, .params]
             focused = order.first { errors[$0] != nil }
             return
         }

@@ -139,11 +139,29 @@ final class IntakeViewModel: ObservableObject {
     /// UIDs already written, so writing one tag twice cannot claim both slots.
     private var writtenUIDs: Set<[UInt8]> = []
 
+    /// What the first verified write actually put on a tag, in Method B.
+    ///
+    /// Kept because the form stops being the authority the moment a tag is programmed. The spool
+    /// added at ``confirm()`` used to take its identity from the form as it stood *then*, so an
+    /// edit made after the write — a colour corrected, a size changed — stored a spool whose tags
+    /// held a different payload, or none at all if the edit was invalid; the next CFS poll then
+    /// "discovered" the tags as a second spool. This is the record the tags hold, and it is what
+    /// the spool is identified by. Cleared by ``reset(keepingMethod:)``.
+    @Published private(set) var writtenRecord: SpoolRecord?
+
     // MARK: The form
 
     @Published var brand = ""
     @Published var name = ""
-    @Published var materialType = "PLA"
+    /// Empty until something says what the material is — the catalogue row in Method B, or the
+    /// catalogue's answer for the id read off a tag in Method A.
+    ///
+    /// It defaulted to `"PLA"`, which meant a tag whose id the catalogue did not know was
+    /// confirmed as PLA on no evidence at all. ``InventoryViewModel/logWrittenSpool`` already
+    /// refuses to guess for the same case, and the two paths should not disagree: a spool of
+    /// unknown type is a fact the rail lets the user correct, and a plausible-looking invention
+    /// is not.
+    @Published var materialType = ""
     /// What a **full** spool of this filament holds — the spool's size, not how much is on it.
     ///
     /// The distinction was not made anywhere and it needed to be: a field labelled "Net weight"
@@ -254,7 +272,53 @@ final class IntakeViewModel: ObservableObject {
     /// Not the same as "finished". A no-tag intake is finished the moment it starts — `0 of 0` —
     /// and marking it `spoolworksWritten` on that basis would put "Custom" in the Tag column of a
     /// spool nobody has written anything to.
-    var willBeTagged: Bool { tagsRequired > 0 && tagsHandled >= tagsRequired }
+    var willBeTagged: Bool { allTagsHandled }
+
+    /// Every tag this intake asked for has been read or written — and it asked for at least one.
+    ///
+    /// The view's completion marks compared against a literal 2, which was wrong the moment
+    /// ``tagsRequired`` could be 1: a one-tag spool never showed as done.
+    var allTagsHandled: Bool { tagsRequired > 0 && tagsHandled >= tagsRequired }
+
+    /// Whether the fields a tag encodes — material, colour, spool size, serial — may still change.
+    ///
+    /// Locked from the first verified write. Before it the form fills the tag; after it the tag
+    /// is a physical fact and the form has to describe it, so the view disables those inputs.
+    /// The name and the remaining figure stay open: neither is on the tag.
+    var isIdentityLocked: Bool { writtenRecord != nil }
+
+    /// Everything ``IntakeView``'s arming depends on, folded into one value it can watch.
+    ///
+    /// The view used to re-arm on a hand-picked list of fields, and the list was short: the spool
+    /// size was not on it, so a tag auto-written after the size was changed carried the length
+    /// code of whatever the form held when it was last armed — a 500 g spool tagged as 1 kg. One
+    /// value carrying every input cannot go stale that way, and a field that feeds the written
+    /// record has to be added here, where a test can see it, rather than to a list in the view.
+    struct ArmingKey: Equatable {
+        let method: Method
+        let tagsHandled: Int
+        let tagsRequired: Int
+        let materialID: String
+        let colorHex: String
+        let netWeightGrams: Int
+        let serial: String
+        let brand: String
+        let name: String
+        let writtenRecord: SpoolRecord?
+    }
+
+    var armingKey: ArmingKey {
+        ArmingKey(method: method,
+                  tagsHandled: tagsHandled,
+                  tagsRequired: tagsRequired,
+                  materialID: materialID,
+                  colorHex: colorHex,
+                  netWeightGrams: netWeightGrams,
+                  serial: serial,
+                  brand: brand,
+                  name: name,
+                  writtenRecord: writtenRecord)
+    }
 
     var isScan: Bool { method == .scan }
 
@@ -301,7 +365,24 @@ final class IntakeViewModel: ObservableObject {
     var canConfirm: Bool {
         if duplicate != nil { return false }
         if isScan { return decoded != nil }
+        if writtenDrift != nil { return false }
         return !brand.isEmpty || !name.isEmpty
+    }
+
+    /// Why the form no longer describes the tags that were written, or nil while it does.
+    ///
+    /// The lock (``isIdentityLocked``) is the view's, and a value can still arrive around it: the
+    /// colour panel is a separate window, the camera sheet commits when it closes, and a caller
+    /// can set a property directly. This is the model's own check, and ``canConfirm`` is false
+    /// while it is non-nil — a spool stored under one identity while its tags hold another is
+    /// exactly the record the next CFS poll "discovers" as a second spool.
+    /// ``restoreWrittenValues()`` is the way back.
+    var writtenDrift: String? {
+        guard let written = writtenRecord else { return nil }
+        if let now = composeRecord(), Self.samePayload(now, written) { return nil }
+        return "The form no longer matches what was written to the tag — "
+            + "\(written.filamentId) · \(written.rgbHex) · \(Spool.weightLabel(written.weightGrams))"
+            + " · serial \(written.serialNumber). Use the tag's values, or start over and rewrite."
     }
 
     var confirmTitle: String {
@@ -426,7 +507,9 @@ final class IntakeViewModel: ObservableObject {
         uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
         adopt(record)
         tagsHandled = min(tagsRequired, absorbedUIDs.count)
-        toasts.success(tagsHandled >= tagsRequired
+        // "Both" only when two were asked for. A one-tag spool is finished after one read, and
+        // announcing a second tag that was never wanted misdescribes what just happened.
+        toasts.success(allTagsHandled && tagsRequired > 1
                        ? "Both tags read — \(record.filamentId) · \(record.rgbHex)"
                        : "Tag read — \(record.filamentId) · \(record.rgbHex)")
     }
@@ -504,16 +587,72 @@ final class IntakeViewModel: ObservableObject {
     /// Keyed on the tag's UID for the same reason reads are: writing the *same* blank tag twice
     /// must not claim both sides of the spool are done. That is the failure this guards — a spool
     /// tagged on one side only fails to read half the time it is loaded, and the screen would have
-    /// said it was fine.
-    func absorbWrite(uid: [UInt8]) {
+    /// said it was fine. This is the **only** way a write counts. The confirmation sheet used to
+    /// tick its own slot off by index as well, with no UID check, so "Write now" on the second row
+    /// rewriting the first row's tag claimed both sides were done.
+    ///
+    /// `record` is what actually landed on the tag. The first is kept as ``writtenRecord`` and the
+    /// form is brought into step with it; a later tag carrying a different payload is refused
+    /// rather than counted, because a spool whose two sides disagree is two spools to the printer.
+    /// Every real caller passes it — the form's own composition stands in only when none is given,
+    /// which is right only while nothing has changed since the write.
+    func absorbWrite(uid: [UInt8], record: SpoolRecord? = nil) {
         guard !isScan else { return }
         guard !writtenUIDs.contains(uid) else { return }
+        if let record = record ?? composeRecord() {
+            if let written = writtenRecord {
+                guard Self.samePayload(record, written) else {
+                    failure = "That tag was written with a different payload from the first — "
+                        + "\(record.filamentId) · \(record.rgbHex) · serial \(record.serialNumber). "
+                        + "A spool's two tags must match; rewrite it."
+                    return
+                }
+            } else {
+                writtenRecord = record
+                adoptWritten(record)
+            }
+        }
         writtenUIDs.insert(uid)
+        failure = nil
         tagsHandled = min(tagsRequired, writtenUIDs.count)
         toasts.success(tagsHandled >= tagsRequired
                        ? (tagsRequired == 1 ? "Tag written and verified"
                                             : "Both tags written and verified")
                        : "Tag \(tagsHandled) of \(tagsRequired) written and verified")
+    }
+
+    /// Two records that would identify the same spool and encode the same size.
+    ///
+    /// Not `==`: a record also carries a date, a batch and a reserve field, none of which the
+    /// inventory keys on, and a comparison that failed on those would refuse a matching tag.
+    private static func samePayload(_ a: SpoolRecord, _ b: SpoolRecord) -> Bool {
+        SpoolIdentity(record: a) == SpoolIdentity(record: b) && a.filamentLength == b.filamentLength
+    }
+
+    /// Puts the form back in step with what a tag now physically holds.
+    ///
+    /// The draft is loaded when the reader is armed and the write lands seconds later; a colour
+    /// panel left open, or a camera scan that closes after the write, can move the form in
+    /// between. Once the bytes are on the tag it is the form that is wrong, so the tag's values
+    /// win.
+    private func adoptWritten(_ record: SpoolRecord) {
+        // The material first: its `didSet` pulls brand, name, type and the catalogue's placeholder
+        // colour, and the tag's own colour has to land after that.
+        if record.materialId != materialID,
+           let row = materials.rows.first(where: { $0.id == record.materialId }) {
+            catalogueBrand = row.brand
+            materialID = row.id
+        }
+        filamentId = record.filamentId
+        colorHex = record.rgbHex
+        serial = record.serialNumber
+        netWeightGrams = record.weightGrams
+    }
+
+    /// Restores the identity-bearing fields from ``writtenRecord``, clearing ``writtenDrift``.
+    func restoreWrittenValues() {
+        guard let written = writtenRecord else { return }
+        adoptWritten(written)
     }
 
     /// How many tags this spool needs: two, one, or none.
@@ -527,10 +666,6 @@ final class IntakeViewModel: ObservableObject {
         guard wanted != tagsRequired else { return }
         tagsRequired = wanted
         tagsHandled = min(wanted, isScan ? absorbedUIDs.count : writtenUIDs.count)
-    }
-
-    func markTagWritten(_ slot: TagSlot) {
-        tagsHandled = max(tagsHandled, slot.index + 1)
     }
 
     /// Adds the spool to stock and rearms for the next one.
@@ -553,7 +688,15 @@ final class IntakeViewModel: ObservableObject {
                                     tagSource: .crealityFactory,
                                     detail: "Intake · tag read")
         } else {
-            var made = Spool(identity: composeRecord().map(SpoolIdentity.init(record:)),
+            // The tags decide the identity once any has been written; the form's composition
+            // stands in only while nothing has been programmed yet.
+            let identity = (writtenRecord ?? composeRecord()).map(SpoolIdentity.init(record:))
+            // The serial is kept whether or not a record could be composed. Without a catalogue
+            // material there is no filament ID and therefore no identity — which is a legitimate
+            // way to shelve a third-party spool — but the form has still shown the user a serial
+            // under "Serial · generated", and the toast below reports it. It used to be discarded
+            // with the identity, so those spools reached the inventory showing "—".
+            var made = Spool(identity: identity,
                              brand: brand,
                              name: name,
                              materialType: materialType,
@@ -561,12 +704,17 @@ final class IntakeViewModel: ObservableObject {
                              colorName: inventory.colorName(forHex: Spool.normaliseHex(colorHex)),
                              netWeightGrams: netWeightGrams,
                              remainingPercent: remainingPercent,
-                             location: .shelf("Shelf"),
+                             // Unplaced, like every other way in. Nothing here has observed where
+                             // the spool is, and asserting a shelf named a location the picker may
+                             // no longer offer — `Shelf` is a seeded place the user can rename or
+                             // remove. See `docs/DECISIONS.md` D-011.
+                             location: .unknown,
                              remainingSource: remainingPercent < 100 ? "Set at intake"
                                  : willBeTagged ? "Intake · tagged, assumed full"
                                  : tagsRequired == 0 ? "Counted onto the shelf, assumed full"
                                                      : "Manual record · tag pending",
-                             tagSource: willBeTagged ? .spoolworksWritten : .untagged)
+                             tagSource: willBeTagged ? .spoolworksWritten : .untagged,
+                             plannedSerial: identity == nil ? serial : nil)
             made.note(kind: .intake,
                       detail: willBeTagged
                           ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
@@ -594,7 +742,9 @@ final class IntakeViewModel: ObservableObject {
 
     func openDuplicate() {
         guard let duplicate else { return }
-        inventory.selectedID = duplicate.id
+        // Revealed, not merely selected: with a filter on that hides it, a bare selection fell
+        // back to the first listed row, and "Open it" opened some other spool.
+        inventory.reveal(duplicate.id)
     }
 
     /// Fills the form from a spool already in stock, ready to log another like it.
@@ -622,17 +772,21 @@ final class IntakeViewModel: ObservableObject {
         // brand, name, type *and* colour from the catalogue — so the catalogue goes first and the
         // spool's own values go last, or the clone would come back wearing the catalogue's
         // placeholder colour instead of the one it is a clone of.
-        if let base = spool.identity?.filamentId, !base.isEmpty {
+        let byID = spool.identity.flatMap { identity -> FilamentRow? in
+            let base = identity.filamentId
+            guard !base.isEmpty else { return nil }
             let id = base.count == 6 ? String(base.dropFirst()) : base
-            if let row = materials.rows.first(where: { $0.id == id }) {
-                catalogueBrand = row.brand
-                materialID = row.id
-            }
-        } else if let row = materials.rows.first(where: {
+            return materials.rows.first { $0.id == id }
+        }
+        // The name is the fallback whenever the id does not resolve, not only when there is no
+        // id. A spool this app tagged for a filament the catalogue has since dropped still names
+        // its material, and refusing to use that left Method B blocked with "Choose a material"
+        // for a spool whose material was written on the row.
+        let byName = byID == nil ? materials.rows.first(where: {
             $0.brand.caseInsensitiveCompare(spool.brand) == .orderedSame
                 && $0.name.caseInsensitiveCompare(spool.name) == .orderedSame
-        }) {
-            // No tag to take a filament id from, so fall back to matching the catalogue by name.
+        }) : nil
+        if let row = byID ?? byName {
             catalogueBrand = row.brand
             materialID = row.id
         }
@@ -652,8 +806,18 @@ final class IntakeViewModel: ObservableObject {
     /// sheet, the pre-write sector dump, the read-back verification. Programming a blank tag
     /// rewrites its sector keys irreversibly, and there should be one way to do that, not two.
     func loadDraft(into tagModel: TagViewModel) {
-        tagModel.draft.materialID = materialID
         tagModel.draft.materialLabel = [brand, name].filter { !$0.isEmpty }.joined(separator: " · ")
+        // Once a tag has been written the second one has to carry the first one's exact payload —
+        // that is what makes the two sides one spool — so the draft comes from the written record,
+        // not from a form that may have moved since.
+        if let written = writtenRecord {
+            tagModel.draft.materialID = written.materialId
+            tagModel.draft.serialNumber = written.serialNumber
+            tagModel.draft.weight = written.knownLength ?? .kg1
+            if let color = Color(tagHex: written.rgbHex) { tagModel.draft.color = color }
+            return
+        }
+        tagModel.draft.materialID = materialID
         tagModel.draft.serialNumber = serial
         tagModel.draft.weight = FilamentLength.forGrams(netWeightGrams) ?? .kg1
         if let color = Color(tagHex: colorHex) { tagModel.draft.color = color }
@@ -670,18 +834,25 @@ final class IntakeViewModel: ObservableObject {
         mismatch = nil
         absorbedUIDs.removeAll()
         writtenUIDs.removeAll()
+        writtenRecord = nil
         activityLabel = nil
         uidLabel = "—"
         if !keepingMethod { method = .scan }
         brand = ""
         name = ""
-        materialType = "PLA"
+        materialType = ""
         netWeightGrams = 1000
         remainingPercent = 100
         colorHex = "C12E1F"
         filamentId = ""
         materialID = ""
-        catalogueBrand = catalogueBrands.first ?? ""
+        // The catalogue pre-fill is Method B's: it is where the tag's filament id comes from. In
+        // Method A the tag is the authority and the form has to start empty. Picking a brand here
+        // regardless ran `adoptCatalogueMaterial` whenever the brand *changed* — so switching back
+        // from Method B with a non-first brand chosen left Method A showing a brand, name, type and
+        // colour that had been read off nothing, and a tag whose id the catalogue did not know was
+        // then confirmed with those invented values.
+        catalogueBrand = isScan ? "" : (catalogueBrands.first ?? "")
         serial = Self.allocateSerial()
     }
 

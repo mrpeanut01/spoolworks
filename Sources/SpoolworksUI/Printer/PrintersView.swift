@@ -11,8 +11,9 @@ import SpoolworksCore
 /// scattered across the Upload and Update dialogs live in one place.
 struct PrintersView: View {
     @ObservedObject var model: PrinterViewModel
-    // RootView attaches `.toast(env.toasts)` once per scene, so this view forwards its
-    // view-model's messages into that shared centre rather than presenting its own overlay.
+    // The scene that hosts this view attaches `.toast(env.toasts)` at its root (the Printers
+    // window in `App.swift`), so this view forwards its view-model's messages into that shared
+    // centre rather than presenting its own overlay.
     @EnvironmentObject private var toasts: ToastCenter
 
     @State private var hasLoaded = false
@@ -96,15 +97,22 @@ struct PrintersView: View {
     /// dialog that opens itself a second later (`MainForm.cs:93-103`). A durable state with the
     /// action on it is both more discoverable and less startling.
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Printers Configured", systemImage: "printer")
-        } description: {
-            Text("Add a printer to get started. Each printer keeps its own material database, which you can then upload to the machine.")
-        } actions: {
-            Button("Add Printer…") { model.addSheetPresented = true }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .keyboardShortcut("n", modifiers: .command)
+        VStack(spacing: 0) {
+            // The detail column's banner does not exist yet on first run, so a failed add would
+            // otherwise have nowhere to be seen once the sheet is closed.
+            if let failure = model.actionFailure {
+                banner(failure, onDismiss: { model.actionFailure = nil })
+            }
+            ContentUnavailableView {
+                Label("No Printers Configured", systemImage: "printer")
+            } description: {
+                Text("Add a printer to get started. Each printer keeps its own material database, which you can then upload to the machine.")
+            } actions: {
+                Button("Add Printer…") { model.addSheetPresented = true }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .keyboardShortcut("n", modifiers: .command)
+            }
         }
     }
 
@@ -205,13 +213,8 @@ struct PrintersView: View {
 
             Section {
                 LabeledContent("Address") {
-                    TextField("Hostname or IP", text: Binding(
-                        get: { printer.host },
-                        set: { model.setHost($0, for: printer.family) }
-                    ))
-                    .labelsHidden()
-                    .frame(maxWidth: 260)
-                    .accessibilityLabel("Printer hostname or IP address")
+                    AddressField(printer: printer, model: model)
+                        .id(printer.family)
                 }
 
                 LabeledContent("Password") {
@@ -235,11 +238,11 @@ struct PrintersView: View {
                             .help("Fills in the password Creality prints on this model's touchscreen")
 
                             if printer.hasStoredPassword {
-                                Label("Saved in your keychain", systemImage: "key.fill")
+                                Label("Saved on this Mac", systemImage: "key.fill")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Button("Forget") { model.forgetPassword(for: printer.family) }
-                                    .help("Removes this printer's password from your keychain. The CFS poll and uploads stop until it is entered again.")
+                                    .help("Removes this printer's saved password from this Mac. The CFS poll and uploads stop until it is entered again.")
                             } else {
                                 Label("Not saved", systemImage: "key.slash")
                                     .font(.caption)
@@ -255,10 +258,13 @@ struct PrintersView: View {
                 The app connects as **root** on port 22, which is what the printer's SSH service \
                 expects. Root access must be switched on from the printer's touchscreen first.
 
-                The password is saved to your **keychain** as you type it, and read back \
-                automatically on launch — there is nothing to press. It is stored against the \
-                address, so re-addressing a printer correctly stops finding the old machine's \
-                password. It is never written to preferences, a file, or a log.
+                The password is saved as you type it and read back automatically on launch — \
+                there is nothing to press. It lives in a file under Application Support that only \
+                your macOS user account can read, and is stored against the address, so \
+                re-addressing a printer correctly stops finding the old machine's password. It is \
+                kept in plain text rather than in the keychain, which is acceptable only because \
+                it is a printer's root password on your own network; it is never written to \
+                preferences or a log.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -379,6 +385,52 @@ struct PrintersView: View {
     }
 }
 
+// MARK: - Address field
+
+/// The address, committed when the user is done with it rather than on every keystroke.
+///
+/// Writing through per keystroke did two things wrong at once. The store files the password by
+/// host, so each partial address was a "new host" whose password had to be looked up afresh — and
+/// a password entered *before* the address (press "Use Factory Default", then type where the
+/// printer is) was dropped by the first character typed. Committing on Return, when focus leaves
+/// the field, and when the view goes away means the store hears about the address once, whole.
+private struct AddressField: View {
+    let printer: PrinterConfiguration
+    @ObservedObject var model: PrinterViewModel
+
+    @State private var text: String
+    @FocusState private var isFocused: Bool
+
+    init(printer: PrinterConfiguration, model: PrinterViewModel) {
+        self.printer = printer
+        self.model = model
+        _text = State(initialValue: printer.host)
+    }
+
+    var body: some View {
+        TextField("Hostname or IP", text: $text)
+            .labelsHidden()
+            .frame(maxWidth: 260)
+            .focused($isFocused)
+            .onSubmit(commit)
+            .onChange(of: isFocused) { _, focused in
+                if !focused { commit() }
+            }
+            // The Upload and Download sheets save the address too; what they saved has to show
+            // here without the field having been touched.
+            .onChange(of: printer.host) { _, host in
+                if !isFocused { text = host }
+            }
+            .onDisappear(perform: commit)
+            .accessibilityLabel("Printer hostname or IP address")
+    }
+
+    private func commit() {
+        guard text != printer.host else { return }
+        model.setHost(text, for: printer.family)
+    }
+}
+
 // MARK: - Add sheet
 
 /// Picks which printer family to install a database for.
@@ -393,6 +445,10 @@ struct AddPrinterSheet: View {
 
     @State private var choice: PrinterType?
     @State private var isWorking = false
+    /// Shown here, in the sheet, because on first run there is no detail column behind it to
+    /// carry the model's banner — the failure would have set `actionFailure` and nothing would
+    /// have drawn it.
+    @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -430,27 +486,42 @@ struct AddPrinterSheet: View {
 
             Divider()
 
-            HStack {
-                if isWorking {
-                    ProgressView().controlSize(.small)
-                    Text("Installing catalogue…").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                if let failure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(Theme.danger)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Error: \(failure)")
                 }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Add") {
-                    guard let choice else { return }
-                    isWorking = true
-                    Task {
-                        await model.addPrinter(choice)
-                        isWorking = false
-                        dismiss()
+                HStack {
+                    if isWorking {
+                        ProgressView().controlSize(.small)
+                        Text("Installing catalogue…").foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Add") {
+                        guard let choice else { return }
+                        isWorking = true
+                        failure = nil
+                        Task {
+                            let added = await model.addPrinter(choice)
+                            isWorking = false
+                            if added {
+                                dismiss()
+                            } else {
+                                failure = model.actionFailure
+                            }
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .disabled(choice == nil || isWorking)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .disabled(choice == nil || isWorking)
             }
             .padding(20)
         }

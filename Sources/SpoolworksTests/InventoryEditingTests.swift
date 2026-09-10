@@ -508,6 +508,41 @@ let inventoryEditingTests = TestSuite(name: "Inventory editing", cases: [
                     "and it is the selection")
         }
     },
+
+    // MARK: A tag request does not outlive its spool
+
+    // `awaitingTagFor` survived retirement, so a tag read or written later — for some other
+    // spool entirely — attached itself to a record that had been closed.
+    test("retiring the spool a tag was being written for cancels the request") { t in
+        onMain {
+            let (model, defaults, suite, dir) = makeModel()
+            defer {
+                try? FileManager.default.removeItem(at: dir)
+                defaults.removePersistentDomain(forName: suite)
+            }
+            var shelf = makeSpool()
+            shelf.identity = nil
+            shelf.tagSource = .untagged
+            model.add(shelf)
+            model.attachTag(to: shelf)
+            t.equal(model.awaitingTagFor, shelf.id, "waiting for a tag")
+
+            model.confirmRetire(shelf)
+            t.equal(model.awaitingTagFor, nil, "the request went with the spool")
+
+            // A request raised against a stale copy of the retired spool — the rail can hold one
+            // — is refused rather than reopening the record.
+            guard let record = try? SpoolRecord(materialId: "01001", colorRGB: "C12E1F",
+                                                filamentLength: .kg1, serialNumber: "005150") else {
+                t.expect(false, "could not build a record"); return
+            }
+            model.attachTag(to: shelf)
+            t.expect(!model.attachTag(record: record, materialType: "PLA"), "refused")
+            t.equal(model.awaitingTagFor, nil, "and the stale request is dropped")
+            t.equal(model.inventory.spool(id: shelf.id)?.identity, nil, "the retired spool is untouched")
+            t.equal(model.inventory.active.count, 0, "and nothing was resurrected")
+        }
+    },
 ])
 
 // MARK: - The filter row follows the place list

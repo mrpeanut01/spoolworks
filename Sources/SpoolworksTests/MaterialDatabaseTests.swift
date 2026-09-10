@@ -78,6 +78,18 @@ private func makeDatabase(_ temp: TempStorage, ids: [String],
     return db
 }
 
+/// A database over a catalogue written straight to disk, backed by the **bundled** seed — so
+/// `topUpFromSeed` has the real shipped k2.json to top up from, not a stand-in.
+private func makeBundleSeededDatabase(_ temp: TempStorage, ids: [String],
+                                      version: String) throws -> MaterialDatabase {
+    let file = MaterialDatabaseFile(list: ids.map { sampleFilament(id: $0) }, version: version)
+    try temp.storage.createDirectoryIfNeeded()
+    try MaterialDatabase.encode(file).write(to: temp.storage.url(for: .k2), options: .atomic)
+    let db = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: BundledMaterialSeed())
+    try db.load()
+    return db
+}
+
 // MARK: - Suite
 
 let materialDatabaseTests = TestSuite(name: "Material database", cases: [
@@ -360,18 +372,100 @@ let materialDatabaseTests = TestSuite(name: "Material database", cases: [
     },
 
     // Pins the real shipped data, through the same path the app uses on first run.
+    //
+    // `k2` is the July-2026 K2 Plus capture; `k1` and `hi` are still the September-2025 ones,
+    // which is why the versions are asserted per family rather than as one constant.
     test("the bundled seed loads the shipped databases") { t in
         let seed = BundledMaterialSeed()
-        let expected: [PrinterType: Int] = [.k2: 66, .k1: 46, .hi: 21]
-        for (type, count) in expected {
+        let expected: [PrinterType: (count: Int, version: String)] = [
+            .k2: (96, "1784284303"),
+            .k1: (46, "1758907369"),
+            .hi: (21, "1758907369"),
+        ]
+        for (type, (count, version)) in expected {
             let file = try MaterialDatabase.decode(try seed.seedData(for: type))
             t.equal(file.result.list.count, count, "\(type.rawValue) record count")
             t.equal(file.result.count, count, "\(type.rawValue) declared count")
-            t.equal(file.result.version, "1758907369", "\(type.rawValue) version")
+            t.equal(file.result.version, version, "\(type.rawValue) version")
             t.expect(file.result.list.allSatisfy { $0.printerIntName == type.printerIntName },
                      "\(type.rawValue) printerIntName")
             t.equal(Set(file.result.list.map(\.id)).count, count, "\(type.rawValue) ids are unique")
         }
+    },
+
+    // The reason the K2 seed was refreshed: the shipped catalogue is where an app-written tag's
+    // filament ID comes from, and the 2025 capture had three Polymaker records and two eSUN ones.
+    // A brand the picker cannot offer is a spool this app cannot tag.
+    test("the K2 seed carries the third-party brands") { t in
+        let file = try MaterialDatabase.decode(try BundledMaterialSeed().seedData(for: .k2))
+        let byBrand = Dictionary(grouping: file.result.list, by: \.vendor).mapValues(\.count)
+        t.equal(byBrand["Polymaker"], 13, "Polymaker")
+        t.equal(byBrand["eSUN"], 18, "eSUN")
+        // The ids these brands use are exactly the ones the write form used to refuse: a letter
+        // followed by four digits. See `SpoolDraft.validationIssues`.
+        let lettered = file.result.list.filter { $0.id.first?.isLetter == true }
+        t.equal(lettered.count, 31, "P- and E-prefixed ids")
+        t.expect(lettered.allSatisfy { $0.id.utf8.count == 5 }, "still five bytes wide")
+    },
+
+    // The capture also held two records the printer had synced from the user's own slicer
+    // profiles — a second and third `00004`, carrying a `userMaterial` path into that machine's
+    // filesystem. A duplicate id makes `filament(id:)` ambiguous, so they are not shipped.
+    test("the K2 seed carries no user-authored records") { t in
+        let file = try MaterialDatabase.decode(try BundledMaterialSeed().seedData(for: .k2))
+        t.expect(file.result.list.allSatisfy { $0.additionalFields["userMaterial"] == nil },
+                 "no userMaterial records")
+        t.equal(file.result.list.filter { $0.id == "00004" }.count, 1, "one Generic ABS")
+    },
+
+    // MARK: - Seed top-up
+
+    // `seedFromBundle` runs only when there is no local file, so a refreshed bundled catalogue
+    // reached first-run installs and nobody else. This is how an existing install gets the new
+    // records - offered, and additive.
+    test("a newer bundled seed offers the records the local catalogue lacks") { t in
+        let temp = TempStorage()
+        let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1700000000")
+        t.equal(db.pendingSeedAdditions().count, 95, "95 of the 96 bundled records are new")
+
+        let added = try db.topUpFromSeed()
+        t.equal(added.count, 95, "and all 95 are added")
+        t.equal(db.filaments.count, 96, "alongside the one already there")
+        t.equal(db.version, "1784284303", "stamped to the seed's version")
+        t.equal(db.pendingSeedAdditions(), [], "so the offer is gone")
+        t.expect(db.contains(id: "P1003"), "Polymaker Panchroma PLA Matte is in")
+    },
+
+    // The catalogue on disk is the user's. A record they have edited keeps their edit, and a
+    // catalogue that has moved past the seed - a printer download - is not touched at all.
+    test("a top-up never overwrites a record the catalogue already has") { t in
+        let temp = TempStorage()
+        let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1700000000")
+        guard var mine = t.unwrap(db.filament(id: "00001"), "seeded record") else { return }
+        mine.base.name = "Mine, hand-tuned"
+        mine.base.minTemp = 205
+        try db.update(mine)
+
+        _ = try db.topUpFromSeed()
+        t.equal(db.filament(id: "00001")?.name, "Mine, hand-tuned", "the edit survives")
+        t.equal(db.filament(id: "00001")?.base.minTemp, 205, "temperatures included")
+    },
+
+    test("a catalogue newer than the seed is left alone") { t in
+        let temp = TempStorage()
+        let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1800000000")
+        t.equal(db.pendingSeedAdditions(), [], "nothing offered")
+        t.equal(try db.topUpFromSeed(), [], "and nothing added")
+        t.equal(db.filaments.count, 1, "the catalogue is untouched")
+        t.equal(db.version, "1800000000", "version included")
+    },
+
+    test("a top-up before a load is refused rather than writing a catalogue from nothing") { t in
+        let temp = TempStorage()
+        let db = MaterialDatabase(printerType: .k2, storage: temp.storage,
+                                  seed: BundledMaterialSeed())
+        t.throwsError(MaterialDatabaseError.notLoaded(.k2)) { _ = try db.topUpFromSeed() }
+        t.equal(db.pendingSeedAdditions(), [], "and nothing is offered either")
     },
 
     // MARK: - CRUD

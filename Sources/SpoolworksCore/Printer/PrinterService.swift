@@ -568,3 +568,11 @@ public struct PrinterService: Sendable {
         return try await cloud.printerList(nozzle: nozzle)
     }
 }
+
+/// `Error.localizedDescription` — which is what every UI surface shows — reads `errorDescription`,
+/// not `description`. Without this the CFS strip and the upload sheets showed "The operation
+/// couldn't be completed. (SpoolworksCore.PrinterServiceError error 3.)" in place of the sentence the case
+/// was written to say.
+extension PrinterServiceError: LocalizedError {
+    public var errorDescription: String? { description }
+}

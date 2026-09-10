@@ -5,12 +5,11 @@ import SpoolworksCore
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // MARK: - Transport contract
 //
-// TODO(wire): bind to SpoolworksCore PrinterService / SSHTransport when the sibling workstream lands.
-// There is no `Sources/SpoolworksCore/Printer/` in this worktree, so the screens are written against the
-// narrow protocol below. It is deliberately the *smallest* surface that SPEC/04-printer-net.md
-// §2–§3 requires: read the remote version, pull the remote database, push the local one, reboot.
-// When SpoolworksCore's PrinterService appears, delete `UnimplementedPrinterTransport`, make the real
-// service conform (or adapt it), and nothing in the views changes.
+// The screens are written against the narrow protocol below rather than against
+// `SpoolworksCore.PrinterService` directly. It is deliberately the *smallest* surface that
+// SPEC/04-printer-net.md §2–§3 requires — read the remote version, pull the remote database, push
+// the local one, read the CFS — so that the views can be driven by a stand-in in previews and
+// tests. `LivePrinterTransport` adapts the real service to it.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Credentials for one SSH session. Never persisted by anything in this file.
@@ -25,7 +24,14 @@ struct PrinterCredentials: Sendable {
     var password: String
 }
 
-enum PrinterTransportError: LocalizedError {
+/// Errors raised on the UI side of the printer screens: the stand-in transport's refusal, and a
+/// cancellation the sheets phrase themselves.
+///
+/// Named apart from Core's `PrinterTransportError` on purpose. This type used to share that
+/// name, and within this module the local declaration shadowed the Core one — so a `catch` or
+/// `as?` written against `PrinterTransportError` here would have matched this enum and never a
+/// real SSH failure.
+enum PrinterUIError: LocalizedError {
     case notImplemented
     case cancelled
     case remote(String)
@@ -33,7 +39,7 @@ enum PrinterTransportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notImplemented:
-            return "Printer networking is not available in this build yet. The database screens work; the SSH transport is still being wired up."
+            return "This build has no printer transport; previews and tests run against a stand-in that cannot reach a printer."
         case .cancelled:
             return "The transfer was cancelled."
         case let .remote(detail):
@@ -49,13 +55,22 @@ protocol PrinterTransporting: Sendable {
     func remoteDatabaseVersion(_ credentials: PrinterCredentials, family: PrinterType) async throws -> String
     /// The raw bytes of the printer's `material_database.json`.
     func downloadDatabase(_ credentials: PrinterCredentials, family: PrinterType) async throws -> Data
-    /// Pushes `data` to `…/box/material_database.json`. `progress` receives 0…1 when the transport
-    /// can report it; a transport that cannot should simply never call it and the UI stays
-    /// indeterminate.
+    /// Pushes `data` to `…/box/material_database.json`, stamped and followed up as `options`
+    /// say — the version stamp, the K1 `material_option.json` side-car and the reboot are all the
+    /// service's to do, in that order, so the sheet does not open a second session to reboot a
+    /// printer the first one already restarted. Returns the version that was stamped on the
+    /// wire, so the caller can mirror it on the local file. `progress` is coarse and per-step.
     func uploadDatabase(_ data: Data,
                         credentials: PrinterCredentials,
                         family: PrinterType,
-                        progress: @escaping @Sendable (Double) -> Void) async throws
+                        options: UploadOptions,
+                        progress: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String
+    /// Replaces the printer's database with the factory catalogue in `data`, version untouched,
+    /// and reboots unconditionally — the reset semantics SPEC/04 §3.1 spells out.
+    func resetDatabase(_ data: Data,
+                       credentials: PrinterCredentials,
+                       family: PrinterType,
+                       progress: @escaping @Sendable (PrinterProgress) -> Void) async throws
     /// The one and only remote command the Windows app ever issues (SPEC/04 §1.5).
     func reboot(_ credentials: PrinterCredentials, family: PrinterType) async throws
     /// The CFS's live report of what is loaded, for the Printer & CFS screen.
@@ -63,32 +78,40 @@ protocol PrinterTransporting: Sendable {
                          family: PrinterType) async throws -> MaterialBoxInfo
 }
 
-/// Stand-in until SpoolworksCore ships the real thing. Fails loudly and specifically rather than
-/// pretending to succeed — the Windows original returns `"0"` from a failed version read
-/// (`Utils.cs:678-681`), which silently stamps the local database with a bogus version.
+/// Stand-in for previews and tests. Fails loudly and specifically rather than pretending to
+/// succeed — the Windows original returns `"0"` from a failed version read (`Utils.cs:678-681`),
+/// which silently stamps the local database with a bogus version.
 struct UnimplementedPrinterTransport: PrinterTransporting {
     func remoteDatabaseVersion(_: PrinterCredentials, family _: PrinterType) async throws -> String {
-        throw PrinterTransportError.notImplemented
+        throw PrinterUIError.notImplemented
     }
 
     func downloadDatabase(_: PrinterCredentials, family _: PrinterType) async throws -> Data {
-        throw PrinterTransportError.notImplemented
+        throw PrinterUIError.notImplemented
     }
 
     func uploadDatabase(_: Data,
                         credentials _: PrinterCredentials,
                         family _: PrinterType,
-                        progress _: @escaping @Sendable (Double) -> Void) async throws {
-        throw PrinterTransportError.notImplemented
+                        options _: UploadOptions,
+                        progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String {
+        throw PrinterUIError.notImplemented
+    }
+
+    func resetDatabase(_: Data,
+                       credentials _: PrinterCredentials,
+                       family _: PrinterType,
+                       progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws {
+        throw PrinterUIError.notImplemented
     }
 
     func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
-        throw PrinterTransportError.notImplemented
+        throw PrinterUIError.notImplemented
     }
 
     func downloadBoxInfo(_: PrinterCredentials,
                          family _: PrinterType) async throws -> MaterialBoxInfo {
-        throw PrinterTransportError.notImplemented
+        throw PrinterUIError.notImplemented
     }
 }
 
@@ -96,22 +119,27 @@ struct UnimplementedPrinterTransport: PrinterTransporting {
 
 /// SSH password storage.
 ///
-/// ``KeychainPrinterCredentialStore`` is the real conformer and what the app uses;
-/// ``InMemoryPrinterCredentialStore`` below remains for tests and previews, where nothing should
-/// touch the user's Keychain.
+/// ``LocalPrinterCredentialStore`` is the real conformer and what the app uses: it keeps the
+/// password in a file the app owns, `0600` in a `0700` directory under Application Support, keyed
+/// by host (D-012). ``InMemoryPrinterCredentialStore`` below remains for tests and previews, where
+/// nothing should touch the user's files.
 ///
-/// What must never happen, and does not happen here: the Windows app writes the printer's *root*
-/// password to `HKCU\CFS RFID\Settings\psw_<printer>` in cleartext (SPEC/04 §1.4) and renders it in
-/// a `TextBox` with no `PasswordChar`. SPEC/03-ui.md §8.5 lists both as explicit non-goals. Nothing
-/// in this app writes a password to `UserDefaults`, to a file, or to a log.
+/// The password is **plaintext at rest**, and that is a stated trade rather than an oversight:
+/// the Keychain it replaced authorises readers by code signature, and an ad-hoc-signed app is a
+/// different app on every build, so macOS raised a system password prompt each launch. That is
+/// defensible only because of what the secret is — a printer's root password on a home LAN,
+/// usually the vendor default printed on its touchscreen — and the store must not be reused for
+/// anything else. What the Windows app did remains a non-goal: it wrote the password to the
+/// registry *and* rendered it in a `TextBox` with no `PasswordChar` (SPEC/04 §1.4); here it never
+/// goes to `UserDefaults` or a log, and is only ever shown in a `SecureField`.
 protocol PrinterCredentialStoring: AnyObject {
     func password(for family: PrinterType) -> String?
     func setPassword(_ password: String?, for family: PrinterType)
     /// True when a password is available without asking the user again.
     func hasPassword(for family: PrinterType) -> Bool
     /// Tells the store that a printer's address changed, so anything it cached under the old one
-    /// is dropped. A store keyed by family has nothing to do here; the Keychain-backed one is
-    /// keyed by *host* and would otherwise keep serving the previous machine's password.
+    /// is dropped. A store keyed by family has nothing to do here; the file-backed one is keyed
+    /// by *host* and would otherwise keep serving the previous machine's password.
     func invalidate(_ family: PrinterType)
 }
 
@@ -119,9 +147,8 @@ extension PrinterCredentialStoring {
     func invalidate(_ family: PrinterType) {}
 }
 
-/// Session-scoped store. Deliberately volatile: losing the password on quit is a far smaller
-/// problem than persisting a root password in plaintext, and the Keychain-backed replacement is a
-/// drop-in.
+/// Session-scoped store. Deliberately volatile, so a preview or a test can never leave a password
+/// behind on the machine that ran it; the file-backed store is a drop-in.
 final class InMemoryPrinterCredentialStore: PrinterCredentialStoring {
     private var passwords: [PrinterType: String] = [:]
 
@@ -157,12 +184,12 @@ enum PrinterSettings {
 
     static func suffix(_ family: PrinterType) -> String { family.rawValue.uppercased() }
 
-    static func host(for family: PrinterType) -> String {
-        defaults.string(forKey: "host_\(suffix(family))") ?? ""
+    static func host(for family: PrinterType, in store: UserDefaults = defaults) -> String {
+        store.string(forKey: "host_\(suffix(family))") ?? ""
     }
 
-    static func setHost(_ host: String, for family: PrinterType) {
-        defaults.set(host, forKey: "host_\(suffix(family))")
+    static func setHost(_ host: String, for family: PrinterType, in store: UserDefaults = defaults) {
+        store.set(host, forKey: "host_\(suffix(family))")
     }
 
     /// Windows default is `true` (SPEC/03-ui.md §2), so a missing key must read as `true`, not as
@@ -214,9 +241,20 @@ enum PrinterSettings {
         store.set(value, forKey: "reboot_\(suffix(family))")
     }
 
-    static func forget(_ family: PrinterType) {
+    /// The reboot choice as stored, with the interlock ignored.
+    ///
+    /// This is what the Upload sheet seeds its switch from. Seeding from the derived value read
+    /// as *off* while updates were blocked, and when the user then allowed updates in the sheet
+    /// and pressed Upload, that derived "off" was written back over the preference they had
+    /// actually made. The stored value is the only one that is theirs.
+    static func storedRebootAfterUpload(for family: PrinterType,
+                                        in store: UserDefaults = defaults) -> Bool {
+        store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
+    }
+
+    static func forget(_ family: PrinterType, in store: UserDefaults = defaults) {
         for prefix in ["host_", "prevent_", "allow_", "reboot_"] {
-            defaults.removeObject(forKey: prefix + suffix(family))
+            store.removeObject(forKey: prefix + suffix(family))
         }
     }
 
@@ -296,15 +334,23 @@ final class PrinterViewModel: ObservableObject {
     let storage: MaterialStorage
     let transport: PrinterTransporting
     let credentials: PrinterCredentialStoring
-    /// Called after the local database for a family changes, so the material browser can reload.
+    /// Where the non-secret connection settings live. Injectable so a test can drive add, remove
+    /// and re-address without leaving `host_K2` behind in the real preferences.
+    let defaults: UserDefaults
+    /// Called after the local database for a family changes on disk — added, removed, merged
+    /// from a download, reset or re-stamped — so the material browser can reload. `AppEnvironment`
+    /// wires it to `MaterialsViewModel`; without that the browser kept writing its own stale copy
+    /// back over every download.
     var onDatabaseChanged: ((PrinterType) -> Void)?
 
     init(storage: MaterialStorage,
          transport: PrinterTransporting = UnimplementedPrinterTransport(),
-         credentials: PrinterCredentialStoring = InMemoryPrinterCredentialStore()) {
+         credentials: PrinterCredentialStoring = InMemoryPrinterCredentialStore(),
+         defaults: UserDefaults = .standard) {
         self.storage = storage
         self.transport = transport
         self.credentials = credentials
+        self.defaults = defaults
     }
 
     static func previewValue() -> PrinterViewModel {
@@ -362,9 +408,9 @@ final class PrinterViewModel: ObservableObject {
 
         return PrinterConfiguration(
             family: family,
-            host: PrinterSettings.host(for: family),
-            allowDatabaseUpdates: PrinterSettings.allowDatabaseUpdates(for: family),
-            rebootAfterUpload: PrinterSettings.rebootAfterUpload(for: family),
+            host: PrinterSettings.host(for: family, in: defaults),
+            allowDatabaseUpdates: PrinterSettings.allowDatabaseUpdates(for: family, in: defaults),
+            rebootAfterUpload: PrinterSettings.rebootAfterUpload(for: family, in: defaults),
             hasStoredPassword: credentials.hasPassword(for: family),
             databaseVersion: version,
             filamentCount: count,
@@ -379,19 +425,25 @@ final class PrinterViewModel: ObservableObject {
     /// The Windows equivalent downloads from Creality Cloud (`ManageForm.cs:58`). SpoolworksCore ships the
     /// three catalogues in the app bundle, so first run works with no network at all; pulling a
     /// fresher copy is what the Update sheet is for.
-    func addPrinter(_ family: PrinterType) async {
+    ///
+    /// Returns whether it worked. The failure is also kept in `actionFailure` for the detail
+    /// banner, but on first run there is no detail column to show a banner in, so the sheet that
+    /// asked needs the answer directly.
+    @discardableResult
+    func addPrinter(_ family: PrinterType) async -> Bool {
         actionFailure = nil
         let database = MaterialDatabase(printerType: family, storage: storage)
         do {
             try database.seedFromBundle()
         } catch {
             actionFailure = MaterialsViewModel.message(for: error)
-            return
+            return false
         }
         await refresh()
         selection = family
         onDatabaseChanged?(family)
         toast = ToastMessage("Printer added")
+        return true
     }
 
     /// Confirmed removal: deletes the local database and forgets the connection settings.
@@ -405,8 +457,11 @@ final class PrinterViewModel: ObservableObject {
             actionFailure = "Could not remove the \(doomed.displayName) database: \(error.localizedDescription)"
             return
         }
-        PrinterSettings.forget(doomed.family)
+        // The password first, while the address is still known: the store files passwords by
+        // host, so forgetting the address first left it with nothing to delete under and the root
+        // password stayed in the credential file.
         credentials.setPassword(nil, for: doomed.family)
+        PrinterSettings.forget(doomed.family, in: defaults)
         await refresh()
         onDatabaseChanged?(doomed.family)
         toast = ToastMessage("Printer removed")
@@ -418,24 +473,32 @@ final class PrinterViewModel: ObservableObject {
 
     // MARK: Settings edits
 
+    /// Records a printer's address. Called once the address is settled, not per keystroke — the
+    /// store re-keys the password under the new host here, and doing that for every partial
+    /// address as it was typed would have filed the password under each of them in turn.
     func setHost(_ host: String, for family: PrinterType) {
-        PrinterSettings.setHost(host, for: family)
-        // The Keychain is keyed by host, so a re-addressed printer must not keep answering with
-        // the password of the machine it used to point at.
+        PrinterSettings.setHost(host, for: family, in: defaults)
+        // The credential file is keyed by host, so a re-addressed printer must not keep answering
+        // with the password of the machine it used to point at. Whether there *is* a password
+        // has to be re-read in the same breath: the CFS poll trusts `hasStoredPassword`, and a
+        // stale `true` here sent it looking for a password that no longer resolved.
         credentials.invalidate(family)
-        apply(family) { $0.host = host }
+        apply(family) {
+            $0.host = host
+            $0.hasStoredPassword = self.credentials.hasPassword(for: family)
+        }
     }
 
     func setAllowDatabaseUpdates(_ value: Bool, for family: PrinterType) {
-        PrinterSettings.setAllowDatabaseUpdates(value, for: family)
+        PrinterSettings.setAllowDatabaseUpdates(value, for: family, in: defaults)
         // Re-read rather than assume: `rebootAfterUpload` is derived from this value, so the row
         // has to be refreshed from the source of truth in the same breath.
-        apply(family) { $0.rebootAfterUpload = PrinterSettings.rebootAfterUpload(for: family) }
+        apply(family) { $0.rebootAfterUpload = PrinterSettings.rebootAfterUpload(for: family, in: defaults) }
         apply(family) { $0.allowDatabaseUpdates = value }
     }
 
     func setRebootAfterUpload(_ value: Bool, for family: PrinterType) {
-        PrinterSettings.setRebootAfterUpload(value, for: family)
+        PrinterSettings.setRebootAfterUpload(value, for: family, in: defaults)
         apply(family) { $0.rebootAfterUpload = value }
     }
 
@@ -444,7 +507,7 @@ final class PrinterViewModel: ObservableObject {
         apply(family) { $0.hasStoredPassword = self.credentials.hasPassword(for: family) }
     }
 
-    /// Removes a printer's password from the Keychain.
+    /// Removes a printer's password from the credential file.
     func forgetPassword(for family: PrinterType) {
         credentials.setPassword(nil, for: family)
         apply(family) { $0.hasStoredPassword = false }
@@ -466,14 +529,12 @@ final class PrinterViewModel: ObservableObject {
         try Data(contentsOf: storage.url(for: family))
     }
 
-    func localVersion(for family: PrinterType) -> String {
-        printers.first { $0.family == family }?.databaseVersion ?? MaterialVersion.unknown
-    }
-
     /// Rewrites `result.version` on the local file without touching the catalogue.
     ///
-    /// This is what "Prevent DB updates" does: stamp `9876543210` so the printer's own updater
-    /// believes it is already ahead of anything the cloud offers (SPEC/04 §3.1 step 2).
+    /// Called after an upload with whatever the service stamped on the wire — `9876543210` when
+    /// updates are blocked, so the printer's own updater believes it is already ahead of anything
+    /// the cloud offers (SPEC/04 §3.1 step 2), or the printer's own version otherwise — so the
+    /// local file describes the database the printer actually has.
     func setLocalVersion(_ version: String, for family: PrinterType) throws {
         let url = storage.url(for: family)
         var file = try MaterialDatabase.decode(try Data(contentsOf: url))

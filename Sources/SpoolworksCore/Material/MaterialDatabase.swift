@@ -21,6 +21,8 @@ public enum MaterialDatabaseError: Error, Equatable, Hashable, Sendable {
     case malformed(String)
     /// A filesystem operation failed.
     case storage(String)
+    /// An operation that reads the current catalogue was called before ``MaterialDatabase/load()``.
+    case notLoaded(PrinterType)
 }
 
 extension MaterialDatabaseError: LocalizedError {
@@ -36,6 +38,8 @@ extension MaterialDatabaseError: LocalizedError {
             return "The material database could not be read: \(detail)"
         case let .storage(detail):
             return "The material database could not be stored: \(detail)"
+        case let .notLoaded(type):
+            return "The \(type.displayName) material database has not been loaded yet."
         }
     }
 }
@@ -158,8 +162,12 @@ public struct MaterialDatabaseFile: Codable, Hashable, Sendable {
             }
 
             // `count` is the file's own claim and is preserved as read; `save()` recomputes it.
-            count = try c.decodeIfPresent(Int.self, forKey: key(.count)) ?? list.count
-            version = try c.decodeIfPresent(String.self, forKey: key(.version)) ?? MaterialVersion.unknown
+            // Both are read as leniently as the records are: an unquoted version or a quoted
+            // count from a firmware this app has not met must not refuse the whole catalogue
+            // when every record in it is fine.
+            count = try c.decodeIfPresent(JSONValue.self, forKey: key(.count))?.intValue ?? list.count
+            version = try c.decodeIfPresent(JSONValue.self, forKey: key(.version))?.stringValue
+                ?? MaterialVersion.unknown
 
             let modelled = Set(CodingKeys.allCases.map(\.rawValue))
             var extras: [String: JSONValue] = [:]
@@ -560,7 +568,12 @@ public final class MaterialDatabase {
             rollBackToPersistedState()
             throw error
         }
-        persistedState = file
+        // The records that would not decode were never in `list`, so the file just written no
+        // longer holds them: the catalogue is complete again, in memory and on disk. Until this
+        // point they stay in the snapshot, so a failed save rolls back to a state that still
+        // admits the disk is incomplete rather than one that silently claims it is clean.
+        recordFailures = []
+        persistedState = snapshot()
         hasUnsavedChanges = false
     }
 
@@ -589,6 +602,7 @@ public final class MaterialDatabase {
                                         code: code, msg: msg, additionalFields: envelopeFields)
         file.result.count = filaments.count
         file.result.additionalFields = resultFields
+        file.result.recordFailures = recordFailures
         return file
     }
 
@@ -728,5 +742,63 @@ public final class MaterialDatabase {
     /// comparison, with the parse failure surfaced instead of thrown into a generic message.
     public func isOutdated(comparedTo remoteVersion: String) -> Bool {
         MaterialVersion.isNewer(remoteVersion, than: version)
+    }
+
+    // MARK: Seed top-up
+
+    /// The ids a **newer** bundled seed holds that this catalogue does not, in seed order.
+    ///
+    /// Read-only, and deliberately separate from ``topUpFromSeed()``: the catalogue on disk is the
+    /// user's, so a refreshed seed is *offered* rather than merged behind their back. A printer
+    /// download, a hand-edited file and a deleted factory record are all legitimate states that an
+    /// automatic merge would quietly undo.
+    ///
+    /// Empty when the seed is not newer than the local version, so the offer disappears once
+    /// ``topUpFromSeed()`` has stamped it — and never reappears for a catalogue that has since
+    /// moved past the seed, such as one downloaded from a printer.
+    public func pendingSeedAdditions() -> [String] {
+        guard isLoaded, let file = try? Self.decode(try seed.seedData(for: printerType)),
+              isOutdated(comparedTo: file.result.version)
+        else { return [] }
+        return file.result.list.map(\.base.id).filter { !contains(id: $0) }
+    }
+
+    /// Adds the catalogue records that a newer bundled seed has and this one does not, then
+    /// stamps the seed's version and saves.
+    ///
+    /// ``seedFromBundle()`` only ever runs when there is no local file, so before this existed a
+    /// refreshed seed reached first-run installs and nobody else: an app that had been opened once
+    /// kept its original catalogue for good. That is not abstract staleness — the catalogue is
+    /// where an app-written tag's filament ID comes from, so a brand missing from it is a spool
+    /// this app cannot tag, and the user's only route to the new records was to delete the file.
+    ///
+    /// **Additive only, and deliberately so.** A record already present is left exactly as it is,
+    /// whether the user wrote it or edited a factory one — a top-up that silently reverted
+    /// hand-tuned temperatures would be a worse bug than the staleness it fixes. Use
+    /// ``seedFromBundle()`` for a destructive "reset to the factory catalogue", and the
+    /// printer/cloud merge (which upserts) where the remote copy is meant to win.
+    ///
+    /// - Returns: the ids added, in seed order. Empty when there was nothing to do.
+    @discardableResult
+    public func topUpFromSeed() throws -> [String] {
+        guard isLoaded else { throw MaterialDatabaseError.notLoaded(printerType) }
+        let file: MaterialDatabaseFile
+        do { file = try Self.decode(try seed.seedData(for: printerType)) }
+        catch let error as MaterialDatabaseError { throw error }
+        catch { throw MaterialDatabaseError.malformed(error.localizedDescription) }
+
+        guard isOutdated(comparedTo: file.result.version) else { return [] }
+
+        var added: [String] = []
+        for filament in file.result.list where !contains(id: filament.base.id) {
+            try add(filament)
+            added.append(filament.base.id)
+        }
+        // The version moves even when every record was already present: the local catalogue is
+        // then a superset of this seed, and leaving it behind would re-offer a top-up with
+        // nothing in it on every load.
+        setVersion(file.result.version)
+        try save()
+        return added
     }
 }

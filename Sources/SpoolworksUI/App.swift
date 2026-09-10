@@ -72,6 +72,14 @@ final class AppEnvironment: ObservableObject {
                                             transport: LivePrinterTransport(),
                                             credentials: credentials)
         self.printerModel = printerModel
+        // The Printers window rewrites the catalogue on disk — a download merged in, a reset, a
+        // family added or removed — while the Materials window edits its own in-memory copy and
+        // writes that copy back on the next save. Left unwired, the next filament edit persisted
+        // the pre-download catalogue and the download was gone.
+        let materialsModel = self.materialsModel
+        printerModel.onDatabaseChanged = { [weak materialsModel] family in
+            materialsModel?.noteExternalChange(to: family)
+        }
 
         // Same fallback reasoning as the material storage above: a broken Application Support
         // must leave the app usable and the failure visible, not trap at launch.
@@ -89,13 +97,21 @@ final class AppEnvironment: ObservableObject {
                                           materials: self.materialsModel,
                                           toasts: toasts)
         self.intakeModel = intakeModel
+        // Everything the closure reaches is captured weakly, `tagModel` included: the closure is
+        // owned by `tagModel`, which is owned by this environment, so a strong `self` here was a
+        // cycle. Harmless for a process-lifetime object, but not what the other captures say.
         self.tagModel.onWriteSucceeded = {
             [weak inventoryModel, weak intakeModel,
-             weak materials = self.materialsModel] summary in
+             weak materials = self.materialsModel, weak tagModel = self.tagModel] summary in
             guard let inventoryModel else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
-            // verified before committing, so a write made there logs nothing on its own.
-            guard intakeModel?.isActive != true else { return }
+            // verified before committing, so a write made there logs nothing on its own. It does
+            // need to know *what* was written: the spool it later adds has to carry the identity
+            // the tags actually hold, not whatever its form says by then.
+            if let intakeModel, intakeModel.isActive {
+                intakeModel.absorbWrite(uid: summary.uid, record: summary.record)
+                return
+            }
             // Resolved here rather than inside the inventory, which holds no catalogue. The tag
             // stores a filament *id*; the type is whatever the catalogue calls that id, and an id
             // it does not know genuinely has no type to report.
@@ -115,7 +131,7 @@ final class AppEnvironment: ObservableObject {
                 // Without this the second tag was a different serial, so it was a different
                 // identity, so it became a second spool in the inventory — which is what "the tags
                 // did not save" actually was.
-                self.tagModel.draft.serialNumber = summary.record.serialNumber
+                tagModel?.draft.serialNumber = summary.record.serialNumber
                 return
             }
             inventoryModel.logWrittenSpool(record: summary.record,
@@ -127,30 +143,58 @@ final class AppEnvironment: ObservableObject {
     /// Fills the Write screen from an untagged spool that is about to be given a tag.
     ///
     /// Everything the tag stores comes from the spool: the filament id, the colour and the weight.
-    /// The **serial is allocated fresh** rather than reused — an untagged spool has none, and the
-    /// one it will carry has to be unique to it, because serial plus filament plus colour is how a
-    /// tag is matched back to a record (see `SpoolIdentity`). Copying a serial from anywhere would
-    /// be the one way to make two spools indistinguishable.
+    /// The **serial is the spool's own** — the one Intake reserved for it (`Spool.plannedSerial`)
+    /// when it went into stock without a tag, so the tag ends up carrying the number the record
+    /// has been showing all along. Only a spool that has no reserved serial gets a fresh one.
+    ///
+    /// What must never happen is a serial *copied from another spool*: serial plus filament plus
+    /// colour is how a tag is matched back to a record (see `SpoolIdentity`), so a shared serial
+    /// makes two spools indistinguishable. `IntakeViewModel.clone(_:)` allocates rather than
+    /// copies for exactly that reason. Reusing a spool's own reservation is not that case.
     ///
     /// The binding to the spool itself lives in `InventoryViewModel.awaitingTagFor`; this only
     /// composes the draft.
     @MainActor
     func loadForTagging(_ spool: Spool) {
-        let id = spool.identity?.filamentId ?? ""
-        // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
-        tagModel.draft.materialID = id.count == 6 ? String(id.dropFirst()) : id
+        tagModel.draft.materialID = Self.materialID(for: spool, in: materialsModel.rows)
         tagModel.draft.materialLabel = [spool.brand, spool.name]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
-        tagModel.draft.serialNumber = SpoolRecord.randomSerialNumber()
+        tagModel.draft.serialNumber = spool.plannedSerial ?? SpoolRecord.randomSerialNumber()
         tagModel.draft.weight = FilamentLength.forGrams(spool.netWeightGrams) ?? .kg1
         if let colour = Color(tagHex: spool.colorHex) { tagModel.draft.color = colour }
     }
 
-    static let tagMemoryWindowID = "tag-memory"
-    static let materialsWindowID = "materials"
-    static let printersWindowID = "printers"
-    static let locationsWindowID = "locations"
+    /// The catalogue id to write for `spool` — from its identity where it has one, and from the
+    /// catalogue by brand and name where it does not.
+    ///
+    /// The fallback is not belt-and-braces. Intake used to add a no-tag spool with no identity at
+    /// all (see `IntakeViewModel.identityBlocker`), and the *only* way to tag such a spool is this
+    /// screen — which read the id off the identity it does not have, put an empty Material ID on
+    /// the Write form, and left the user to find the filament in the catalogue by hand. Intake no
+    /// longer creates those spools; the ones it already created are still in people's inventories,
+    /// and this is what gets them tagged.
+    ///
+    /// Matching on brand *and* name, case-insensitively, is `IntakeViewModel.clone(_:)`'s rule —
+    /// both fields come from the catalogue row in the first place, so they round-trip. A spool
+    /// naming a filament the catalogue has since dropped resolves to nothing and the field stays
+    /// empty, which is the honest answer.
+    @MainActor
+    static func materialID(for spool: Spool, in rows: [FilamentRow]) -> String {
+        if let id = spool.identity?.filamentId, !id.isEmpty {
+            // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
+            return id.count == 6 ? String(id.dropFirst()) : id
+        }
+        return rows.first {
+            $0.brand.caseInsensitiveCompare(spool.brand) == .orderedSame
+                && $0.name.caseInsensitiveCompare(spool.name) == .orderedSame
+        }?.id ?? ""
+    }
+
+    nonisolated static let tagMemoryWindowID = "tag-memory"
+    nonisolated static let materialsWindowID = "materials"
+    nonisolated static let printersWindowID = "printers"
+    nonisolated static let locationsWindowID = "locations"
 }
 
 // MARK: - App
@@ -188,13 +232,18 @@ public struct SpoolworksApp: App {
         // list is where the address and password the CFS poll needs are entered. Dropping them
         // from the sidebar without rehousing them made the Printer & CFS screen tell users to
         // "add one on the Printers screen" while offering no way to reach it.
+        //
+        // Each window is its own scene, so each needs its own `.toast(env.toasts)`: the one in
+        // `RootView` only reaches the main window's hierarchy, and both of these views read the
+        // centre through `@EnvironmentObject`, which traps when it is missing. Adding a printer
+        // from this window used to crash on exactly that.
         Window("Materials", id: AppEnvironment.materialsWindowID) {
-            MaterialsView(model: env.materialsModel).nonRestorableWindow()
+            MaterialsView(model: env.materialsModel).toast(env.toasts).nonRestorableWindow()
         }
         .defaultSize(width: 900, height: 640)
 
         Window("Printers", id: AppEnvironment.printersWindowID) {
-            PrintersView(model: env.printerModel).nonRestorableWindow()
+            PrintersView(model: env.printerModel).toast(env.toasts).nonRestorableWindow()
         }
         .defaultSize(width: 820, height: 600)
 
@@ -212,7 +261,10 @@ public struct SpoolworksApp: App {
             TagMemoryView(monitor: env.monitor, settings: env.settings).nonRestorableWindow()
         }
         .defaultSize(width: 680, height: 640)
-        .keyboardShortcut("m", modifiers: .command)
+        // ⇧⌘M, not ⌘M: plain ⌘M is Window ▸ Minimize on every Mac, and a menu item earlier in
+        // the bar that claims it wins the dispatch — so with ⌘M here no window could be
+        // minimised from the keyboard, and the shortcut also collided with the Tag menu's copy.
+        .keyboardShortcut("m", modifiers: [.command, .shift])
 
         // There is deliberately no `Settings` scene. §8.1 required that *if* there are app
         // preferences they must be the ⌘, scene rather than a modal dialog — and there are now no
@@ -271,7 +323,7 @@ struct SpoolworksCommands: Commands {
             Button("Read Tag Memory") {
                 openWindow(id: AppEnvironment.tagMemoryWindowID)
             }
-            .keyboardShortcut("m", modifiers: .command)
+            .keyboardShortcut("m", modifiers: [.command, .shift])
 
             Divider()
 

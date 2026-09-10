@@ -220,6 +220,31 @@ let spoolRecordValidationTests = TestSuite(name: "Spool record validation", case
         }
     },
 
+    // The deepest of the three places a Polymaker id was refused. `Field.filamentId` was `0-9`,
+    // so `1P1003` failed alphabet validation and no tag could be built for any of the 31 lettered
+    // ids in the shipped K2 catalogue - the app could list the filament, let you pick it, and then
+    // refuse to encode it.
+    test("a lettered catalogue id makes a tag and reads back the same") { t in
+        for id in ["P1003", "P1001", "P7005", "E1001", "01001"] {
+            let record = try SpoolRecord(materialId: id, colorRGB: "C12E1F",
+                                         filamentLength: .kg1, serialNumber: "424242")
+            t.equal(record.filamentId, "1" + id, "the class digit and the catalogue id")
+            t.equal(record.materialId, id, "which reads back as the id it was made from")
+            // And it survives the wire, which is the claim that actually matters.
+            let decoded = try SpoolRecord(validating: record.encoded)
+            t.equal(decoded, record, "\(id) round-trips through the 40-character record")
+        }
+    },
+
+    // Widened, not removed. Lowercase and punctuation are still not a filament id.
+    test("the filamentId alphabet is capitals and digits, and no more") { t in
+        for bad in ["p1003", "P100-", "P10 3"] {
+            t.throwsError("\(bad) must be refused") {
+                _ = try SpoolRecord(materialId: bad, colorRGB: "C12E1F", filamentLength: .kg1)
+            }
+        }
+    },
+
     test("every field rejects a byte outside its alphabet") { t in
         // (field, the 40-char record with one character corrupted, the offending byte)
         let cases: [(SpoolRecord.Field, String, UInt8)] = [
@@ -228,7 +253,9 @@ let spoolRecordValidationTests = TestSuite(name: "Spool record validation", case
             (.year,           "AB12X0276A21010010FFFFFF0165000001000000", 0x58),  // letter in a digit field
             (.vendorId,       "AB124027XA21010010FFFFFF0165000001000000", 0x58),
             (.batch,          "AB1240276A-1010010FFFFFF0165000001000000", 0x2D),
-            (.filamentId,     "AB1240276A2101X010FFFFFF0165000001000000", 0x58),
+            // Punctuation, not a letter: `filamentId` carries the catalogue's `base.id`, which is
+            // alphanumeric (`1P1003` for Polymaker Panchroma PLA Matte). See `Field.alphabet`.
+            (.filamentId,     "AB1240276A2101-010FFFFFF0165000001000000", 0x2D),
             (.color,          "AB1240276A21010010FFFFFG0165000001000000", 0x47),  // 'G' is not hex
             (.filamentLength, "AB1240276A21010010FFFFFF01X5000001000000", 0x58),
             (.serialNumber,   "AB1240276A21010010FFFFFF0165X00001000000", 0x58),

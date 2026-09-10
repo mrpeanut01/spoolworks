@@ -67,9 +67,7 @@ public struct FilamentColorStabiliser: Sendable {
     public var reading: Reading? {
         guard !window.isEmpty else { return nil }
 
-        let lab = LabColor(l: median(window.map(\.lab.l)),
-                           a: median(window.map(\.lab.a)),
-                           b: median(window.map(\.lab.b)))
+        let lab = medoid(window.map(\.lab))
         let deviation = window.map { $0.lab.deltaE(to: lab) }.max() ?? 0
 
         var counts: [FilamentColorEstimate.Warning: Int] = [:]
@@ -88,12 +86,25 @@ public struct FilamentColorStabiliser: Sendable {
                        isSteady: window.count >= capacity && deviation <= steadyThreshold)
     }
 
-    /// The lower of the two middle values on an even count, rather than their mean. Keeps the
-    /// result a value that was actually measured, which matters when the window straddles a step
-    /// change: averaging across it would report a colour no frame ever saw.
-    private func median(_ values: [Double]) -> Double {
-        let sorted = values.sorted()
-        guard !sorted.isEmpty else { return 0 }
-        return sorted[(sorted.count - 1) / 2]
+    /// The frame nearest to all the others: the one whose summed ΔE to the rest is smallest.
+    ///
+    /// A *measured* frame, not a synthesis. A per-component median — L* from one frame, a* from
+    /// another — is what this used to be, and when the window straddles a step change it
+    /// assembles a colour no frame ever saw: two reds and two olives median to a brownish grey
+    /// with the reds' lightness and the olives' hue, and the live swatch and its name show it
+    /// for as long as the transition lasts. Ties go to the earliest frame, so a window that is
+    /// exactly split resolves the same way every time. The window holds at most a dozen frames,
+    /// so the quadratic cost is nothing.
+    private func medoid(_ colors: [LabColor]) -> LabColor {
+        var best = colors[0]
+        var bestTotal = Double.infinity
+        for candidate in colors {
+            let total = colors.reduce(0) { $0 + candidate.deltaE(to: $1) }
+            if total < bestTotal {
+                bestTotal = total
+                best = candidate
+            }
+        }
+        return best
     }
 }

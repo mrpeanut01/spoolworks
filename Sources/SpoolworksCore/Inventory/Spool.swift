@@ -174,7 +174,10 @@ public struct UsageEntry: Identifiable, Hashable, Codable, Sendable {
         if magnitude > 0 && magnitude < 10 {
             return String(format: "%@%.1f g", sign, magnitude)
         }
-        return "\(sign)\(Int(magnitude.rounded())) g"
+        // `Int(Double)` traps on a value that does not fit; a file carrying one should show a
+        // blank, not abort the app.
+        guard let whole = Int(exactly: magnitude.rounded()) else { return "—" }
+        return "\(sign)\(whole) g"
     }
 }
 
@@ -243,6 +246,19 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
     /// ask the only question that matters — *did the measurement change?* — rather than
     /// *does the measurement disagree?*
     public var lastCFSPercent: Double?
+    /// The serial Intake allocated for a spool that has no tag yet, kept until one is written.
+    ///
+    /// A spool's serial normally lives in its ``identity``, which comes off a tag. An untagged
+    /// spool has no identity — and Intake nonetheless allocates a serial for it, shows it on the
+    /// form under "Serial · generated", and reports it in the "Added to stock" toast. That number
+    /// used to be dropped on the floor at the moment of adding, so a spool taken in without a tag
+    /// landed in the inventory showing "—" where the form had just shown it a serial.
+    ///
+    /// Kept, so that the number the user was shown is the number the record carries, and so that
+    /// the tag written for this spool later carries it too rather than a fresh random one. Cleared
+    /// once a real tag is attached, because from then on ``identity`` is the authority; both are
+    /// read in that order by ``serialLabel``.
+    public var plannedSerial: String?
     public var usage: [UsageEntry]
     /// Retired spools stay in the file so their usage history survives, and are filtered out of
     /// every default view. The design's Retire dialog promises exactly this: *"it stays on the
@@ -263,6 +279,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
                 tagSource: TagSource = .untagged,
                 intakeDate: Date = .now,
                 lastCFSPercent: Double? = nil,
+                plannedSerial: String? = nil,
                 usage: [UsageEntry] = [],
                 isRetired: Bool = false) {
         self.id = id
@@ -279,6 +296,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         self.tagSource = tagSource
         self.intakeDate = intakeDate
         self.lastCFSPercent = lastCFSPercent
+        self.plannedSerial = plannedSerial
         self.usage = usage
         self.isRetired = isRetired
     }
@@ -321,8 +339,9 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
     public var isLow: Bool { remainingPercent < Self.lowStockThresholdPercent }
     public var isUntagged: Bool { identity == nil || tagSource == .untagged }
 
-    /// The serial for display. Untagged spools show an em dash rather than an empty cell.
-    public var serialLabel: String { identity?.serialNumber ?? "—" }
+    /// The serial for display: the tag's where there is one, otherwise the serial Intake reserved
+    /// for the tag this spool has yet to be given. An em dash only when there is genuinely neither.
+    public var serialLabel: String { identity?.serialNumber ?? plannedSerial ?? "—" }
     public var filamentIdLabel: String { identity?.filamentId ?? "—" }
     public var vendorIdLabel: String { identity?.vendorId ?? "—" }
 

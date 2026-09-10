@@ -367,3 +367,11 @@ public struct CrealityCloud: CrealityCloudAPI {
         return data
     }
 }
+
+/// `Error.localizedDescription` — which is what every UI surface shows — reads `errorDescription`,
+/// not `description`. Without this the CFS strip and the upload sheets showed "The operation
+/// couldn't be completed. (SpoolworksCore.CrealityCloudError error 3.)" in place of the sentence the case
+/// was written to say.
+extension CrealityCloudError: LocalizedError {
+    public var errorDescription: String? { description }
+}

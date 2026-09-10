@@ -178,6 +178,13 @@ public struct MaterialBase: Codable, Hashable, Sendable {
     /// always present: the decoder requires them.
     public private(set) var presentKeys: Set<String>
 
+    /// Modelled keys the source carried as an explicit `null`. They are in ``presentKeys`` —
+    /// the record did say something about them — but what it said was "no value", and that is
+    /// what goes back out. Without this a `"minTemp": null` decoded to the fallback `0` and was
+    /// re-emitted as a concrete `0`: the fabricated printer setting ``presentKeys`` exists to
+    /// prevent, through a different door. Assigning the property clears it, via ``markPresent``.
+    private var nullKeys: Set<String> = []
+
     /// Every modelled key. The default ``presentKeys`` for an in-memory record.
     public static let allModelledKeys: Set<String> = Set(CodingKeys.allCases.map(\.rawValue))
 
@@ -185,7 +192,10 @@ public struct MaterialBase: Codable, Hashable, Sendable {
     public static let requiredKeys: Set<String> = Set(
         [CodingKeys.id, .brand, .name, .materialType].map(\.rawValue))
 
-    private mutating func markPresent(_ key: CodingKeys) { presentKeys.insert(key.rawValue) }
+    private mutating func markPresent(_ key: CodingKeys) {
+        presentKeys.insert(key.rawValue)
+        nullKeys.remove(key.rawValue)
+    }
 
     public init(id: String, brand: String, name: String, materialType: String,
                 colors: [String] = ["#ffffff"], density: Double = 1.24, diameter: String = "1.75",
@@ -239,6 +249,10 @@ public struct MaterialBase: Codable, Hashable, Sendable {
         // this initializer, so the assignments in between cannot widen it.
         let sourceKeys = Set(c.allKeys.map(\.stringValue))
         presentKeys = []
+        nullKeys = Set(try c.allKeys.filter { k in
+            guard MaterialBase.allModelledKeys.contains(k.stringValue) else { return false }
+            return try c.decodeNil(forKey: k)
+        }.map(\.stringValue))
 
         func raw(_ k: CodingKeys) throws -> JSONValue? { try c.decodeIfPresent(JSONValue.self, forKey: key(k)) }
         func string(_ k: CodingKeys) throws -> String? { try raw(k)?.stringValue }
@@ -294,7 +308,11 @@ public struct MaterialBase: Codable, Hashable, Sendable {
         /// See ``presentKeys`` — emitting a fallback would fabricate a printer setting.
         func emit<T: Encodable>(_ value: T, _ k: CodingKeys) throws {
             guard presentKeys.contains(k.rawValue) else { return }
-            try c.encode(value, forKey: key(k))
+            if nullKeys.contains(k.rawValue) {
+                try c.encodeNil(forKey: key(k))
+            } else {
+                try c.encode(value, forKey: key(k))
+            }
         }
         // The four identity keys are required on decode and so are always in `presentKeys`;
         // they go through the same gate purely so there is one rule, not two.

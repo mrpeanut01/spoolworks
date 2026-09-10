@@ -246,12 +246,13 @@ public final class MifareClassicCard {
     /// A locked sector is an ordinary outcome and is recorded, not thrown — real tags have them.
     /// A transport failure is not: it propagates, because a card lifted mid-dump would otherwise
     /// manufacture an empty "backup" of a tag that is about to be overwritten.
-    public func dumpAll(keys: [MifareKey] = [.default]) throws -> [SectorDump] {
+    public func dumpAll(keys: [MifareKey] = [.default],
+                        keyTypes: [MifareKeyType] = [.keyA, .keyB]) throws -> [SectorDump] {
         var out: [SectorDump] = []
         for sector in 0..<Self.sectorCount {
             let auth: (key: MifareKey, keyType: MifareKeyType)
             do {
-                auth = try authenticateAny(sector: sector, keys: keys)
+                auth = try authenticateAny(sector: sector, keys: keys, keyTypes: keyTypes)
             } catch let error as PCSCError {
                 guard case .authenticationFailed = error else { throw error }
                 out.append(SectorDump(sector: sector, blocks: [:], key: nil, keyType: nil,

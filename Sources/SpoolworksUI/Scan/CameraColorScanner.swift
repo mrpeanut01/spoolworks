@@ -116,7 +116,12 @@ final class CameraColorScanner: NSObject, ObservableObject {
             break
         case .notDetermined:
             state = .requestingAccess
-            guard await AVCaptureDevice.requestAccess(for: .video) else {
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            // The sheet can close while the system prompt is up; `stop()` then resets the
+            // state, and a start that carried on regardless would bring the camera up for a
+            // view that is gone.
+            guard state == .requestingAccess else { return }
+            guard granted else {
                 state = .denied
                 return
             }

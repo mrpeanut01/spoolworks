@@ -151,6 +151,12 @@ final class InventoryViewModel: ObservableObject {
                    materialType: String,
                    source: TagSource = .spoolworksWritten) -> Bool {
         guard let id = awaitingTagFor, var spool = inventory.spool(id: id) else { return false }
+        // A retired spool is a closed record, and a tag cannot reopen it. `confirmRetire` drops
+        // the request itself; this catches a spool retired by any other route, such as a reload.
+        guard !spool.isRetired else {
+            awaitingTagFor = nil
+            return false
+        }
 
         // A tag that already identifies another spool must not be made to identify this one too.
         // Two records with one identity is the state reconciliation cannot resolve — the CFS poll
@@ -164,6 +170,9 @@ final class InventoryViewModel: ObservableObject {
 
         awaitingTagFor = nil
         spool.identity = SpoolIdentity(record: record)
+        // The reservation has been honoured (or superseded by a tag carrying something else);
+        // either way the identity is the authority on the serial from here on.
+        spool.plannedSerial = nil
         spool.tagSource = source
         if !materialType.isEmpty { spool.materialType = materialType }
         // The colour comes from the tag now, because the tag is what the printer and every later
@@ -294,6 +303,17 @@ final class InventoryViewModel: ObservableObject {
         return rows.first
     }
 
+    /// Selects a spool and makes sure it is listed.
+    ///
+    /// A bare `selectedID` is not enough while a filter hides the spool: ``selected`` follows the
+    /// filter and falls back to the first row, so "Open it" on Intake's duplicate notice opened
+    /// some other spool. Dropping the filter is the honest answer — the user asked for *this*
+    /// spool, and a filter that hides it is not one they meant to keep.
+    func reveal(_ id: Spool.ID) {
+        selectedID = id
+        if !rows.contains(where: { $0.id == id }) { filter = .all }
+    }
+
     var isEmpty: Bool { inventory.active.isEmpty }
 
     // MARK: Loading
@@ -336,6 +356,9 @@ final class InventoryViewModel: ObservableObject {
         inventory.retire(id: spool.id)
         retireTarget = nil
         if selectedID == spool.id { selectedID = nil }
+        // A tag request does not outlive its spool. Left standing, the next tag read or written —
+        // for some other spool entirely — would attach to a record that has just been closed.
+        if awaitingTagFor == spool.id { awaitingTagFor = nil }
         persist()
         toasts.info("Retired — \(spool.label) · serial \(spool.serialLabel)")
     }
@@ -643,7 +666,7 @@ final class InventoryViewModel: ObservableObject {
     /// The nearest named colour, for a spool's label. Empty when the table is unavailable.
     func colorName(forHex hex: String) -> String {
         guard let matcher, let name = try? matcher.nearestName(forHex: hex) else { return "" }
-        return name ?? ""
+        return name
     }
 
     /// Builds an inventory record from a decoded tag.

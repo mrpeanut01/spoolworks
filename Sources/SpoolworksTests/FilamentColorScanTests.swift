@@ -472,6 +472,23 @@ let filamentColorStabiliserTests = TestSuite(name: "Filament colour stabiliser",
         t.equal(reading?.isSteady, false, "but the disagreement is still reported")
     },
 
+    test("a split window reports a frame that was measured, not a colour assembled from two") { t in
+        // Two reds then two olives. A per-component median took L* and b* from the reds and a*
+        // from the olives, and the live swatch showed a brownish grey no frame contained for
+        // as long as the transition lasted. The reading must be one of the measured frames —
+        // the earliest on an exact tie, so the same window resolves the same way every run.
+        var stabiliser = FilamentColorStabiliser(capacity: 4)
+        let estimator = FilamentColorEstimator()
+        let red = Array(repeating: RGB8(r: 0xC1, g: 0x2E, b: 0x1F), count: 64)
+        let olive = Array(repeating: RGB8(r: 0x78, g: 0x6E, b: 0x14), count: 64)
+        for index in 0..<4 { stabiliser.add(estimator.estimate(from: index < 2 ? red : olive)!) }
+        guard let reading = t.unwrap(stabiliser.reading, "reading"),
+              let redFrame = estimator.estimate(from: red) else { return }
+        t.expect(reading.lab.deltaE(to: redFrame.lab) < 0.01,
+                 "expected the red frame, got L*a*b* \(reading.lab)")
+        t.equal(reading.isSteady, false, "a window that straddles two colours is not settled")
+    },
+
     test("the worst confidence in the window is the one reported") { t in
         var stabiliser = FilamentColorStabiliser(capacity: 4)
         let estimator = FilamentColorEstimator()

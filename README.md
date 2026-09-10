@@ -31,7 +31,7 @@ a name on Intake and Write, the printer list holds the address and password the 
 the location list is where a spool can be kept and where one goes when it leaves the printer.
 
 The former **Reader** screen is gone. Its diagnostics are the right-hand column of Read / identify,
-and its one setting — show key material — moved into the Tag Memory window (⌘M), which is the only
+and its one setting — show key material — moved into the Tag Memory window (⇧⌘M), which is the only
 place its effect is visible.
 
 ## How a spool is identified

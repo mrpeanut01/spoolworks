@@ -84,7 +84,39 @@ struct FilamentRow: Identifiable, Hashable {
     /// Nearest entry in `colors.bin`, filled asynchronously. Empty until resolved.
     var colorName: String = ""
 
-    var id: String { filament.base.id }
+    /// The table's identity for this row: `base.id`, for every record whose id is unique in the
+    /// file — all of them, in a well-formed catalogue. `Table` traps on duplicate identifiers, and
+    /// a hand-edited or hand-merged file can carry two records with the same id (Core's `add`
+    /// refuses them; `load` does not), so a repeat is suffixed with its ordinal. Anything that
+    /// needs the record's own id — the ID column, the clipboard, the database — reads
+    /// ``materialID`` instead, which does not change which record an edit lands on.
+    let id: String
+
+    init(filament: Filament, colorName: String = "", id: String? = nil) {
+        self.filament = filament
+        self.colorName = colorName
+        self.id = id ?? filament.base.id
+    }
+
+    /// Rows for a catalogue in file order, with duplicate ids made unique and colour names carried
+    /// over from `previous` so the table does not flicker back to hex on every save.
+    static func rows(from filaments: [Filament],
+                     carryingColorNamesFrom previous: [FilamentRow] = []) -> [FilamentRow] {
+        let names = Dictionary(previous.map { ($0.colorHex, $0.colorName) },
+                               uniquingKeysWith: { first, second in first.isEmpty ? second : first })
+        var seen: [String: Int] = [:]
+        return filaments.map { filament in
+            let base = filament.base.id
+            let ordinal = (seen[base] ?? 0) + 1
+            seen[base] = ordinal
+            return FilamentRow(filament: filament,
+                               colorName: names[filament.base.colors.first ?? ""] ?? "",
+                               id: ordinal == 1 ? base : "\(base)#\(ordinal)")
+        }
+    }
+
+    /// `base.id` — the catalogue's own key, which is what the printer and a tag refer to.
+    var materialID: String { filament.base.id }
     var brand: String { filament.base.brand }
     var name: String { filament.base.name }
     var materialType: String { filament.base.materialType }
@@ -104,7 +136,7 @@ struct FilamentRow: Identifiable, Hashable {
 
     /// Free-text haystack for the search field.
     var searchHaystack: String {
-        [id, brand, name, materialType, colorHex, colorName, traits]
+        [materialID, brand, name, materialType, colorHex, colorName, traits]
             .joined(separator: " ")
             .lowercased()
     }
@@ -177,6 +209,18 @@ final class MaterialsViewModel: ObservableObject {
     @Published var pendingDeletion: [FilamentRow] = []
     @Published var editor: EditorMode?
     @Published var toast: ToastMessage?
+    /// Set when the catalogue on disk changed under edits that are still unsaved — a printer
+    /// download landed while a failed write was waiting on Retry. Neither side is a superset of
+    /// the other, so nothing is done silently: the banner says so, Retry writes the edits over
+    /// the download, and Reload discards them.
+    @Published private(set) var diskChangedWhileUnsaved = false
+    /// How many filaments the bundled catalogue has that this one does not, when the bundled one
+    /// is the newer of the two. Drives the "add them" banner; zero hides it.
+    ///
+    /// Offered rather than merged on load. The catalogue on disk is the user's — a printer
+    /// download, a hand-edited file, a deliberately deleted record — and an app upgrade that
+    /// silently poured 30 records into it would be doing the thing this app is careful not to do.
+    @Published private(set) var seedAdditions = 0
 
     // MARK: Dependencies
 
@@ -254,6 +298,7 @@ final class MaterialsViewModel: ObservableObject {
         let generation = printerType
         loadState = .loading
         saveFailure = nil
+        diskChangedWhileUnsaved = false
         installedTypes = storage.installedTypes()
 
         let db = MaterialDatabase(printerType: generation, storage: storage)
@@ -275,8 +320,9 @@ final class MaterialsViewModel: ObservableObject {
             db.adopt(file)
             database = db
             version = db.version
-            rows = db.filaments.map { FilamentRow(filament: $0) }
+            rows = FilamentRow.rows(from: db.filaments)
             installedTypes = storage.installedTypes()
+            seedAdditions = db.pendingSeedAdditions().count
             loadState = .loaded
             await resolveColorNames(for: generation)
         } catch {
@@ -286,6 +332,57 @@ final class MaterialsViewModel: ObservableObject {
             version = MaterialVersion.unknown
             loadState = .failed(Self.message(for: error))
         }
+    }
+
+    /// Adds the filaments the newer bundled catalogue has and this one lacks, and says how many.
+    ///
+    /// The user's own records are never touched: ids already present are skipped, whatever they
+    /// hold now. See ``MaterialDatabase/topUpFromSeed()``.
+    func applySeedAdditions() async {
+        guard let database else { return }
+        do {
+            let added = try database.topUpFromSeed()
+            rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+            version = database.version
+            seedAdditions = database.pendingSeedAdditions().count
+            saveFailure = nil
+            toast = ToastMessage(added.isEmpty
+                                 ? "The catalogue already had every bundled filament"
+                                 : "\(added.count) filament\(added.count == 1 ? "" : "s") added",
+                                 style: .success)
+            await resolveColorNames()
+        } catch {
+            saveFailure = Self.message(for: error)
+        }
+    }
+
+    /// The Printers window changed `family`'s catalogue on disk — a download merged in, a reset,
+    /// a version re-stamped, a family added or removed.
+    ///
+    /// This model holds its own in-memory `MaterialDatabase` and `persist()` writes that copy, so
+    /// without hearing about the change the next filament edit wrote the pre-download catalogue
+    /// back over the download. Reloading is safe whenever memory has nothing the disk lacks; the
+    /// one case where it does — a write that failed and is waiting on Retry — is flagged instead,
+    /// because reloading would throw away the edits the banner has just promised to keep.
+    func noteExternalChange(to family: PrinterType) {
+        installedTypes = storage.installedTypes()
+        guard family == printerType else { return }
+        if saveFailure != nil {
+            diskChangedWhileUnsaved = true
+            return
+        }
+        guard storage.exists(family) else {
+            // Removed on the Printers screen. `load()` would seed the family afresh from the
+            // bundle, which is right when the user asks for a family and wrong here: it would put
+            // the printer they just removed straight back. Say what happened and stop writing.
+            database = nil
+            rows = []
+            version = MaterialVersion.unknown
+            loadState = .failed("The \(family.displayName) database was removed on the Printers screen. Add the printer again to recreate it.")
+            return
+        }
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in await self?.load() }
     }
 
     /// - Parameter generation: the family these names belong to, when the caller has one. A name
@@ -337,7 +434,7 @@ final class MaterialsViewModel: ObservableObject {
         guard !doomed.isEmpty else { return }
         do {
             for row in doomed {
-                try database.remove(id: row.id)
+                try database.remove(id: row.materialID)
             }
         } catch {
             saveFailure = Self.message(for: error)
@@ -366,12 +463,7 @@ final class MaterialsViewModel: ObservableObject {
     }
 
     private func persist(after database: MaterialDatabase, note: String?) async {
-        rows = database.filaments.map { filament in
-            // Preserve any colour name already resolved for this hex so the table does not flicker.
-            let hex = filament.base.colors.first ?? ""
-            let existing = rows.first { $0.colorHex == hex }?.colorName ?? ""
-            return FilamentRow(filament: filament, colorName: existing)
-        }
+        rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
         version = database.version
 
         let snapshot = database.snapshot()
@@ -384,6 +476,8 @@ final class MaterialsViewModel: ObservableObject {
                 try data.write(to: url, options: .atomic)
             }.value
             saveFailure = nil
+            // Whatever was on disk, this write is now what is on disk.
+            diskChangedWhileUnsaved = false
             if let note { toast = ToastMessage(note) }
             await resolveColorNames()
         } catch {
@@ -404,7 +498,7 @@ final class MaterialsViewModel: ObservableObject {
 
     /// Ids already in use, for the editor's duplicate check.
     var existingIDs: Set<String> {
-        Set(rows.map(\.id))
+        Set(rows.map(\.materialID))
     }
 
     var knownBrands: [String] {

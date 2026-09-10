@@ -248,7 +248,14 @@ public struct SpoolRecord: Equatable, Hashable, CustomStringConvertible, Sendabl
             // in three of the four known samples and "9" in the fourth — so these three take
             // the widest alphabet the corpus supports. See the date discussion below.
             case .month, .day, .batch, .reserve: return .upperAlphanumeric
-            case .year, .vendorId, .filamentId, .filamentLength, .serialNumber: return .digits
+            // `filamentId` is `"1"` + the catalogue's `base.id`, and `base.id` is five characters
+            // that are **not** necessarily digits (SPEC/02 §1.1). The shipped K2 catalogue alone
+            // has 31 that are not: `E1001` (eSUN) and the `P####` Polymaker and Fiberon records.
+            // Held at `.digits`, this rejected every one of them at the point of building the
+            // record - so the app could list a Polymaker filament, let you pick it, and then
+            // refuse to make a tag out of it.
+            case .filamentId: return .upperAlphanumeric
+            case .year, .vendorId, .filamentLength, .serialNumber: return .digits
             case .color: return .hex
             }
         }

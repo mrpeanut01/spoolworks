@@ -14,8 +14,9 @@ import SpoolworksCore
 /// window, the sidebar and the menu bar.
 struct MaterialsView: View {
     @ObservedObject var model: MaterialsViewModel
-    // RootView attaches `.toast(env.toasts)` once per scene, so this view forwards its
-    // view-model's messages into that shared centre rather than presenting its own overlay.
+    // The scene that hosts this view attaches `.toast(env.toasts)` at its root (the Materials
+    // window in `App.swift`), so this view forwards its view-model's messages into that shared
+    // centre rather than presenting its own overlay.
     @EnvironmentObject private var toasts: ToastCenter
 
     @State private var hasLoaded = false
@@ -23,6 +24,7 @@ struct MaterialsView: View {
     var body: some View {
         VStack(spacing: 0) {
             saveFailureBanner
+            seedAdditionsBanner
             content
         }
         .navigationTitle("Material Database")
@@ -130,6 +132,43 @@ struct MaterialsView: View {
         }
     }
 
+    /// Offers the filaments a newer bundled catalogue has and this one does not.
+    ///
+    /// An offer, not a merge: the catalogue on disk is the user's, and an app update that poured
+    /// records into it unasked would be indistinguishable from the app losing their edits. It is
+    /// how a shipped refresh reaches an install that already has a catalogue at all — the seed is
+    /// otherwise written once, on the run that had no file.
+    @ViewBuilder
+    private var seedAdditionsBanner: some View {
+        if model.seedAdditions > 0, model.saveFailure == nil {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(model.seedAdditions) new filament\(model.seedAdditions == 1 ? "" : "s") "
+                         + "in the bundled catalogue")
+                        .font(.headline)
+                    Text("Adding them leaves every filament already listed exactly as it is, including any you have edited.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Add Them") { Task { await model.applySeedAdditions() } }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+            .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                    .strokeBorder(Theme.accent.opacity(0.35))
+            )
+            .padding([.horizontal, .top], 12)
+            .accessibilityElement(children: .contain)
+        }
+    }
+
     @ViewBuilder
     private var saveFailureBanner: some View {
         if let failure = model.saveFailure {
@@ -146,8 +185,18 @@ struct MaterialsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    if model.diskChangedWhileUnsaved {
+                        // Both sides have something the other lacks, so the choice is the user's.
+                        Text("The database on disk was also changed from the Printers window while these edits were unsaved. Retry writes your edits over that change; Reload discards your edits and shows what is on disk.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 8)
+                if model.diskChangedWhileUnsaved {
+                    Button("Reload") { Task { await model.load() } }
+                }
                 Button("Retry") { Task { await model.retrySave() } }
                 Button {
                     model.saveFailure = nil
@@ -178,8 +227,8 @@ struct MaterialsView: View {
             }
             .width(min: 34, ideal: 34, max: 40)
 
-            TableColumn("ID", value: \.id) { row in
-                Text(row.id)
+            TableColumn("ID", value: \.materialID) { row in
+                Text(row.materialID)
                     .font(.system(.body, design: .monospaced))
             }
             .width(min: 60, ideal: 70)
@@ -270,7 +319,7 @@ struct MaterialsView: View {
             Button("Duplicate as New…") { model.editor = .add(template: only.filament) }
             Divider()
             Button("Copy Colour Hex") { copy(only.colorHex) }
-            Button("Copy Filament ID") { copy(only.id) }
+            Button("Copy Filament ID") { copy(only.materialID) }
             Divider()
         }
         if !selected.isEmpty {

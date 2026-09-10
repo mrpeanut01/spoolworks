@@ -132,6 +132,44 @@ let integrityFixTests = TestSuite(name: "Integrity fixes (printer transport + ma
         }
     },
 
+    test("an explicit null round-trips as null, not as a fabricated zero") { t in
+        // `presentKeys` counts a key the record carried as `null` as present — the record did
+        // say something about it. The defect: what it said was "no value", and the fallback
+        // `0` went back out as a concrete printer setting.
+        let base = """
+        {"id":"01001","brand":"Creality","name":"Hyper PLA","meterialType":"PLA",
+         "minTemp":null,"density":null}
+        """
+        let file = try MaterialDatabase.decode(wrap(filament(base)))
+        guard let decoded = t.unwrap(file.result.list.first?.base, "decoded base") else { return }
+        t.equal(decoded.minTemp, 0, "reading still falls back, so the record loads")
+        t.expect(decoded.presentKeys.contains("minTemp"), "the record did mention the key")
+
+        guard let written = t.unwrap(firstBase(try MaterialDatabase.encode(file)), "encoded base") else { return }
+        t.expect(written["minTemp"] is NSNull, "…and what it said was null, so null goes back out")
+        t.expect(written["density"] is NSNull)
+
+        // Setting the field replaces the null with the value, like any other edit.
+        var edited = file
+        edited.result.list[0].base.minTemp = 200
+        guard let rewritten = t.unwrap(firstBase(try MaterialDatabase.encode(edited)), "re-encoded base") else { return }
+        t.equal(rewritten["minTemp"] as? Int, 200)
+        t.expect(rewritten["density"] is NSNull, "an untouched null stays null")
+    },
+
+    test("an unquoted version or a quoted count does not refuse the whole catalogue") { t in
+        // The records are decoded leniently, one at a time, so a single odd one cannot take the
+        // catalogue down; the envelope was the one place stricter than that.
+        let data = Data("""
+        {"code":0,"msg":"ok","reqId":"0",
+         "result":{"list":[\(filament(fullBase))],"count":"1","version":1758907369}}
+        """.utf8)
+        let file = try MaterialDatabase.decode(data)
+        t.equal(file.result.version, "1758907369", "read as the string it is compared as")
+        t.equal(file.result.count, 1)
+        t.equal(file.result.list.count, 1, "and the records came with it")
+    },
+
     test("a fully-populated base still writes all 18 modelled keys") { t in
         let file = try MaterialDatabase.decode(wrap(filament(fullBase)))
         guard let written = t.unwrap(firstBase(try MaterialDatabase.encode(file))) else { return }
@@ -345,6 +383,30 @@ let integrityFixTests = TestSuite(name: "Integrity fixes (printer transport + ma
         t.equal(db.hasUnsavedChanges, false)
         let onDisk = try MaterialDatabase.decode(try Data(contentsOf: fileURL))
         t.equal(onDisk.result.list.map(\.id), ["00001", "29001"])
+    },
+
+    test("records that would not decode survive a failed save and clear after a good one") { t in
+        let scratch = Scratch()
+        // One good record and one with no `base` at all, which cannot be a filament.
+        let seed = StaticMaterialSeed([.k2: wrap(filament(fullBase) + ",{\"engineVersion\":\"3.0.0\"}")])
+        let db = MaterialDatabase(printerType: .k2, storage: scratch.storage, seed: seed)
+        try db.load()
+        t.equal(db.recordFailures.count, 1, "the incomplete file is reported as such")
+
+        try db.add(sampleRecord(id: "29001"))
+        let fileURL = scratch.storage.url(for: .k2)
+        let saved = try Data(contentsOf: fileURL)
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+        t.throwsError("saving over a directory") { try db.save() }
+        // The defect: the rollback snapshot carried no failures, so a save that never landed
+        // left the catalogue claiming it was complete while the disk still held the bad record.
+        t.equal(db.recordFailures.count, 1, "the disk is still incomplete, and memory still says so")
+
+        try FileManager.default.removeItem(at: fileURL)
+        try saved.write(to: fileURL)
+        try db.save()
+        t.equal(db.recordFailures.count, 0, "the file just written holds only the records that decoded")
     },
 
     test("adopt marks the database dirty; load does not") { t in

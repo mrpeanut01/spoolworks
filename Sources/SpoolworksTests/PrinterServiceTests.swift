@@ -266,6 +266,8 @@ let sshInvocationTests = TestSuite(name: "SSHTransport invocation (SPEC-04 §11.
         }
         t.throwsError(PrinterTransportError.invalidHost("  ")) { try SSHTransport.validate(host: "  ") }
         t.throwsError(PrinterTransportError.invalidHost("a b")) { try SSHTransport.validate(host: "a b") }
+        // The validator used to check a trimmed copy while argv got the original.
+        t.throwsError(PrinterTransportError.invalidHost(" 10.0.0.5")) { try SSHTransport.validate(host: " 10.0.0.5") }
         t.noThrow("plain host") { try SSHTransport.validate(host: "192.168.1.50") }
         t.noThrow("hostname") { try SSHTransport.validate(host: "k2.local") }
 
@@ -455,6 +457,25 @@ let sshErrorClassificationTests = TestSuite(name: "SSHTransport error surfaces (
         t.expect(detail.contains("legacy"), "message should mention legacy algorithms: \(detail)")
     },
 
+    test("a remote permission problem is not reported as a wrong password") { t in
+        // ssh itself exits 255; a remote `cat` that cannot open the file exits 1. The text
+        // check alone put this down as authenticationFailed, sending the user to re-enter a
+        // password that was fine.
+        let path = "/mnt/UDISK/creality/userdata/box/material_database.json"
+        t.equal(SSHTransport.classify(operation: download, exitStatus: 1,
+                                      stderr: "cat: can't open '\(path)': Permission denied",
+                                      host: "h"),
+                .remoteFileNotFound(path: path))
+    },
+
+    test("an error's own sentence is what localizedDescription shows") { t in
+        // Every UI surface shows `error.localizedDescription`, which reads `errorDescription`,
+        // not `description`. Without the conformance it showed "The operation couldn't be
+        // completed. (SpoolworksCore.PrinterTransportError error 3.)".
+        let error: Error = PrinterTransportError.authenticationFailed
+        t.equal(error.localizedDescription, PrinterTransportError.authenticationFailed.description)
+    },
+
     test("a missing remote database is remoteFileNotFound") { t in
         t.equal(SSHTransport.classify(operation: download, exitStatus: 1,
                                       stderr: "cat: can't open '/mnt/UDISK/creality/userdata/box/material_database.json': No such file or directory",
@@ -511,6 +532,19 @@ let processRunnerTests = TestSuite(name: "ProcessRunner deadline & cancellation 
         t.equal(result.exitStatus, 0)
         t.equal(result.stdout.count, payload.count, "large payloads must not deadlock the pipes")
         t.expect(result.stdout == payload, "bytes round-tripped unchanged")
+    },
+
+    test("a child that exits without reading a large stdin does not kill the process") { t in
+        // The defect: ssh failing authentication with a 478 KB database queued behind a full
+        // 64 KiB pipe closed the read end under a blocked write, and SIGPIPE — which `try?`
+        // cannot catch — terminated the whole app. This harness would have died with status
+        // 141 here instead of reporting anything.
+        let payload = Data(repeating: 0x41, count: 512 * 1024)
+        let invocation = SSHInvocation(executable: "/bin/sh", arguments: ["-c", "sleep 0.3; exit 255"],
+                                       environment: ["PATH": "/usr/bin:/bin"])
+        let result = try runSync { try await ProcessRunner.run(invocation: invocation,
+                                                               stdin: payload, timeout: 10) }
+        t.equal(result.exitStatus, 255, "the child's own status is what comes back")
     },
 
     test("a stalled transfer hits the deadline instead of hanging forever") { t in

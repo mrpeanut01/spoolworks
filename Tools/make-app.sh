@@ -30,14 +30,16 @@ APP_NAME="Spoolworks"
 DISPLAY_NAME="Spoolworks"
 BUNDLE_ID="com.obsidiang.spoolworks"
 # Windows AssemblyInfo reports 16.0.0.0; this is a rewrite, so the macOS port versions from 1.
-SHORT_VERSION="0.4.0"
+SHORT_VERSION="0.5.0"
 MIN_SYSTEM_VERSION="14.0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --debug)   CONFIGURATION="debug"; shift ;;
         --release) CONFIGURATION="release"; shift ;;
-        --output)  OUTPUT_DIR="$2"; shift 2 ;;
+        --output)
+            [[ $# -ge 2 ]] || { echo "make-app.sh: --output needs a directory" >&2; exit 2; }
+            OUTPUT_DIR="$2"; shift 2 ;;
         --open)    LAUNCH=1; shift ;;
         -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "make-app.sh: unknown option '$1'" >&2; exit 2 ;;
@@ -66,6 +68,12 @@ fi
 
 APP_BUNDLE="${OUTPUT_DIR}/${APP_NAME}.app"
 CONTENTS="${APP_BUNDLE}/Contents"
+
+# A failure after this point must not leave a half-assembled, possibly unsigned bundle at the
+# output path, where the next `open` would launch it. The trap is disarmed once every check has
+# passed.
+COMPLETE=0
+trap '[[ "${COMPLETE}" -eq 1 ]] || rm -rf "${APP_BUNDLE}"' EXIT
 
 echo "==> Assembling ${APP_BUNDLE}"
 rm -rf "${APP_BUNDLE}"
@@ -287,6 +295,7 @@ echo "    camera usage description present"
 
 plutil -lint "${CONTENTS}/Info.plist" | sed 's/^/    /'
 
+COMPLETE=1
 echo
 echo "Built ${APP_BUNDLE}"
 echo "  version    ${SHORT_VERSION} (${BUILD_NUMBER})"
