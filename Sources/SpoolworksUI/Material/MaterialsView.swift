@@ -24,6 +24,7 @@ struct MaterialsView: View {
     var body: some View {
         VStack(spacing: 0) {
             saveFailureBanner
+            seedAdditionsBanner
             content
         }
         .navigationTitle("Material Database")
@@ -128,6 +129,43 @@ struct MaterialsView: View {
             Text("No filament matches “\(model.searchText)”.")
         } actions: {
             Button("Clear Search") { model.searchText = "" }
+        }
+    }
+
+    /// Offers the filaments a newer bundled catalogue has and this one does not.
+    ///
+    /// An offer, not a merge: the catalogue on disk is the user's, and an app update that poured
+    /// records into it unasked would be indistinguishable from the app losing their edits. It is
+    /// how a shipped refresh reaches an install that already has a catalogue at all — the seed is
+    /// otherwise written once, on the run that had no file.
+    @ViewBuilder
+    private var seedAdditionsBanner: some View {
+        if model.seedAdditions > 0, model.saveFailure == nil {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(model.seedAdditions) new filament\(model.seedAdditions == 1 ? "" : "s") "
+                         + "in the bundled catalogue")
+                        .font(.headline)
+                    Text("Adding them leaves every filament already listed exactly as it is, including any you have edited.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Add Them") { Task { await model.applySeedAdditions() } }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+            .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                    .strokeBorder(Theme.accent.opacity(0.35))
+            )
+            .padding([.horizontal, .top], 12)
+            .accessibilityElement(children: .contain)
         }
     }
 

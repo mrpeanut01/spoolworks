@@ -214,6 +214,13 @@ final class MaterialsViewModel: ObservableObject {
     /// the other, so nothing is done silently: the banner says so, Retry writes the edits over
     /// the download, and Reload discards them.
     @Published private(set) var diskChangedWhileUnsaved = false
+    /// How many filaments the bundled catalogue has that this one does not, when the bundled one
+    /// is the newer of the two. Drives the "add them" banner; zero hides it.
+    ///
+    /// Offered rather than merged on load. The catalogue on disk is the user's — a printer
+    /// download, a hand-edited file, a deliberately deleted record — and an app upgrade that
+    /// silently poured 30 records into it would be doing the thing this app is careful not to do.
+    @Published private(set) var seedAdditions = 0
 
     // MARK: Dependencies
 
@@ -315,6 +322,7 @@ final class MaterialsViewModel: ObservableObject {
             version = db.version
             rows = FilamentRow.rows(from: db.filaments)
             installedTypes = storage.installedTypes()
+            seedAdditions = db.pendingSeedAdditions().count
             loadState = .loaded
             await resolveColorNames(for: generation)
         } catch {
@@ -323,6 +331,28 @@ final class MaterialsViewModel: ObservableObject {
             rows = []
             version = MaterialVersion.unknown
             loadState = .failed(Self.message(for: error))
+        }
+    }
+
+    /// Adds the filaments the newer bundled catalogue has and this one lacks, and says how many.
+    ///
+    /// The user's own records are never touched: ids already present are skipped, whatever they
+    /// hold now. See ``MaterialDatabase/topUpFromSeed()``.
+    func applySeedAdditions() async {
+        guard let database else { return }
+        do {
+            let added = try database.topUpFromSeed()
+            rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+            version = database.version
+            seedAdditions = database.pendingSeedAdditions().count
+            saveFailure = nil
+            toast = ToastMessage(added.isEmpty
+                                 ? "The catalogue already had every bundled filament"
+                                 : "\(added.count) filament\(added.count == 1 ? "" : "s") added",
+                                 style: .success)
+            await resolveColorNames()
+        } catch {
+            saveFailure = Self.message(for: error)
         }
     }
 
