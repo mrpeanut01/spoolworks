@@ -326,6 +326,77 @@ let intakeViewModelTests = TestSuite(name: "Intake view model", cases: [
         }
     },
 
+    // The bug as filed: "It entered the spool without a Spool serial number." Intake shows the
+    // serial it allocated under "Serial . generated" and names it again in the toast, then threw
+    // it away for any spool it could not compose a tag record for - which is every spool taken in
+    // without a catalogue material, the ordinary way to shelve a third-party filament.
+    test("an untagged spool keeps the serial the form showed it") { t in
+        onMain {
+            let (inventory, _, dir) = makeInventory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let model = IntakeViewModel(monitor: ReaderMonitor(),
+                                        inventory: inventory,
+                                        materials: MaterialsViewModel.previewValue(),
+                                        toasts: ToastCenter())
+            model.method = .manual
+            model.brand = "Polymaker"
+            model.name = "PolyTerra PLA"
+            model.materialType = "PLA"
+            let promised = model.serial
+            t.expect(!promised.isEmpty, "the form allocated one to show")
+            model.confirm()
+
+            guard let added = t.unwrap(inventory.inventory.active.first, "spool") else { return }
+            t.equal(added.identity, nil, "no catalogue material, so no tag identity")
+            t.equal(added.plannedSerial, promised, "and the serial is kept anyway")
+            t.equal(added.serialLabel, promised, "so the row shows it rather than an em dash")
+            t.expect(added.isUntagged, "still untagged")
+        }
+    },
+
+    // The other half of the same report: going back to tag that spool from Inventory put an empty
+    // Material ID on the Write screen, because the id was read off an identity it does not have.
+    test("tagging an identity-less spool resolves its material from the catalogue") { t in
+        onMain {
+            let rows = FilamentRow.rows(from: [
+                Filament(printerIntName: PrinterType.k2.printerIntName,
+                         kvParam: [:],
+                         base: MaterialBase(id: "P1003", brand: "Polymaker",
+                                            name: "Panchroma PLA Matte", materialType: "PLA")),
+            ])
+            var spool = Spool(brand: "Polymaker", name: "Panchroma PLA Matte",
+                              materialType: "PLA", colorHex: "232733")
+            spool.plannedSerial = "424242"
+
+            t.equal(AppEnvironment.materialID(for: spool, in: rows), "P1003",
+                    "found by brand and name")
+            // Case is not a difference: both fields came out of the catalogue row to begin with.
+            spool.brand = "polymaker"
+            t.equal(AppEnvironment.materialID(for: spool, in: rows), "P1003", "case-insensitively")
+            // A filament the catalogue does not have resolves to nothing rather than to a guess.
+            spool.name = "PolyTerra PLA"
+            t.equal(AppEnvironment.materialID(for: spool, in: rows), "",
+                    "an unknown filament stays empty")
+        }
+    },
+
+    // An identity still wins where there is one - that is the tag, and the tag is the fact.
+    test("a tagged spool's material id still comes from its identity") { t in
+        onMain {
+            let rows = FilamentRow.rows(from: [
+                Filament(printerIntName: PrinterType.k2.printerIntName, kvParam: [:],
+                         base: MaterialBase(id: "P1003", brand: "Polymaker",
+                                            name: "Panchroma PLA Matte", materialType: "PLA")),
+            ])
+            let spool = Spool(identity: SpoolIdentity(vendorId: "0276", filamentId: "101001",
+                                                      colorHex: "C12E1F", serialNumber: "000123"),
+                              brand: "Polymaker", name: "Panchroma PLA Matte",
+                              materialType: "PLA", colorHex: "C12E1F")
+            t.equal(AppEnvironment.materialID(for: spool, in: rows), "01001",
+                    "the tag's id, with its leading class digit dropped")
+        }
+    },
+
     test("a manually entered spool lands in stock as untagged") { t in
         onMain {
             let (inventory, _, dir) = makeInventory()

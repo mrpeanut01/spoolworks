@@ -143,24 +143,52 @@ final class AppEnvironment: ObservableObject {
     /// Fills the Write screen from an untagged spool that is about to be given a tag.
     ///
     /// Everything the tag stores comes from the spool: the filament id, the colour and the weight.
-    /// The **serial is allocated fresh** rather than reused — an untagged spool has none, and the
-    /// one it will carry has to be unique to it, because serial plus filament plus colour is how a
-    /// tag is matched back to a record (see `SpoolIdentity`). Copying a serial from anywhere would
-    /// be the one way to make two spools indistinguishable.
+    /// The **serial is the spool's own** — the one Intake reserved for it (`Spool.plannedSerial`)
+    /// when it went into stock without a tag, so the tag ends up carrying the number the record
+    /// has been showing all along. Only a spool that has no reserved serial gets a fresh one.
+    ///
+    /// What must never happen is a serial *copied from another spool*: serial plus filament plus
+    /// colour is how a tag is matched back to a record (see `SpoolIdentity`), so a shared serial
+    /// makes two spools indistinguishable. `IntakeViewModel.clone(_:)` allocates rather than
+    /// copies for exactly that reason. Reusing a spool's own reservation is not that case.
     ///
     /// The binding to the spool itself lives in `InventoryViewModel.awaitingTagFor`; this only
     /// composes the draft.
     @MainActor
     func loadForTagging(_ spool: Spool) {
-        let id = spool.identity?.filamentId ?? ""
-        // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
-        tagModel.draft.materialID = id.count == 6 ? String(id.dropFirst()) : id
+        tagModel.draft.materialID = Self.materialID(for: spool, in: materialsModel.rows)
         tagModel.draft.materialLabel = [spool.brand, spool.name]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
-        tagModel.draft.serialNumber = SpoolRecord.randomSerialNumber()
+        tagModel.draft.serialNumber = spool.plannedSerial ?? SpoolRecord.randomSerialNumber()
         tagModel.draft.weight = FilamentLength.forGrams(spool.netWeightGrams) ?? .kg1
         if let colour = Color(tagHex: spool.colorHex) { tagModel.draft.color = colour }
+    }
+
+    /// The catalogue id to write for `spool` — from its identity where it has one, and from the
+    /// catalogue by brand and name where it does not.
+    ///
+    /// The fallback is not belt-and-braces. Intake used to add a no-tag spool with no identity at
+    /// all (see `IntakeViewModel.identityBlocker`), and the *only* way to tag such a spool is this
+    /// screen — which read the id off the identity it does not have, put an empty Material ID on
+    /// the Write form, and left the user to find the filament in the catalogue by hand. Intake no
+    /// longer creates those spools; the ones it already created are still in people's inventories,
+    /// and this is what gets them tagged.
+    ///
+    /// Matching on brand *and* name, case-insensitively, is `IntakeViewModel.clone(_:)`'s rule —
+    /// both fields come from the catalogue row in the first place, so they round-trip. A spool
+    /// naming a filament the catalogue has since dropped resolves to nothing and the field stays
+    /// empty, which is the honest answer.
+    @MainActor
+    static func materialID(for spool: Spool, in rows: [FilamentRow]) -> String {
+        if let id = spool.identity?.filamentId, !id.isEmpty {
+            // The tag's filamentId is a leading class digit plus the catalogue's 5-digit base id.
+            return id.count == 6 ? String(id.dropFirst()) : id
+        }
+        return rows.first {
+            $0.brand.caseInsensitiveCompare(spool.brand) == .orderedSame
+                && $0.name.caseInsensitiveCompare(spool.name) == .orderedSame
+        }?.id ?? ""
     }
 
     nonisolated static let tagMemoryWindowID = "tag-memory"

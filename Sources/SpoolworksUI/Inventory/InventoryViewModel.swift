@@ -170,6 +170,9 @@ final class InventoryViewModel: ObservableObject {
 
         awaitingTagFor = nil
         spool.identity = SpoolIdentity(record: record)
+        // The reservation has been honoured (or superseded by a tag carrying something else);
+        // either way the identity is the authority on the serial from here on.
+        spool.plannedSerial = nil
         spool.tagSource = source
         if !materialType.isEmpty { spool.materialType = materialType }
         // The colour comes from the tag now, because the tag is what the printer and every later

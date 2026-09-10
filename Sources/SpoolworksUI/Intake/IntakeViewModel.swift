@@ -691,6 +691,11 @@ final class IntakeViewModel: ObservableObject {
             // The tags decide the identity once any has been written; the form's composition
             // stands in only while nothing has been programmed yet.
             let identity = (writtenRecord ?? composeRecord()).map(SpoolIdentity.init(record:))
+            // The serial is kept whether or not a record could be composed. Without a catalogue
+            // material there is no filament ID and therefore no identity — which is a legitimate
+            // way to shelve a third-party spool — but the form has still shown the user a serial
+            // under "Serial · generated", and the toast below reports it. It used to be discarded
+            // with the identity, so those spools reached the inventory showing "—".
             var made = Spool(identity: identity,
                              brand: brand,
                              name: name,
@@ -708,7 +713,8 @@ final class IntakeViewModel: ObservableObject {
                                  : willBeTagged ? "Intake · tagged, assumed full"
                                  : tagsRequired == 0 ? "Counted onto the shelf, assumed full"
                                                      : "Manual record · tag pending",
-                             tagSource: willBeTagged ? .spoolworksWritten : .untagged)
+                             tagSource: willBeTagged ? .spoolworksWritten : .untagged,
+                             plannedSerial: identity == nil ? serial : nil)
             made.note(kind: .intake,
                       detail: willBeTagged
                           ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
