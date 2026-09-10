@@ -145,8 +145,11 @@ struct FilamentDraft {
             out[.id] = "An ID is required."
         } else if trimmedID.count != 5 {
             out[.id] = "ID must be exactly 5 characters (letters or digits), for example 01001 or P1001."
-        } else if !trimmedID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) {
-            out[.id] = "ID may contain only the letters A–Z and the digits 0–9."
+        } else if !trimmedID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) {
+            // Capitals, as the message has always said. `isLetter` also accepted lowercase, which
+            // let the catalogue hold an id (`p1003`) that `SpoolRecord.Field.filamentId`'s `0-9A-Z`
+            // alphabet then refused — a filament you could create and never write a tag for.
+            out[.id] = "ID may contain only the capital letters A–Z and the digits 0–9."
         } else if !isEditingExisting, existingIDs.contains(trimmedID) {
             // Windows string, preserved: `Filament ID Exists\nDuplicate IDs are not allowed`.
             out[.id] = "Filament ID exists. Duplicate IDs are not allowed."

@@ -83,8 +83,8 @@ struct SpoolDraft: Equatable {
             issues.append("Enter a material ID.")
         } else if id.utf8.count != 5 {
             issues.append("Material ID must be exactly 5 characters (it is \(id.utf8.count)).")
-        } else if !id.allSatisfy(Self.isASCIIDigit) {
-            issues.append("Material ID must be digits only.")
+        } else if !id.allSatisfy(Self.isUppercaseASCIIAlphanumeric) {
+            issues.append("Material ID may contain only capital letters A-Z and the digits 0-9.")
         }
         // Reported after the material ID because that is the order the form reads in: the ID row
         // sits above the colour row, and a complaint that skips ahead sends the user to the wrong
@@ -104,6 +104,26 @@ struct SpoolDraft: Equatable {
     /// wire, so the form has to hold the same line.
     private static func isASCIIDigit(_ character: Character) -> Bool {
         character.isASCII && character.isNumber
+    }
+
+    /// The alphabet a **material id** is drawn from, which is wider than the serial's.
+    ///
+    /// This field demanded digits, and the catalogue it is fed from does not hold only digits: the
+    /// shipped K2 database has `E1001` (eSUN) and `P1001`-`P1004`, `P2001`, `P7001`... (the
+    /// Polymaker and Fiberon lines). Picking one of those on the Write screen produced
+    /// "Material ID must be digits only" for an id the app itself had just supplied, so every
+    /// third-party filament in the catalogue was untaggable.
+    ///
+    /// Nothing below this form ever wanted digits: `SpoolRecord.init(materialId:colorRGB:...)`
+    /// checks the width in bytes and no more, and ``FilamentEditorView`` had already settled on
+    /// five alphanumeric ASCII characters for the same reason. The two validators now agree.
+    /// Windows is the odd one out - `FilamentForm.cs:265-275` `int.TryParse`s the id, so it can
+    /// load `P1003` and write it to a tag but not create another one like it.
+    /// Capitals only, because that is what the tag field takes: `SpoolRecord.Field.filamentId`
+    /// is `0-9A-Z`, so a lowercase `p1003` would pass a laxer form check and then be refused by
+    /// Core with a raw byte error. The catalogue's own ids are all uppercase.
+    private static func isUppercaseASCIIAlphanumeric(_ character: Character) -> Bool {
+        character.isASCII && (character.isUppercase || character.isNumber)
     }
 
     var isValid: Bool { validationIssues.isEmpty }

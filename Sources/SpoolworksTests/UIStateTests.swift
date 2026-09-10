@@ -221,16 +221,44 @@ let spoolDraftTests = TestSuite(name: "Write form draft", cases: [
 
     // `Character.isNumber` is true of `²`, and `123²` is five UTF-8 bytes, so it passed the length
     // check as well and reached Core — which rejected it with a raw error the form had not
-    // warned about. Both fields are ASCII digits on the wire.
-    test("non-ASCII numerals are not digits") {
+    // warned about. Both fields are ASCII on the wire.
+    test("non-ASCII numerals are not accepted") {
         var draft = SpoolDraft()
         draft.materialID = "123²"
         draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
         draft.serialNumber = "1234²"
-        $0.expect(draft.validationIssues.contains("Material ID must be digits only."),
+        $0.expect(draft.validationIssues.contains("Material ID may contain only capital letters A-Z and the digits 0-9."),
                   "the material id must be caught by the form, not by Core")
         $0.expect(draft.validationIssues.contains("Serial number must be exactly 6 digits."),
                   "and so must the serial")
+    },
+
+    // The bug this was filed as: picking Polymaker Panchroma PLA Matte on the Write screen was
+    // refused with "Material ID must be digits only" — for `P1003`, an id that came out of the
+    // app's own catalogue. Every third-party filament in the shipped K2 database is P- or
+    // E-prefixed, so all 31 of them were untaggable.
+    test("a lettered catalogue id is writable") {
+        for id in ["P1003", "P1001", "P7005", "E1001", "01001"] {
+            var draft = SpoolDraft()
+            draft.materialID = id
+            draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
+            $0.expect(draft.isValid, "\(id) is a real catalogue id and must be writable")
+            $0.equal(try? draft.makeRecord().materialId, id, "\(id) survives into the record")
+        }
+    },
+
+    // The alphabet is wider, not absent. A five-byte id is still five bytes, and punctuation is
+    // still not an id — Core would take it (it only measures the width), so the form is the
+    // only thing standing between a typo and a tag.
+    test("the wider alphabet is still an alphabet") {
+        var draft = SpoolDraft()
+        draft.color = Color(nsColor: NSColor(rgbHex: 0xC12E1F))
+        draft.materialID = "P100-"
+        $0.expect(draft.validationIssues.contains("Material ID may contain only capital letters A-Z and the digits 0-9."),
+                  "punctuation is refused")
+        draft.materialID = "P100"
+        $0.expect(draft.validationIssues.contains("Material ID must be exactly 5 characters (it is 4)."),
+                  "and the width still holds")
     },
 ])
 
