@@ -221,6 +221,12 @@ final class MaterialsViewModel: ObservableObject {
     /// download, a hand-edited file, a deliberately deleted record — and an app upgrade that
     /// silently poured 30 records into it would be doing the thing this app is careful not to do.
     @Published private(set) var seedAdditions = 0
+    /// How many third-party filaments the bundled vendor catalogue has that this one does not.
+    ///
+    /// A separate offer from ``seedAdditions``, because accepting it has a consequence the
+    /// captured records do not: their ids are ours, not Creality's, so a tag written against one
+    /// is ignored by the printer until the catalogue has been uploaded to it. The banner says so.
+    @Published private(set) var vendorAdditions = 0
 
     // MARK: Dependencies
 
@@ -323,6 +329,7 @@ final class MaterialsViewModel: ObservableObject {
             rows = FilamentRow.rows(from: db.filaments)
             installedTypes = storage.installedTypes()
             seedAdditions = db.pendingSeedAdditions().count
+            vendorAdditions = db.pendingVendorAdditions().count
             loadState = .loaded
             await resolveColorNames(for: generation)
         } catch {
@@ -349,6 +356,26 @@ final class MaterialsViewModel: ObservableObject {
             toast = ToastMessage(added.isEmpty
                                  ? "The catalogue already had every bundled filament"
                                  : "\(added.count) filament\(added.count == 1 ? "" : "s") added",
+                                 style: .success)
+            await resolveColorNames()
+        } catch {
+            saveFailure = Self.message(for: error)
+        }
+    }
+
+    /// Adds the bundled third-party catalogue — Bambu, Elegoo, Overture, SUNLU and Polymaker's
+    /// consumer line — and says how many landed. Ids already present are left alone.
+    func applyVendorCatalogue() async {
+        guard let database else { return }
+        do {
+            let added = try database.addVendorCatalogue()
+            rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+            vendorAdditions = database.pendingVendorAdditions().count
+            saveFailure = nil
+            toast = ToastMessage(added.isEmpty
+                                 ? "The catalogue already had every third-party filament"
+                                 : "\(added.count) third-party filament\(added.count == 1 ? "" : "s") added"
+                                   + " — upload the catalogue to the printer before writing tags",
                                  style: .success)
             await resolveColorNames()
         } catch {

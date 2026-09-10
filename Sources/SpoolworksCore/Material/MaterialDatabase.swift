@@ -276,6 +276,21 @@ public enum MaterialVersion {
 public protocol MaterialSeedProviding: Sendable {
     /// Returns the seed bytes, or throws ``MaterialDatabaseError/seedUnavailable(_:)``.
     func seedData(for printerType: PrinterType) throws -> Data
+
+    /// The third-party catalogue for this family, or `nil` where there is none.
+    ///
+    /// Kept separate from the seed rather than folded into it, because the two are not equally
+    /// trustworthy and the difference is worth preserving. A seed record was captured from a
+    /// printer: its profile is the printer's own and its id already resolves there. A vendor
+    /// record was assembled from the filament maker's published profile: the numbers are theirs,
+    /// but the **id is ours**, so a tag written against one is ignored until the catalogue has
+    /// been uploaded to the printer. Merging them would lose that distinction permanently.
+    func vendorCatalogueData(for printerType: PrinterType) throws -> Data?
+}
+
+public extension MaterialSeedProviding {
+    /// Most providers have no third-party catalogue; the bundled one does.
+    func vendorCatalogueData(for printerType: PrinterType) throws -> Data? { nil }
 }
 
 /// Reads the seed from the app bundle (`k1.json` / `k2.json` / `hi.json`).
@@ -309,6 +324,16 @@ public struct BundledMaterialSeed: MaterialSeedProviding {
     /// app must resolve resources only from its own bundle.
     static func seedURL(for printerType: PrinterType) -> URL? {
         SpoolworksCoreResources.url(forResource: printerType.rawValue, withExtension: "json")
+    }
+
+    /// `vendor-k2.json` and friends — the assembled third-party catalogue, absent for families
+    /// that have none. Built by `Tools/build-vendor-catalogue.py`; see that file for what is
+    /// taken from a vendor profile and, more importantly, what is not.
+    public func vendorCatalogueData(for printerType: PrinterType) throws -> Data? {
+        guard let url = SpoolworksCoreResources.url(forResource: "vendor-\(printerType.rawValue)",
+                                                    withExtension: "json") else { return nil }
+        do { return try Data(contentsOf: url) }
+        catch { throw MaterialDatabaseError.storage("reading \(url.lastPathComponent): \(error.localizedDescription)") }
     }
 }
 
@@ -778,6 +803,42 @@ public final class MaterialDatabase {
     /// ``seedFromBundle()`` for a destructive "reset to the factory catalogue", and the
     /// printer/cloud merge (which upserts) where the remote copy is meant to win.
     ///
+    /// The third-party records this catalogue does not have, in catalogue order.
+    ///
+    /// Unlike ``pendingSeedAdditions()`` this is not version-gated. The vendor catalogue is not a
+    /// newer edition of the local one — it is a different set of filaments — so "do I already have
+    /// these ids" is the only question that means anything.
+    public func pendingVendorAdditions() -> [String] {
+        guard isLoaded,
+              let data = (try? seed.vendorCatalogueData(for: printerType)) ?? nil,
+              let file = try? Self.decode(data)
+        else { return [] }
+        return file.result.list.map(\.base.id).filter { !contains(id: $0) }
+    }
+
+    /// Adds the third-party catalogue's records, skipping any id already present, and saves.
+    ///
+    /// The version is deliberately **not** stamped. `result.version` describes the captured
+    /// catalogue's edition and is what the printer compares against on update; moving it because
+    /// records were added locally would tell the printer this catalogue is newer than it is.
+    ///
+    /// - Returns: the ids added. Empty when every one was already present.
+    @discardableResult
+    public func addVendorCatalogue() throws -> [String] {
+        guard isLoaded else { throw MaterialDatabaseError.notLoaded(printerType) }
+        guard let data = try seed.vendorCatalogueData(for: printerType) else { return [] }
+        let file = try Self.decode(data)
+
+        var added: [String] = []
+        for filament in file.result.list where !contains(id: filament.base.id) {
+            try add(filament)
+            added.append(filament.base.id)
+        }
+        guard !added.isEmpty else { return [] }
+        try save()
+        return added
+    }
+
     /// - Returns: the ids added, in seed order. Empty when there was nothing to do.
     @discardableResult
     public func topUpFromSeed() throws -> [String] {
