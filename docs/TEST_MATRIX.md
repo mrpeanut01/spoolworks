@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
-Status at last update: **694 automated tests passing**, 0 failing.
+Status at last update: **707 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -56,6 +56,13 @@ Status at last update: **694 automated tests passing**, 0 failing.
 | Material DB | empty list still persists (Windows defect d) | regression | pass |
 | Material DB | version comparison numeric not lexicographic | unit | pass |
 | Material DB | malformed JSON leaves state untouched | unit | pass |
+| Material DB | shipped seeds load: k2 96 records @ `1784284303`, k1 46 and hi 21 @ `1758907369` | unit | pass |
+| Material DB | the K2 seed carries 13 Polymaker and 18 eSUN records, and 31 lettered ids | unit | pass |
+| Material DB | the K2 seed carries no `userMaterial` records and one `00004` | regression | pass |
+| Material DB | a newer bundled seed offers the records the local catalogue lacks | unit | pass |
+| Material DB | a top-up never overwrites a record already present, edits included | regression | pass |
+| Material DB | a catalogue newer than the seed is offered nothing and left alone | regression | pass |
+| Material DB | a top-up before a load is refused rather than writing from nothing | unit | pass |
 | Colour | 31,861 records load; header/payload checksum agree | unit | pass |
 | Colour | exact and nearest matches; black/white/edges | unit | pass |
 | Colour | tie-breaks by CSV row order (5 verified vectors) | regression | pass |
@@ -72,6 +79,12 @@ Status at last update: **694 automated tests passing**, 0 failing.
 | Review fixes | stabiliser reports a measured frame on a split window, never a per-component composite | regression | pass |
 | Review fixes | a half-programmed tag (record under the factory key) is authorised and named as interrupted; failed writes show no step "done"; the first attempt's backup survives a retry; the rotated serial does not mark the form edited; a stale deferred arrival is cleared | regression | pass |
 | Review fixes | Intake Method B records the identity its tags actually hold; a drifted form cannot be confirmed; a rewritten tag does not claim both sides; re-arming follows spool size; Method A gets no catalogue pre-fill and no invented type | regression | pass |
+| Polymaker fixes | `P1003` and every lettered catalogue id builds a tag and round-trips the 40-character record | regression | pass |
+| Polymaker fixes | `filamentId` takes `0-9A-Z`; lowercase, punctuation and spaces still refused | regression | pass |
+| Polymaker fixes | the write form accepts a lettered id and still enforces width and alphabet | regression | pass |
+| Polymaker fixes | an untagged intake keeps the serial the form showed it | regression | pass |
+| Polymaker fixes | tagging an identity-less spool resolves its material from the catalogue by brand and name | regression | pass |
+| Polymaker fixes | a tagged spool's material id still comes from its identity | regression | pass |
 | Review fixes | upload options reach the service unchanged; a printer download is not overwritten by the next Materials edit; removing a printer deletes its password; a password typed before the address survives it | regression | pass |
 
 ## Hardware-in-the-loop (executed on the user's ACS ACR1552)
@@ -120,7 +133,7 @@ Read-only. Nothing was written to the printer and it was not rebooted.
 | Shared read/write layout | **pass** |
 | Colour palette + Custom… wheel | **pass** |
 | Reader screen shows one device, two slots | **pass** |
-| Materials catalogue (66 filaments, seeded) | **pass** |
+| Materials catalogue (96 filaments, seeded) | **pass** |
 
 User confirmation: "works as designed."
 
@@ -134,6 +147,7 @@ User confirmation: "works as designed."
 | Tag write | a blank tag authorises its own trailer write; a programmed one does not | `Tag arrivals` |
 | Materials | empty DB; browse; add; edit; delete-with-confirm; validation errors | pending |
 | Materials | id formats the shipped data actually uses (`E1001`, `P1001`) accepted | pending |
+| Materials | the seed-additions banner appears on a stale catalogue, adds only what is missing, and leaves edits alone | pending |
 | Printers | none configured; add; upload with progress + cancel; upload failure | pending |
 | Printers | password never rendered in plain text | pending |
 | Settings | persistence across launches | pending |
