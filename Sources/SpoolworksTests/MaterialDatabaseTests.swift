@@ -468,6 +468,96 @@ let materialDatabaseTests = TestSuite(name: "Material database", cases: [
         t.equal(db.pendingSeedAdditions(), [], "and nothing is offered either")
     },
 
+    // MARK: - Vendor catalogue
+
+    // The captured catalogue covers Creality, Generic, eSUN and Polymaker's engineering line. The
+    // brands people actually buy elsewhere are not in it, and their records cannot be captured
+    // from anywhere - they are assembled from each maker's published profile by
+    // `Tools/build-vendor-catalogue.py`.
+    test("the bundled vendor catalogue carries the five Tier 1 brands") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else {
+            t.record("no vendor catalogue is bundled for k2", file: #file, line: #line); return
+        }
+        let file = try MaterialDatabase.decode(data)
+        t.equal(file.result.list.count, 113, "record count")
+        t.equal(file.result.count, 113, "declared count")
+        let byBrand = Dictionary(grouping: file.result.list, by: \.vendor).mapValues(\.count)
+        t.equal(byBrand["Bambu Lab"], 41, "Bambu Lab")
+        t.equal(byBrand["Elegoo"], 30, "Elegoo")
+        t.equal(byBrand["Polymaker"], 24, "Polymaker's consumer line")
+        t.equal(byBrand["Overture"], 11, "Overture")
+        t.equal(byBrand["SUNLU"], 7, "SUNLU")
+        t.equal(Set(file.result.list.map(\.id)).count, 113, "ids are unique")
+    },
+
+    // Two catalogues that share an id would make `filament(id:)` answer differently depending on
+    // which was added first, and the printer would resolve whichever it holds.
+    test("no vendor id collides with the captured catalogue") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
+        let vendor = try MaterialDatabase.decode(data)
+        let captured = try MaterialDatabase.decode(try seed.seedData(for: .k2))
+        let capturedIDs = Set(captured.result.list.map(\.id))
+        let overlap = vendor.result.list.map(\.id).filter { capturedIDs.contains($0) }
+        t.equal(overlap, [], "ids must not collide")
+        // Every id is five ASCII alphanumerics, or no tag can carry it. This is the rule three
+        // separate validators were getting wrong before.
+        t.expect(vendor.result.list.allSatisfy {
+            $0.id.utf8.count == 5 && $0.id.allSatisfy { c in c.isASCII && (c.isUppercase || c.isNumber) }
+        }, "every id is five capitals-and-digits bytes")
+    },
+
+    // The rule the generator exists to enforce: a filament profile mixes what belongs to the
+    // plastic with what belongs to the printer, and only the first half travels. Vendor G-code
+    // drives hardware a Creality machine does not have - and Bambu's is a bare comment where
+    // Creality's sets the nozzle temperature, so taking it would have replaced working
+    // temperature control with nothing.
+    test("vendor records keep Creality's machine settings and the vendor's material ones") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
+        let vendor = try MaterialDatabase.decode(data)
+        let captured = try MaterialDatabase.decode(try seed.seedData(for: .k2))
+        guard let genericPLA = captured.result.list.first(where: { $0.id == "00001" }) else {
+            t.record("Generic PLA is missing from the capture", file: #file, line: #line); return
+        }
+        guard let bambuBasic = vendor.result.list.first(where: { $0.name == "Bambu PLA Basic" }) else {
+            t.record("Bambu PLA Basic is missing", file: #file, line: #line); return
+        }
+        for machineKey in ["filament_start_gcode", "filament_end_gcode", "pressure_advance",
+                           "filament_retraction_length", "filament_z_hop"] {
+            t.equal(bambuBasic.kvParam[machineKey], genericPLA.kvParam[machineKey],
+                    "\(machineKey) belongs to the printer")
+        }
+        // ...and the material half is Bambu's own, not Creality's.
+        t.equal(bambuBasic.base.density, 1.26, "Bambu's published density")
+        t.equal(bambuBasic.kvParam["filament_vendor"], "Bambu Lab", "vendor is derived, not copied")
+        t.expect(bambuBasic.base.rank < 4530, "sorts below every captured record")
+    },
+
+    test("adding the vendor catalogue is additive and leaves the version alone") { t in
+        let temp = TempStorage()
+        let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1700000000")
+        let added = try db.addVendorCatalogue()
+        t.equal(added.count, 113, "all 113 land")
+        t.equal(db.filaments.count, 114, "alongside the one already there")
+        t.equal(db.version, "1700000000",
+                "the version describes the captured edition and must not move")
+        t.equal(db.pendingVendorAdditions(), [], "so the offer is gone")
+        t.expect(db.contains(id: "B1002"), "Bambu PLA Basic is in")
+    },
+
+    test("a second add of the vendor catalogue changes nothing") { t in
+        let temp = TempStorage()
+        let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1700000000")
+        _ = try db.addVendorCatalogue()
+        guard var mine = t.unwrap(db.filament(id: "B1002"), "Bambu PLA Basic") else { return }
+        mine.base.name = "Mine, hand-tuned"
+        try db.update(mine)
+        t.equal(try db.addVendorCatalogue(), [], "nothing to add")
+        t.equal(db.filament(id: "B1002")?.name, "Mine, hand-tuned", "and the edit survives")
+    },
+
     // MARK: - CRUD
 
     test("lookup by id, trimmed") { t in

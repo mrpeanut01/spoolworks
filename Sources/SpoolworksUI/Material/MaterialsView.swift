@@ -25,6 +25,7 @@ struct MaterialsView: View {
         VStack(spacing: 0) {
             saveFailureBanner
             seedAdditionsBanner
+            vendorCatalogueBanner
             content
         }
         .navigationTitle("Material Database")
@@ -157,6 +158,42 @@ struct MaterialsView: View {
                 Spacer(minLength: 8)
                 Button("Add Them") { Task { await model.applySeedAdditions() } }
                     .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+            .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                    .strokeBorder(Theme.accent.opacity(0.35))
+            )
+            .padding([.horizontal, .top], 12)
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    /// Offers the assembled third-party catalogue.
+    ///
+    /// Its own banner rather than a line in the seed one, because it is a different decision. The
+    /// seed's records were captured from a printer and their ids already resolve there; these were
+    /// assembled from vendor profiles and their ids are ours, so a tag written against one is
+    /// ignored until the catalogue reaches the printer. Saying that here is the difference between
+    /// a feature and a support question.
+    @ViewBuilder
+    private var vendorCatalogueBanner: some View {
+        if model.vendorAdditions > 0, model.saveFailure == nil {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "shippingbox")
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(model.vendorAdditions) third-party filaments available")
+                        .font(.headline)
+                    Text("Bambu Lab, Elegoo, Overture, SUNLU and Polymaker's consumer line, built from each maker's published print profile. Their IDs are not Creality's, so upload the catalogue to the printer (Printers ▸ Upload) before writing tags for them.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Add Them") { Task { await model.applyVendorCatalogue() } }
             }
             .padding(12)
             .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.cornerRadius))

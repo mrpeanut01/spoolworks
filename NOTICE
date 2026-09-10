@@ -61,6 +61,34 @@ repository owns:
 | `reference/seeds/{k1,k2,hi}.json` | Their provenance copies |
 | `reference/printer-dumps/*.json` | Files pulled off a K2 Plus. `material_box_info.json` doubles as a test fixture — it is what proves the serial-collision problem in the README is real rather than hypothetical |
 
+## OrcaSlicer filament library
+
+<https://github.com/OrcaSlicer/OrcaSlicer> — **AGPL-3.0**.
+
+`Sources/SpoolworksCore/Resources/vendor-k2.json` — 113 third-party filament records across Bambu
+Lab, Elegoo, Polymaker's consumer line, Overture and SUNLU, assembled by
+`Tools/build-vendor-catalogue.py` from `resources/profiles/OrcaFilamentLibrary/filament`. Those
+profiles are contributed to OrcaSlicer by the filament makers themselves.
+
+**What is taken and what is not.** Twenty-seven keys per record, every one a measurable property of
+the plastic: density, the nozzle and bed temperatures, glass-transition temperature, flow ratio,
+maximum volumetric speed, the soluble and support flags, required nozzle hardness, and whether the
+material wants the air filtered. Product names and the list of which products exist. Nothing else —
+no G-code, no retraction or fan tuning, no pressure advance, no purge volumes. Those describe the
+extruder a profile was written for, not the filament, and each record instead inherits them from
+the Creality generic record for its polymer (named in `sourceTemplate`). Every record also carries
+`sourceProfile`, the resolved inheritance chain it was read from.
+
+**The licence question, stated plainly.** OrcaSlicer is AGPL-3.0 and its `resources/profiles`
+directory carries no separate licence, so the library is AGPL-3.0 by default. This repository is
+MIT. The position taken here is that a density and a melt temperature are measurements of a
+physical product rather than creative expression, that a re-expression into Creality's schema under
+our own identifiers is not a copy of OrcaSlicer's compilation, and that no expressive content
+(the G-code) travels. That is a considered position and not a legal opinion. Anyone redistributing
+this who reads it differently has two clean alternatives: drop `vendor-k2.json` from the bundle and
+run `Tools/build-vendor-catalogue.py` locally, which distributes nothing, or ask the filament makers
+directly — several already publish presets under their own terms.
+
 ## Design
 
 The Modernist design system and the Spoolworks screen designs came from a Claude Design handoff
