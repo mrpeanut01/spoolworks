@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
-Status at last update: **715 automated tests passing**, 0 failing.
+Status at last update: **737 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -94,6 +94,11 @@ Status at last update: **715 automated tests passing**, 0 failing.
 | Polymaker fixes | tagging an identity-less spool resolves its material from the catalogue by brand and name | regression | pass |
 | Polymaker fixes | a tagged spool's material id still comes from its identity | regression | pass |
 | Review fixes | upload options reach the service unchanged; a printer download is not overwritten by the next Materials edit; removing a printer deletes its password; a password typed before the address survives it | regression | pass |
+| Restart safety (D-006) | `restartIfIdle` reads the printer's state before sending; printing, paused, busy or unreadable all refuse with nothing sent; the connection dropping after `reboot` is success, a real failure propagates | unit | pass |
+| Restart safety (D-006) | Moonraker: the reply a K2 Plus gave mid-print decodes as printing; paused is a print in progress; finished, cancelled or failed with nothing running is idle; a missing or unknown state is an error, never idle | unit | pass |
+| Restart safety (D-006) | uploads and resets send no command; the live transport refuses a printing printer and restarts an idle one at the trimmed address | regression | pass |
+| Restart safety (D-006) | only an idle printer is offered a restart now; printing, paused or busy are offered an automatic or a manual restart; an unreadable printer neither | UI state | pass |
+| Restart safety (D-006) | the automatic restart waits out the print, needs the quiet period, starts the wait again if a print starts, keeps waiting after a last-moment refusal, never takes an unreadable printer for idle, gives up without a password, and cancels cleanly | UI state | pass |
 
 ## Hardware-in-the-loop (executed on the user's ACS ACR1552)
 

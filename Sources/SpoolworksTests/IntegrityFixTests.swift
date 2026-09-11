@@ -546,16 +546,18 @@ let integrityFixTests = TestSuite(name: "Integrity fixes (printer transport + ma
         t.expect(elapsed < 10, "the drain must be abandoned, not waited out — took \(elapsed)s")
     },
 
-    // MARK: 8 — reboot must not report success for a printer that never restarted
+    // MARK: 8 — a restart must not report success for a printer that never restarted
 
-    test("reboot only forgives the connection-teardown message, not every exit 255") { t in
+    test("a restart only forgives the connection-teardown message, not every exit 255") { t in
         // 255 is ssh's catch-all for everything it does itself — refused password, rejected host
-        // key, failed negotiation — so accepting any 255 reported didReboot == true for a
-        // printer that never restarted, which then read as "the upload took effect".
+        // key, failed negotiation — so accepting any 255 reported a restart for a printer that
+        // never restarted, which then read as "the upload took effect".
+        let idle = PrinterActivityStub(.idle)
         let torndown = MockPrinterTransport()
         torndown.failRun = .remoteCommandFailed(exitStatus: 255,
                                                 message: "Connection to 10.0.0.5 closed by remote host.")
-        t.equal(errorOf { try await PrinterService(transport: torndown).reboot() } as? PrinterTransportError,
+        t.equal(errorOf { try await PrinterService(transport: torndown)
+                    .restartIfIdle(host: "10.0.0.5", checkingWith: idle) } as? PrinterTransportError,
                 nil, "a torn-down connection is still success")
 
         for message in ["Permission denied (password).",
@@ -564,13 +566,16 @@ let integrityFixTests = TestSuite(name: "Integrity fixes (printer transport + ma
                         ""] {
             let mock = MockPrinterTransport()
             mock.failRun = .remoteCommandFailed(exitStatus: 255, message: message)
-            t.equal(errorOf { try await PrinterService(transport: mock).reboot() } as? PrinterTransportError,
+            t.equal(errorOf { try await PrinterService(transport: mock)
+                        .restartIfIdle(host: "10.0.0.5", checkingWith: idle) } as? PrinterTransportError,
                     .remoteCommandFailed(exitStatus: 255, message: message),
-                    "exit 255 with \"\(message)\" must not be reported as a reboot")
+                    "exit 255 with \"\(message)\" must not be reported as a restart")
         }
     },
 
-    test("an upload whose reboot really failed does not claim didReboot") { t in
+    // CHANGED EXPECTATION. This asserted that an upload whose reboot failed reported the failure.
+    // Uploads no longer restart the printer at all (D-006), so there is no reboot for one to fail.
+    test("an upload sends no command, so it cannot claim a restart") { t in
         let mock = MockPrinterTransport()
         mock.failRun = .remoteCommandFailed(exitStatus: 255, message: "Permission denied (password).")
         let error = errorOf {
@@ -578,8 +583,8 @@ let integrityFixTests = TestSuite(name: "Integrity fixes (printer transport + ma
                 database: Data(#"{"result":{"version":"1","count":0,"list":[]}}"#.utf8),
                 to: PrinterModel(profileName: "K2 Plus")!)
         }
-        t.equal(error as? PrinterTransportError,
-                .remoteCommandFailed(exitStatus: 255, message: "Permission denied (password)."))
+        t.expect(error == nil, "the upload itself succeeds: \(String(describing: error))")
+        t.equal(mock.commands, [], "and nothing was run on the printer")
     },
 
     // MARK: 10 — one printer-family classifier, with no silent K2 fallback

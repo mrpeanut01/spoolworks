@@ -599,7 +599,10 @@ let processRunnerTests = TestSuite(name: "ProcessRunner deadline & cancellation 
 
 let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)", cases: [
 
-    test("K2: database only, then reboot") { t in
+    // CHANGED EXPECTATION. Both upstream clients reboot straight after an upload. A reboot takes a
+    // print in progress down with it, so uploads no longer restart the printer (D-006): a restart
+    // is its own step, `restartIfIdle`, covered in `printerRestartTests`.
+    test("K2: database only, and no restart") { t in
         let mock = MockPrinterTransport()
         let service = PrinterService(transport: mock)
         let model = PrinterModel(profileName: "K2 Plus")!
@@ -609,12 +612,11 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         }
 
         t.equal(mock.uploadedPaths, ["/mnt/UDISK/creality/userdata/box/material_database.json"])
-        t.equal(mock.commands, ["reboot"])
+        t.equal(mock.commands, [], "an upload never restarts the printer")
         t.expect(!result.wroteMaterialOption, "K2 must not get material_option.json")
-        t.expect(result.didReboot)
     },
 
-    test("K1: database, then material_option.json, then a single reboot") { t in
+    test("K1: database, then material_option.json, and no restart") { t in
         let mock = MockPrinterTransport()
         let service = PrinterService(transport: mock)
 
@@ -625,10 +627,7 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
             "/usr/data/creality/userdata/box/material_database.json",
             "/usr/data/creality/userdata/box/material_option.json",
         ])
-        t.equal(mock.commands, ["reboot"], "exactly one reboot, after the option file")
-        // Ordering matters: the option file must be in place before the restart, which is why
-        // Android hands the reboot to saveMatOption on K1 (Utils.java:478-484).
-        t.equal(mock.calls.last, .run(command: "reboot"))
+        t.equal(mock.commands, [], "an upload never restarts the printer")
     },
 
     test("K1 Max gets material_option.json — Android's behaviour, not Windows'") { t in
@@ -662,7 +661,7 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         let mock = MockPrinterTransport()
         let result = try runSync { try await PrinterService(transport: mock).upload(
             database: sampleDatabase, to: PrinterModel(profileName: "K2")!,
-            options: UploadOptions(preventDatabaseUpdates: true, reboot: false)) }
+            options: UploadOptions(preventDatabaseUpdates: true)) }
 
         t.equal(result.version, "9876543210")
         t.equal(try MaterialDatabaseDocument.version(in: result.uploadedDatabase), "9876543210")
@@ -680,7 +679,7 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
 
         let result = try runSync { try await PrinterService(transport: mock).upload(
             database: sampleDatabase, to: PrinterModel(profileName: "K2")!,
-            options: UploadOptions(preventDatabaseUpdates: false, reboot: false)) }
+            options: UploadOptions(preventDatabaseUpdates: false)) }
 
         t.equal(result.version, "1758907369")
         t.equal(mock.calls.first, .download(path: "/mnt/UDISK/creality/userdata/box/material_database.json"))
@@ -699,31 +698,9 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         t.expect(mock.uploadedPaths.isEmpty, "nothing must be written after a failed version read")
     },
 
-    test("reboot can be declined") { t in
-        let mock = MockPrinterTransport()
-        let result = try runSync { try await PrinterService(transport: mock).upload(
-            database: sampleDatabase, to: PrinterModel(profileName: "K2")!,
-            options: UploadOptions(reboot: false)) }
-        t.equal(mock.commands, [])
-        t.expect(!result.didReboot)
-    },
-
-    test("reboot dropping the connection counts as success") { t in
-        let mock = MockPrinterTransport()
-        mock.failRun = .remoteCommandFailed(exitStatus: 255,
-                                            message: "Connection to 10.0.0.5 closed by remote host.")
-        let result = try runSync { try await PrinterService(transport: mock).upload(
-            database: sampleDatabase, to: PrinterModel(profileName: "K2")!) }
-        t.expect(result.didReboot, "a torn-down connection after reboot is expected, not an error")
-    },
-
-    test("a genuine failure during reboot still propagates") { t in
-        let mock = MockPrinterTransport()
-        mock.failRun = .authenticationFailed
-        let error = errorFrom { try await PrinterService(transport: mock)
-            .upload(database: sampleDatabase, to: PrinterModel(profileName: "K2")!) }
-        t.equal(error as? PrinterTransportError, .authenticationFailed)
-    },
+    // "Reboot can be declined", "reboot dropping the connection counts as success" and "a genuine
+    // failure during reboot still propagates" lived here. Uploads no longer reboot (D-006); the last
+    // two now test `restartIfIdle`, in `printerRestartTests`.
 
     test("a failed database upload never writes material_option.json or reboots") { t in
         let mock = MockPrinterTransport()
@@ -763,7 +740,7 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         }
 
         let stages = (try collected.result!.get()).map(\.stage)
-        t.equal(stages, [.preparing, .uploadingDatabase, .uploadingMaterialOption, .rebooting, .finished])
+        t.equal(stages, [.preparing, .uploadingDatabase, .uploadingMaterialOption, .finished])
         t.equal((try collected.result!.get()).last?.fractionCompleted, 1.0)
     },
 
@@ -797,14 +774,15 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         t.equal(mock.commands, [], "must not have rebooted")
     },
 
-    test("reset pushes a cloud database, keeps its version, and always reboots") { t in
-        // SPEC-04 §3.1 reset path: the reboot checkbox is hidden and ignored in this mode, and
-        // Windows uploads the cloud JSON verbatim without touching result.version.
+    // CHANGED EXPECTATION: the Windows reset path reboots unconditionally; this one does not
+    // restart the printer at all (D-006).
+    test("reset pushes a cloud database, keeps its version, and does not restart") { t in
+        // SPEC-04 §3.1 reset path: Windows uploads the cloud JSON verbatim without touching
+        // result.version.
         let mock = MockPrinterTransport()
         let result = try runSync { try await PrinterService(transport: mock)
             .reset(to: PrinterModel(profileName: "K2 Plus")!, withCloudDatabase: sampleDatabase) }
-        t.expect(result.didReboot)
-        t.equal(mock.commands, ["reboot"])
+        t.equal(mock.commands, [], "a reset never restarts the printer")
         t.equal(result.version, "1746005657", "the factory version must survive a reset")
         t.expect(mock.calls.first != .download(path: "/mnt/UDISK/creality/userdata/box/material_database.json"),
                  "reset must not need to read the printer's version")
@@ -814,7 +792,7 @@ let printerUploadTests = TestSuite(name: "PrinterService upload (SPEC-04 §3.1)"
         let mock = MockPrinterTransport()
         let result = try runSync { try await PrinterService(transport: mock).upload(
             database: sampleDatabase, to: PrinterModel(profileName: "K2")!,
-            options: UploadOptions(versionStamp: .keepDocumentVersion, reboot: false)) }
+            options: UploadOptions(versionStamp: .keepDocumentVersion)) }
         t.equal(result.version, "1746005657")
         t.expect(!UploadOptions(versionStamp: .keepDocumentVersion).preventsDatabaseUpdates)
         t.expect(UploadOptions().preventsDatabaseUpdates, "the checkbox defaults to on")

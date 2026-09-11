@@ -773,10 +773,6 @@ private final class CountingBoxInfoTransport: PrinterTransporting, @unchecked Se
         throw PrinterUIError.notImplemented
     }
 
-    func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
-        throw PrinterUIError.notImplemented
-    }
-
     func downloadBoxInfo(_: PrinterCredentials, family _: PrinterType) async throws -> MaterialBoxInfo {
         lock.withLock { count += 1 }
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -859,12 +855,14 @@ private func settle(timeout: TimeInterval = 5, until condition: () -> Bool) asyn
 
 let printerViewModelTests = TestSuite(name: "Printer and materials wiring", cases: [
 
-    // Every upload used to run with the service's defaults — prevent on, reboot on — whatever the
-    // sheet said; and the reset path stamped the factory catalogue with the prevent sentinel.
-    test("the sheet's upload options reach the printer service unchanged") { t in
+    // Every upload used to run with the service's defaults whatever the sheet said, and the reset
+    // path stamped the factory catalogue with the prevent sentinel. Neither restarts the printer any
+    // more: a restart is its own step, and never happens during a print (D-006).
+    test("the sheet's upload options reach the printer service, and nothing restarts on its own") { t in
         onMain {
             let mock = MockPrinterTransport()
-            let live = LivePrinterTransport(makeTransport: { _, _ in mock })
+            let live = LivePrinterTransport(activityReader: PrinterActivityStub(.idle),
+                                            makeTransport: { _, _ in mock })
             let credentials = PrinterCredentials(host: "printer.local", password: "x")
             let path = PrinterModel(profileName: "K2", family: PrinterFamily(.k2)).materialDatabasePath
             let report: @Sendable (PrinterProgress) -> Void = { _ in }
@@ -874,33 +872,68 @@ let printerViewModelTests = TestSuite(name: "Printer and materials wiring", case
             mock.seed(path, with: remote)
 
             do {
-                // Updates allowed, no reboot: stamped with the printer's own version, no restart.
+                // Updates allowed: stamped with the printer's own version.
                 let stamped = try await live.uploadDatabase(
                     local, credentials: credentials, family: .k2,
-                    options: UploadOptions(preventDatabaseUpdates: false, reboot: false),
+                    options: UploadOptions(preventDatabaseUpdates: false),
                     progress: report)
                 t.equal(stamped, "1600000000", "the printer's version is what went on the wire")
-                t.equal(mock.commands, [], "declining the reboot means no reboot")
 
-                // Updates blocked, reboot on: the sentinel, and exactly one reboot — the service's.
+                // Updates blocked: the sentinel.
                 let sentinel = try await live.uploadDatabase(
                     local, credentials: credentials, family: .k2,
-                    options: UploadOptions(preventDatabaseUpdates: true, reboot: true),
+                    options: UploadOptions(preventDatabaseUpdates: true),
                     progress: report)
                 t.equal(sentinel, MaterialDatabaseDocument.preventUpdatesVersion, "the sentinel")
-                t.equal(mock.commands, [PrinterCommand.reboot], "one reboot, issued once")
 
-                // Reset: the factory catalogue keeps its own version, and the printer restarts.
+                // Reset: the factory catalogue keeps its own version.
                 try await live.resetDatabase(local, credentials: credentials, family: .k2,
                                              progress: report)
                 let onPrinter = try t.unwrap(mock.uploads[path], "uploaded reset").map {
                     try MaterialDatabaseDocument.version(in: $0)
                 }
                 t.equal(onPrinter, "1700000000", "not the sentinel — a reset hands updates back")
-                t.equal(mock.commands.count, 2, "a reset always reboots")
+                t.equal(mock.commands, [], "no upload or reset restarts the printer, even an idle one")
             } catch {
                 t.record("threw unexpectedly: \(error)", file: #file, line: #line)
             }
+        }
+    },
+
+    // The one restart the UI can ask for goes through the service's guard.
+    test("a restart through the live transport is checked against what the printer is doing") { t in
+        onMain {
+            let credentials = PrinterCredentials(host: " printer.local ", password: "x")
+
+            let printing = MockPrinterTransport()
+            let whilePrinting = LivePrinterTransport(
+                activityReader: PrinterActivityStub(.printing(paused: false)),
+                makeTransport: { _, _ in printing })
+            do {
+                try await whilePrinting.restartIfIdle(credentials, family: .k2)
+                t.record("restarted a printer that is printing", file: #file, line: #line)
+            } catch let refusal as RestartRefusal {
+                t.equal(refusal, .printing(paused: false))
+            } catch {
+                t.record("unexpected error: \(error)", file: #file, line: #line)
+            }
+            t.equal(printing.commands, [], "nothing sent while printing")
+
+            let idle = MockPrinterTransport()
+            let askedAt = Cell<[String]>([])
+            let whileIdle = LivePrinterTransport(
+                activityReader: PrinterActivityStub { host in
+                    askedAt.value.append(host)
+                    return .idle
+                },
+                makeTransport: { _, _ in idle })
+            do {
+                try await whileIdle.restartIfIdle(credentials, family: .k2)
+            } catch {
+                t.record("threw unexpectedly: \(error)", file: #file, line: #line)
+            }
+            t.equal(idle.commands, [PrinterCommand.reboot], "one restart, once idle")
+            t.equal(askedAt.value, ["printer.local"], "asked at the trimmed address")
         }
     },
 
@@ -1195,49 +1228,52 @@ let uploadDefaultsTests = TestSuite(name: "Upload defaults", cases: [
         }
     },
 
-    // Reboot is only offered while updates are allowed, so blocking them must clear it — otherwise
-    // a hidden "yes" springs back when they are re-enabled and the upload honours a choice the
-    // user can no longer see.
-    test("blocking updates clears the reboot preference") { t in
+    // The reboot preference is gone: the app asks before every restart (D-006). A printer set up
+    // while it existed still has the key, and forgetting that printer must not leave it behind.
+    test("forgetting a printer clears the retired reboot preference too") { t in
         onMain {
             let suite = "sw-upload-\(UUID().uuidString)"
             guard let defaults = UserDefaults(suiteName: suite) else { return }
             defer { defaults.removePersistentDomain(forName: suite) }
 
-            PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
-            PrinterSettings.setRebootAfterUpload(true, for: .k2, in: defaults)
-            t.expect(PrinterSettings.rebootAfterUpload(for: .k2, in: defaults), "reboot is on")
-
-            // Derived, not stored: blocking updates reports reboot as off whatever is on disk.
-            PrinterSettings.setAllowDatabaseUpdates(false, for: .k2, in: defaults)
-            t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
-                     "blocked updates means no reboot")
-
-            // ...and the user's actual choice survives, rather than being reset.
-            PrinterSettings.setAllowDatabaseUpdates(true, for: .k2, in: defaults)
-            t.expect(PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
-                     "re-allowing restores the choice they made")
+            defaults.set(true, forKey: "reboot_K2")
+            PrinterSettings.forget(.k2, in: defaults)
+            t.expect(defaults.object(forKey: "reboot_K2") == nil, "retired key removed")
         }
     },
 
-    // A printer whose `allow` value arrived by migration never went through the setter, so an
-    // invariant enforced only on write left the settings screen showing a disabled toggle
-    // switched on — misstating what an upload would do.
-    test("a migrated printer still reports reboot off while updates are blocked") { t in
-        onMain {
-            let suite = "sw-upload-\(UUID().uuidString)"
-            guard let defaults = UserDefaults(suiteName: suite) else { return }
-            defer { defaults.removePersistentDomain(forName: suite) }
-
-            // Exactly the on-disk shape of a printer configured before the rename.
-            defaults.set(true, forKey: "prevent_K2")
-            defaults.set(true, forKey: "reboot_K2")
-
-            t.expect(!PrinterSettings.allowDatabaseUpdates(for: .k2, in: defaults),
-                     "migrated to blocked")
-            t.expect(!PrinterSettings.rebootAfterUpload(for: .k2, in: defaults),
-                     "and reboot reports off without the setter ever running")
+    // The rule itself: only an idle printer is ever offered a restart now.
+    test("only an idle printer is offered a restart now") { t in
+        t.equal(PrinterRestartPrompt(activity: .idle), .confirmRestart)
+        t.expect(PrinterRestartPrompt(activity: .idle).offersRestartNow, "idle: Yes / No")
+        for activity in [PrinterActivity.printing(paused: false), .printing(paused: true), .busy] {
+            let prompt = PrinterRestartPrompt(activity: activity)
+            t.expect(!prompt.offersRestartNow, "\(activity) must not be offered a restart now")
+            t.expect(prompt.offersAutomaticRestart, "\(activity) is offered a restart once it finishes")
         }
+        let unreadable = PrinterRestartPrompt.cannotConfirm("timed out")
+        t.expect(!unreadable.offersRestartNow && !unreadable.offersAutomaticRestart,
+                 "a printer that cannot be read is offered neither")
+    },
+
+    // A print started while "Restart the printer?" was up is refused by the service; the sheet
+    // then asks the question that fits.
+    test("a refused restart turns back into the right question") { t in
+        t.equal(PrinterRestartPrompt(refusal: .printing(paused: false)), .printInProgress(paused: false))
+        t.equal(PrinterRestartPrompt(refusal: .printing(paused: true)), .printInProgress(paused: true))
+        t.equal(PrinterRestartPrompt(refusal: .busy), .printerBusy)
+        t.equal(PrinterRestartPrompt(refusal: .unconfirmed("no route to host")), .cannotConfirm("no route to host"))
+    },
+
+    test("the questions say what the printer is doing and why it is not restarted now") { t in
+        t.equal(PrinterRestartPrompt.confirmRestart.title, "Restart the printer?")
+        let printing = PrinterRestartPrompt.printInProgress(paused: false)
+        t.expect(printing.message(printerName: "K2 Plus").contains("won't restart it now"),
+                 printing.message(printerName: "K2 Plus"))
+        t.equal(printing.automaticRestartLabel, "Automatically Restart When the Print Finishes")
+        let unreadable = PrinterRestartPrompt.cannotConfirm("timed out")
+        t.expect(unreadable.message(printerName: "K2 Plus").contains("won't restart it"),
+                 unreadable.message(printerName: "K2 Plus"))
     },
 ])
 

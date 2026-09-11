@@ -174,6 +174,7 @@ struct PrintersView: View {
                         banner("The local database for \(printer.displayName) could not be read: \(failure)",
                                onDismiss: nil)
                     }
+                    PendingRestartBanner(scheduler: model.restarts, family: printer.family)
                     detailForm(printer)
                 }
             }
@@ -278,19 +279,14 @@ struct PrintersView: View {
                     Text("Allow printer database updates")
                     Text("Off stamps the uploaded database with an impossibly high version, so the printer's own updater leaves your filaments alone. On lets the printer manage its database again — which can overwrite what you upload.")
                 }
-
-                Toggle(isOn: Binding(
-                    get: { printer.rebootAfterUpload },
-                    set: { model.setRebootAfterUpload($0, for: printer.family) }
-                )) {
-                    Text("Reboot the printer after uploading")
-                    Text(printer.allowDatabaseUpdates
-                         ? "The printer only reads a database at start-up, so without this the change takes effect on its next restart."
-                         : "Unavailable while updates are blocked — a restart is when the printer's updater runs, which is the thing blocking is there to prevent.")
-                }
-                .disabled(!printer.allowDatabaseUpdates)
             } header: {
                 Text("Upload Defaults")
+            } footer: {
+                // There used to be a "Reboot the printer after uploading" switch here. Every restart
+                // is now a question asked at the time, and never a restart during a print (D-006).
+                Text("After an upload or a reset, Spoolworks asks before restarting the printer, and never restarts it while it is printing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {

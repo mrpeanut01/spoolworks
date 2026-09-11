@@ -80,6 +80,15 @@ final class AppEnvironment: ObservableObject {
         printerModel.onDatabaseChanged = { [weak materialsModel] family in
             materialsModel?.noteExternalChange(to: family)
         }
+        // A restart that waited for a print happens with no sheet open, so it reports here.
+        printerModel.restarts.onEvent = { [weak toasts] event in
+            switch event {
+            case let .restarted(printerName):
+                toasts?.success("Restarting \(printerName) — its print has finished.")
+            case let .gaveUp(printerName, reason):
+                toasts?.error("\(printerName) was not restarted: \(reason). Restart it yourself once it isn't printing.")
+            }
+        }
 
         // Same fallback reasoning as the material storage above: a broken Application Support
         // must leave the app usable and the failure visible, not trap at launch.
