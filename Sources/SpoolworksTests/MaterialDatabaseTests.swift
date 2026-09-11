@@ -474,25 +474,75 @@ let materialDatabaseTests = TestSuite(name: "Material database", cases: [
     // brands people actually buy elsewhere are not in it, and their records cannot be captured
     // from anywhere - they are assembled from each maker's published profile by
     // `Tools/build-vendor-catalogue.py`.
-    test("the bundled vendor catalogue carries the five Tier 1 brands") { t in
+    test("the bundled vendor catalogue carries all eight third-party brands") { t in
         let seed = BundledMaterialSeed()
         guard let data = try seed.vendorCatalogueData(for: .k2) else {
             t.record("no vendor catalogue is bundled for k2", file: #file, line: #line); return
         }
         let file = try MaterialDatabase.decode(data)
-        t.equal(file.result.list.count, 113, "record count")
-        t.equal(file.result.count, 113, "declared count")
+        t.equal(file.result.list.count, 194, "record count")
+        t.equal(file.result.count, 194, "declared count")
         let byBrand = Dictionary(grouping: file.result.list, by: \.vendor).mapValues(\.count)
+        // Tier 1 - one profile per product, the clean case.
         t.equal(byBrand["Bambu Lab"], 41, "Bambu Lab")
         t.equal(byBrand["Elegoo"], 30, "Elegoo")
         t.equal(byBrand["Polymaker"], 24, "Polymaker's consumer line")
         t.equal(byBrand["Overture"], 11, "Overture")
         t.equal(byBrand["SUNLU"], 7, "SUNLU")
-        t.equal(Set(file.result.list.map(\.id)).count, 113, "ids are unique")
+        // Tier 2 - collapsed from per-printer, per-nozzle profiles.
+        t.equal(byBrand["Flashforge"], 46, "Flashforge")
+        t.equal(byBrand["Anycubic"], 27, "Anycubic")
+        t.equal(byBrand["Prusament"], 8, "Prusament")
+        t.equal(Set(file.result.list.map(\.id)).count, 194, "ids are unique")
     },
 
-    // Two catalogues that share an id would make `filament(id:)` answer differently depending on
-    // which was added first, and the printer would resolve whichever it holds.
+    // A published id is a physical object in someone's hand: a tag written against `B1002` says
+    // `1B1002` on the spool. Adding Tier 2 renumbered nothing, and the generator refuses to build
+    // a catalogue that moves one.
+    test("every id published in 0.5.0 is still the same filament") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
+        let byID = Dictionary(uniqueKeysWithValues:
+            try MaterialDatabase.decode(data).result.list.map { ($0.id, $0) })
+        for (id, name) in [("B1002", "Bambu PLA Basic"), ("B2001", "Bambu PETG Basic"),
+                           ("G1008", "Elegoo PLA Silk"), ("O1004", "Overture PLA"),
+                           ("S1003", "SUNLU PLA+"), ("P1013", "Panchroma PLA Neon")] {
+            t.equal(byID[id]?.name, name, "\(id) still names the filament it was published as")
+        }
+    },
+
+    // Tier 2's profiles are per-printer and per-nozzle, and they disagree with one another - a
+    // density stated three ways, a melt temperature four. The 0.4 mm variant wins because that is
+    // the nozzle every record here declares, and the alternatives are kept on the record so the
+    // choice can be audited rather than taken on trust.
+    test("collapsed printer variants record the disagreement they resolved") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
+        let list = try MaterialDatabase.decode(data).result.list
+        let conflicted = list.filter { $0.additionalFields["sourceConflicts"] != nil }
+        t.expect(!conflicted.isEmpty, "the printer-vendor brands do disagree with themselves")
+        // ...and only they do. One profile per product cannot conflict with itself.
+        let tierOne: Set<String> = ["Bambu Lab", "Elegoo", "Overture", "SUNLU", "Polymaker"]
+        t.equal(conflicted.filter { tierOne.contains($0.vendor) }.count, 0,
+                "a one-profile-per-product brand has nothing to reconcile")
+        t.expect(conflicted.allSatisfy { ["Anycubic", "Flashforge", "Prusament"].contains($0.vendor) },
+                 "every conflict belongs to a brand collapsed from printer variants")
+    },
+
+    // Whatever else is uncertain, no record may carry a figure that could not be a filament.
+    test("every vendor record is physically plausible") { t in
+        let seed = BundledMaterialSeed()
+        guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
+        for filament in try MaterialDatabase.decode(data).result.list {
+            let base = filament.base
+            t.expect(base.density > 0 && base.density < 3,
+                     "\(base.id) \(base.name): density \(base.density) g/cm3")
+            t.expect(base.minTemp >= 150 && base.maxTemp <= 500 && base.minTemp <= base.maxTemp,
+                     "\(base.id) \(base.name): \(base.minTemp)-\(base.maxTemp) C")
+            t.equal(base.diameter, "1.75", "\(base.id) diameter")
+        }
+    },
+
     test("no vendor id collides with the captured catalogue") { t in
         let seed = BundledMaterialSeed()
         guard let data = try seed.vendorCatalogueData(for: .k2) else { return }
@@ -539,8 +589,8 @@ let materialDatabaseTests = TestSuite(name: "Material database", cases: [
         let temp = TempStorage()
         let db = try makeBundleSeededDatabase(temp, ids: ["00001"], version: "1700000000")
         let added = try db.addVendorCatalogue()
-        t.equal(added.count, 113, "all 113 land")
-        t.equal(db.filaments.count, 114, "alongside the one already there")
+        t.equal(added.count, 194, "all 194 land")
+        t.equal(db.filaments.count, 195, "alongside the one already there")
         t.equal(db.version, "1700000000",
                 "the version describes the captured edition and must not move")
         t.equal(db.pendingVendorAdditions(), [], "so the offer is gone")

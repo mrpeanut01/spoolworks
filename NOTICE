@@ -65,19 +65,35 @@ repository owns:
 
 <https://github.com/OrcaSlicer/OrcaSlicer> — **AGPL-3.0**.
 
-`Sources/SpoolworksCore/Resources/vendor-k2.json` — 113 third-party filament records across Bambu
-Lab, Elegoo, Polymaker's consumer line, Overture and SUNLU, assembled by
-`Tools/build-vendor-catalogue.py` from `resources/profiles/OrcaFilamentLibrary/filament`. Those
-profiles are contributed to OrcaSlicer by the filament makers themselves.
+`Sources/SpoolworksCore/Resources/vendor-k2.json` — 194 third-party filament records across eight
+brands, assembled by `Tools/build-vendor-catalogue.py`. Bambu Lab, Elegoo, Polymaker's consumer
+line, Overture and SUNLU come from `resources/profiles/OrcaFilamentLibrary/filament`, where the
+filament makers contribute one profile per product. Anycubic, Flashforge and Prusament come from
+their own printer-vendor folders, which hold one profile *per product per printer per nozzle* —
+128, 421 and 59 files for 27, 46 and 8 products — collapsed to the 0.4 mm variant, since that is
+the nozzle every record here declares.
 
-**What is taken and what is not.** Twenty-seven keys per record, every one a measurable property of
-the plastic: density, the nozzle and bed temperatures, glass-transition temperature, flow ratio,
-maximum volumetric speed, the soluble and support flags, required nozzle hardness, and whether the
-material wants the air filtered. Product names and the list of which products exist. Nothing else —
-no G-code, no retraction or fan tuning, no pressure advance, no purge volumes. Those describe the
+**What is taken and what is not.** Eighteen keys per record at most, every one a measurable property
+of the plastic: density, the nozzle and heated-bed temperatures, glass-transition temperature, flow
+ratio, maximum volumetric speed, the soluble and support flags, required nozzle hardness, and
+whether the material wants the air filtered. Product names and the list of which products exist.
+Nothing else —
+no G-code, no retraction or fan tuning, no pressure advance, no purge volumes, and none of the
+Bambu ecosystem's interchangeable build-plate temperatures, which describe a plate rather than a
+plastic. Those describe the
 extruder a profile was written for, not the filament, and each record instead inherits them from
 the Creality generic record for its polymer (named in `sourceTemplate`). Every record also carries
 `sourceProfile`, the resolved inheritance chain it was read from.
+
+**A value is taken only where the maker stated it.** These profiles inherit from shared polymer
+bases, and a base supplies a default for every key whether or not anyone measured it. Importing
+those defaults as though they were the maker's figures is how `Anycubic ASA` ends up claiming PLA's
+1.24 g/cm³. So each value is traced to the file that set it, and one that came from a base or a
+`Generic` profile is left behind — the record then inherits Creality's figure for that polymer
+instead. Where two of a maker's own printer profiles state the same value differently (55 of the
+194 records disagree about something that changes a print), the 0.4 mm variant wins and the
+alternatives are written onto the record as `sourceConflicts`, so the choice can be audited rather
+than taken on trust.
 
 **The licence question, stated plainly.** OrcaSlicer is AGPL-3.0 and its `resources/profiles`
 directory carries no separate licence, so the library is AGPL-3.0 by default. This repository is

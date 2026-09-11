@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
-Status at last update: **712 automated tests passing**, 0 failing.
+Status at last update: **715 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -63,7 +63,10 @@ Status at last update: **712 automated tests passing**, 0 failing.
 | Material DB | a top-up never overwrites a record already present, edits included | regression | pass |
 | Material DB | a catalogue newer than the seed is offered nothing and left alone | regression | pass |
 | Material DB | a top-up before a load is refused rather than writing from nothing | unit | pass |
-| Vendor catalogue | 113 records across the five Tier 1 brands, ids unique | unit | pass |
+| Vendor catalogue | 194 records across eight brands, ids unique | unit | pass |
+| Vendor catalogue | every id published in 0.5.0 still names the same filament | regression | pass |
+| Vendor catalogue | collapsed printer variants record the disagreement they resolved; one-profile brands have none | unit | pass |
+| Vendor catalogue | every record is physically plausible (density, temp range, diameter) | unit | pass |
 | Vendor catalogue | no id collides with the capture; every id is five capitals-and-digits bytes | regression | pass |
 | Vendor catalogue | machine settings stay Creality's (G-code, retraction, PA), material values are the vendor's | regression | pass |
 | Vendor catalogue | adding is additive, and never moves the captured edition version | unit | pass |

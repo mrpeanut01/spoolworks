@@ -5,6 +5,10 @@
 # Release artifacts: built on demand, never committed.
 dist/
 
+# Python bytecode from the catalogue generator.
+__pycache__/
+*.pyc
+
 # macOS Finder metadata. It rides along with `git add -A` and is invisible in Finder,
 # so nothing warns you.
 .DS_Store
