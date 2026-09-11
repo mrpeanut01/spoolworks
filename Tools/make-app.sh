@@ -53,10 +53,18 @@ cd "${PACKAGE_DIR}"
 
 # ---------------------------------------------------------------------------- build
 
-echo "==> Building ${APP_NAME} (${CONFIGURATION})"
-swift build -c "${CONFIGURATION}" --product "${APP_NAME}"
+# Command Line Tools 27 cannot build the SwiftUI target with its own SDK. This picks an SDK and a
+# build system that can, and changes nothing on a toolchain that needs no help.
+# shellcheck source=swift-toolchain.sh
+source "${SCRIPT_DIR}/swift-toolchain.sh"
+spoolworks_configure_swift || exit 1
 
-BIN_DIR="$(swift build -c "${CONFIGURATION}" --show-bin-path)"
+echo "==> Building ${APP_NAME} (${CONFIGURATION})"
+swift build -c "${CONFIGURATION}" ${SWIFT_BUILD_FLAGS[@]+"${SWIFT_BUILD_FLAGS[@]}"} --product "${APP_NAME}"
+
+# The same flags again: the native and swiftbuild build systems put their products in different
+# directories, so asking without them names a binary that was never built.
+BIN_DIR="$(swift build -c "${CONFIGURATION}" ${SWIFT_BUILD_FLAGS[@]+"${SWIFT_BUILD_FLAGS[@]}"} --show-bin-path)"
 EXECUTABLE="${BIN_DIR}/${APP_NAME}"
 
 if [[ ! -x "${EXECUTABLE}" ]]; then
