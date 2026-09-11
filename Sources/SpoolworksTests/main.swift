@@ -53,6 +53,10 @@ let exitCode = TestDriver.run([
     fileCredentialStoreTests,
     integrityFixTests,
 
+    // Never restart during a print (D-006)
+    printerRestartTests,
+    printerRestartSchedulerTests,
+
     // Reader robustness (code-review fixes)
     readerRobustnessTests,
 

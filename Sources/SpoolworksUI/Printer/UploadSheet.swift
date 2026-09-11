@@ -15,6 +15,11 @@ import SpoolworksCore
 ///    Here Cancel is live for the whole transfer.
 /// 3. The password was a plain `TextBox` with no `PasswordChar` (SPEC/04 §1.4). Here it is a
 ///    `SecureField`.
+///
+/// And one behaviour changed on purpose: it never restarts the printer by itself. Windows reboots
+/// straight after every upload and reset, print or no print. Here, once the database is on the
+/// printer, the sheet asks — and a printer that is printing is only ever offered a restart once the
+/// print has finished (docs/DECISIONS.md D-006).
 struct UploadSheet: View {
     @ObservedObject var model: PrinterViewModel
     let printer: PrinterConfiguration
@@ -31,16 +36,31 @@ struct UploadSheet: View {
         case failed(String)
     }
 
+    /// After the database has gone over: whether the printer is being checked, which question is
+    /// up, and what came of it.
+    enum RestartStage: Equatable {
+        case notStarted
+        case checking
+        case asking(PrinterRestartPrompt)
+        case restarting
+        case restarted
+        case scheduled
+        case manual
+        case failed(String)
+    }
+
     @State private var phase: Phase = .form
+    @State private var restart: RestartStage = .notStarted
     @State private var host = ""
     @State private var password = ""
     @State private var prevent = true
-    @State private var reboot = true
     @State private var isResetMode = false
     @State private var resetLocalDatabaseToo = false
     @State private var didAttemptRun = false
     @State private var work: Task<Void, Never>?
     @State private var didPrepare = false
+    /// Kept from the run, for the restart that may follow it.
+    @State private var restartCredentials: PrinterCredentials?
 
     // MARK: - Validation
 
@@ -66,11 +86,18 @@ struct UploadSheet: View {
         return false
     }
 
-    /// Whether this run restarts the printer. A reset always does — the Windows reboot switch is
-    /// hidden and ignored in reset mode (`Utils.cs:470`) — and an upload does only when updates
-    /// are allowed *and* the switch is on, because a restart is when the printer's updater runs.
-    private var willReboot: Bool {
-        isResetMode || (!prevent && reboot)
+    /// While the printer is being checked or restarted, the sheet stays up: closing it then would
+    /// leave the question unasked, or the answer unreported.
+    private var isRestartInFlight: Bool {
+        switch restart {
+        case .checking, .restarting: return true
+        default: return false
+        }
+    }
+
+    private var restartPrompt: PrinterRestartPrompt? {
+        if case let .asking(prompt) = restart { return prompt }
+        return nil
     }
 
     // MARK: - Body
@@ -90,13 +117,18 @@ struct UploadSheet: View {
             host = printer.host
             password = model.password(for: printer.family)
             prevent = !printer.allowDatabaseUpdates
-            // The stored choice, not the derived one: `printer.rebootAfterUpload` reads false
-            // while updates are blocked, and persisting that back after the user allowed updates
-            // in this sheet overwrote the preference they had actually made.
-            reboot = PrinterSettings.storedRebootAfterUpload(for: printer.family, in: model.defaults)
         }
         .onDisappear { work?.cancel() }
-        .interactiveDismissDisabled(isRunning)
+        .interactiveDismissDisabled(isRunning || isRestartInFlight)
+        // Every answer sets `restart`, which is what dismisses the alert, so the binding's setter has
+        // nothing to do — and must not guess an answer on the user's behalf.
+        .alert(restartPrompt?.title ?? "",
+               isPresented: Binding(get: { restartPrompt != nil }, set: { _ in }),
+               presenting: restartPrompt) { prompt in
+            restartActions(prompt)
+        } message: { prompt in
+            Text(prompt.message(printerName: printer.displayName))
+        }
     }
 
     private var header: some View {
@@ -187,25 +219,19 @@ struct UploadSheet: View {
                         Text("Also reset this Mac's database")
                         Text("Once the printer has been reset, replaces the local \(printer.displayName) catalogue with the bundled factory copy. Any filaments you added are lost.")
                     }
-                    Label("The printer always reboots after a reset.", systemImage: "info.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 } else {
                     Toggle(isOn: Binding(get: { !prevent }, set: { prevent = !$0 })) {
                         Text("Allow printer database updates")
                         Text("Off stamps the upload with version \(MaterialVersion.preventUpdateSentinel), so the printer's own updater never replaces it.")
                     }
-                    // Shows off while it is disabled, like the Printers screen, so the sheet never
-                    // displays a switched-on control that the upload will ignore; the stored choice
-                    // comes back the moment updates are allowed.
-                    Toggle(isOn: Binding(get: { !prevent && reboot }, set: { reboot = $0 })) {
-                        Text("Reboot the printer afterwards")
-                        Text(prevent
-                             ? "Unavailable while updates are blocked — a restart is when the printer's updater runs."
-                             : "The printer only reads the database at start-up.")
-                    }
-                    .disabled(prevent)
                 }
+                // In place of the Windows "Reboot printer?" switch, and of a reset's unconditional
+                // reboot: the question is asked once the database is on the printer.
+                Label("Once it is sent, Spoolworks asks before restarting the printer, and never restarts it while it is printing.",
+                      systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
@@ -263,22 +289,42 @@ struct UploadSheet: View {
     private func succeededBody(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label {
-                // Preserves the Windows completion strings verbatim, including the two-line
-                // "…\nRebooting printer" form (`UploadForm.cs:174-183`).
                 Text(message).font(.headline)
             } icon: {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             }
-            if willReboot {
-                Text("The printer will be unreachable for a minute or so while it restarts.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            restartStatus
             Spacer()
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var restartStatus: some View {
+        switch restart {
+        case .notStarted, .checking:
+            progressLine("Checking whether \(printer.displayName) is printing…")
+        case .asking:
+            EmptyView()
+        case .restarting:
+            progressLine("Restarting \(printer.displayName)…")
+        case .restarted:
+            Text("\(printer.displayName) is restarting and will be unreachable for a minute or so. It uses the new database once it is back.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .scheduled:
+            Label("Spoolworks will restart \(printer.displayName) once the print has finished and the printer has been idle for \(PrinterRestartScheduler.describe(model.restarts.quietPeriod)). Keep Spoolworks open; the Printers window shows the pending restart and can cancel it.",
+                  systemImage: "clock.arrow.circlepath")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        case .manual:
+            reminder("\(printer.displayName) keeps using its current database until it restarts. Restart it yourself once it isn't printing.")
+        case let .failed(message):
+            reminder("The restart didn't go through: \(message) Restart \(printer.displayName) yourself once it isn't printing.")
+        }
     }
 
     private func failedBody(_ message: String) -> some View {
@@ -300,6 +346,22 @@ struct UploadSheet: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func progressLine(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func reminder(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.circle.fill")
+            .font(.callout)
+            .foregroundStyle(Theme.warning)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Footer
@@ -325,6 +387,7 @@ struct UploadSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)
+                    .disabled(isRestartInFlight)
             case .failed:
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -348,6 +411,75 @@ struct UploadSheet: View {
         }
     }
 
+    // MARK: - Restart questions
+
+    @ViewBuilder
+    private func restartActions(_ prompt: PrinterRestartPrompt) -> some View {
+        switch prompt {
+        case .confirmRestart:
+            Button("Yes, Restart") { restartNow() }
+            Button("No", role: .cancel) { restartManually() }
+        case .printInProgress, .printerBusy:
+            Button(prompt.automaticRestartLabel) { restartWhenFinished() }
+            Button("Restart Manually", role: .cancel) { restartManually() }
+        case .cannotConfirm:
+            Button("Check Again") { checkPrinter() }
+            Button("Restart Manually", role: .cancel) { restartManually() }
+        }
+    }
+
+    /// Asks the printer what it is doing, then asks the matching question. Restarts nothing.
+    private func checkPrinter() {
+        guard let credentials = restartCredentials else { return }
+        restart = .checking
+        let transport = model.transport
+        work = Task { @MainActor in
+            do {
+                let activity = try await transport.activity(host: credentials.host)
+                restart = .asking(PrinterRestartPrompt(activity: activity))
+            } catch is CancellationError {
+                return
+            } catch {
+                restart = .asking(.cannotConfirm(MaterialsViewModel.message(for: error)))
+            }
+        }
+    }
+
+    /// "Yes, restart." The service reads the printer's state again immediately before sending, so a
+    /// print started while the question was up is caught there, and the question changes with it.
+    private func restartNow() {
+        guard let credentials = restartCredentials else { return }
+        // This answer supersedes an automatic restart left pending by an earlier upload.
+        model.restarts.cancel(family: printer.family)
+        restart = .restarting
+        let transport = model.transport
+        let family = printer.family
+        work = Task { @MainActor in
+            do {
+                try await transport.restartIfIdle(credentials, family: family)
+                restart = .restarted
+            } catch let refusal as RestartRefusal {
+                restart = .asking(PrinterRestartPrompt(refusal: refusal))
+            } catch is CancellationError {
+                restart = .manual
+            } catch {
+                restart = .failed(MaterialsViewModel.message(for: error))
+            }
+        }
+    }
+
+    private func restartWhenFinished() {
+        model.restarts.schedule(family: printer.family,
+                                printerName: printer.displayName,
+                                host: restartCredentials?.host ?? printer.host)
+        restart = .scheduled
+    }
+
+    private func restartManually() {
+        model.restarts.cancel(family: printer.family)
+        restart = .manual
+    }
+
     // MARK: - Work
 
     private func run() {
@@ -360,14 +492,12 @@ struct UploadSheet: View {
         model.setPassword(password, for: printer.family)
         if !isResetMode {
             // `prevent` is the sheet's own local sense; the stored preference is its inverse.
-            // The reboot switch is only live while updates are allowed, so that is the only time
-            // its value is something the user chose; while blocked it is left alone rather than
-            // overwritten with the derived "off".
             model.setAllowDatabaseUpdates(!prevent, for: printer.family)
-            if !prevent { model.setRebootAfterUpload(reboot, for: printer.family) }
         }
 
         let credentials = model.makeCredentials(host: host, password: password)
+        restartCredentials = credentials
+        restart = .notStarted
         let family = printer.family
         let transport = model.transport
         let reset = isResetMode
@@ -375,9 +505,9 @@ struct UploadSheet: View {
         // Everything the service needs to know, decided here and handed over once. The service
         // stamps the version (reading the printer's own when updates are allowed — Windows
         // swallows a failed read there and stamps "0", `Utils.cs:678-681`; here the failure stops
-        // the upload), writes the K1 side-car, and reboots — or does not — at the end.
-        let options = UploadOptions(preventDatabaseUpdates: prevent, reboot: willReboot)
-        let restarts = willReboot
+        // the upload) and writes the K1 side-car. It does not restart the printer: once it is done,
+        // `checkPrinter()` asks.
+        let options = UploadOptions(preventDatabaseUpdates: prevent)
 
         phase = .running(step: reset ? "Resetting…" : "Preparing…", fraction: nil)
 
@@ -425,13 +555,8 @@ struct UploadSheet: View {
                 await model.refresh()
                 model.onDatabaseChanged?(family)
 
-                if reset {
-                    phase = .succeeded("Reset complete\nRebooting printer")
-                } else if restarts {
-                    phase = .succeeded("Upload complete\nRebooting printer" + note)
-                } else {
-                    phase = .succeeded("Upload complete" + note)
-                }
+                phase = .succeeded((reset ? "Reset complete" : "Upload complete") + note)
+                checkPrinter()
             } catch is CancellationError {
                 phase = .failed(PrinterUIError.cancelled.localizedDescription)
             } catch {
@@ -440,8 +565,7 @@ struct UploadSheet: View {
         }
     }
 
-    /// The service's stages in the user's words. Preserves the Windows completion strings'
-    /// register — "Rebooting printer" — and the sheet's own earlier step names.
+    /// The service's stages in the user's words, and the sheet's own earlier step names.
     private static func step(for stage: PrinterProgress.Stage, reset: Bool) -> String {
         switch stage {
         case .preparing:
@@ -452,8 +576,6 @@ struct UploadSheet: View {
             return reset ? "Sending the factory catalogue…" : "Uploading…"
         case .uploadingMaterialOption:
             return "Writing material_option.json…"
-        case .rebooting:
-            return "Rebooting the printer…"
         case .downloadingDatabase, .finished:
             return "Finishing…"
         }

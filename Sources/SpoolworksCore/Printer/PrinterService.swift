@@ -196,29 +196,22 @@ public struct UploadOptions: Equatable, Sendable {
 
     public var versionStamp: VersionStamp
 
-    /// "Reboot printer?" — default on. The printer only picks up a new database on restart;
-    /// the app issues no service reload of any kind (SPEC-04 §1.5).
-    public var reboot: Bool
-
     /// `nil` uses the family default. Set explicitly to override the Windows/Android divergence
     /// documented on `PrinterFamily.writesMaterialOption`.
     public var writeMaterialOption: Bool?
 
-    /// Mirrors the Windows dialog's two checkboxes, both of which default to `true`
-    /// (`UploadForm.cs:97, 102`).
+    /// Mirrors the Windows dialog's "Prevent DB updates?" checkbox, which defaults to `true`
+    /// (`UploadForm.cs:97`). Its "Reboot printer?" checkbox has no counterpart: an upload never
+    /// restarts the printer — see ``PrinterService/restartIfIdle(host:checkingWith:)``.
     public init(preventDatabaseUpdates: Bool = true,
-                reboot: Bool = true,
                 writeMaterialOption: Bool? = nil) {
         self.versionStamp = preventDatabaseUpdates ? .preventUpdates : .matchPrinter
-        self.reboot = reboot
         self.writeMaterialOption = writeMaterialOption
     }
 
     public init(versionStamp: VersionStamp,
-                reboot: Bool = true,
                 writeMaterialOption: Bool? = nil) {
         self.versionStamp = versionStamp
-        self.reboot = reboot
         self.writeMaterialOption = writeMaterialOption
     }
 
@@ -232,7 +225,6 @@ public struct PrinterProgress: Equatable, Sendable {
         case readingPrinterVersion
         case uploadingDatabase
         case uploadingMaterialOption
-        case rebooting
         case downloadingDatabase
         case finished
     }
@@ -257,7 +249,6 @@ public struct UploadResult: Equatable, Sendable {
     public let uploadedDatabase: Data
     public let version: String
     public let wroteMaterialOption: Bool
-    public let didReboot: Bool
 }
 
 /// The outcome of a version check against the printer (SPEC-04 §3.2).
@@ -400,11 +391,11 @@ public struct PrinterService: Sendable {
 
     /// Pushes `database` onto the printer. SPEC-04 §3.1, "Normal upload path".
     ///
-    /// Order of operations matches the Windows app: stamp the version, upload the database,
-    /// write `material_option.json` on the K1 family, then reboot once at the end. Both existing
-    /// clients issue exactly one reboot — Android hands the reboot responsibility to
-    /// `saveMatOption` on K1 so that the option file is in place before the restart
-    /// (`Utils.java:478-484`), and we keep that ordering.
+    /// Order of operations matches the Windows app: stamp the version, upload the database, then
+    /// write `material_option.json` on the K1 family. Unlike both upstream clients it **never
+    /// restarts the printer**: a restart takes a print in progress down with it, so it is a separate
+    /// step the app asks about, through ``restartIfIdle(host:checkingWith:)``. The printer uses the
+    /// new database once it has restarted (SPEC-04 §1.5).
     @discardableResult
     public func upload(database: Data,
                        to model: PrinterModel,
@@ -443,24 +434,17 @@ public struct PrinterService: Sendable {
             try await transport.upload(data: optionDocument, to: model.materialOptionPath)
         }
 
-        var didReboot = false
-        if options.reboot {
-            try Task.checkCancellation()
-            progress?(PrinterProgress(stage: .rebooting, fractionCompleted: 0.9))
-            try await reboot()
-            didReboot = true
-        }
-
         progress?(PrinterProgress(stage: .finished, fractionCompleted: 1))
         return UploadResult(uploadedDatabase: stamped,
                             version: version,
-                            wroteMaterialOption: shouldWriteOption,
-                            didReboot: didReboot)
+                            wroteMaterialOption: shouldWriteOption)
     }
 
-    /// Reset flow (SPEC-04 §3.1, "Reset path"): fetch a factory database from Creality Cloud and
-    /// push it, then reboot **unconditionally** — the reboot checkbox is hidden and ignored in
-    /// this mode in the Windows app (`UploadForm.cs:111`, `Utils.cs:470`).
+    /// Reset flow (SPEC-04 §3.1, "Reset path"): push a factory database.
+    ///
+    /// The Windows app reboots unconditionally here (`UploadForm.cs:111`, `Utils.cs:470`). This
+    /// does not restart the printer at all, for the same reason
+    /// ``upload(database:to:options:progress:)`` does not.
     ///
     /// Takes the cloud-built database as a parameter rather than building it here: converting a
     /// profile zip into the printer format is the database layer's job, not the transport's.
@@ -476,12 +460,20 @@ public struct PrinterService: Sendable {
         try await upload(database: database,
                          to: model,
                          options: UploadOptions(versionStamp: .keepDocumentVersion,
-                                                reboot: true,
                                                 writeMaterialOption: model.family.writesMaterialOption),
                          progress: progress)
     }
 
-    /// Issues the one and only remote command (SPEC-04 §1.5).
+    // MARK: Restart
+
+    /// Restarts the printer, if it is idle when asked immediately beforehand.
+    ///
+    /// The only way the `reboot` command (SPEC-04 §1.5) leaves this package. `reboot` in a root
+    /// shell takes the printer down at once, print and all, so `activityReader` is asked what the
+    /// printer is doing first, and anything but ``PrinterActivity/idle`` refuses:
+    /// ``RestartRefusal/printing(paused:)``, ``RestartRefusal/busy``, or
+    /// ``RestartRefusal/unconfirmed(_:)`` when the answer cannot be had. There is no override
+    /// (docs/DECISIONS.md D-006).
     ///
     /// `reboot` always tears the connection down mid-command, so a transport-level "connection
     /// closed" immediately afterwards is success, not failure. The Windows app only survives
@@ -490,9 +482,25 @@ public struct PrinterService: Sendable {
     /// Only the *teardown message* is treated as success. This used to also accept any
     /// `remoteCommandFailed(255, …)` whatever the message, and 255 is ssh's catch-all for
     /// everything it does itself — a refused password, a rejected host key, a failed
-    /// negotiation. Those all reported `didReboot == true` for a printer that never restarted,
-    /// which then read back as "the upload took effect" when it had not.
-    public func reboot() async throws {
+    /// negotiation. Those all reported a restart for a printer that never restarted, which then
+    /// read back as "the upload took effect" when it had not.
+    public func restartIfIdle(host: String, checkingWith activityReader: PrinterActivityReading) async throws {
+        let activity: PrinterActivity
+        do {
+            activity = try await activityReader.activity(host: host)
+        } catch {
+            throw RestartRefusal.unconfirmed(error.localizedDescription)
+        }
+        switch activity {
+        case .idle:
+            break
+        case let .printing(paused):
+            throw RestartRefusal.printing(paused: paused)
+        case .busy:
+            throw RestartRefusal.busy
+        }
+
+        try Task.checkCancellation()
         do {
             try await transport.run(command: PrinterCommand.reboot)
         } catch let error as PrinterTransportError {

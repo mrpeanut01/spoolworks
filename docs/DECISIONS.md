@@ -258,6 +258,25 @@ programmed — which a persisted `true` preference could. The diff, the backup, 
 preservation and the read-back verification are untouched, and the sheet still states plainly that
 the key is being written.
 
+**Amended again (tool owner, 2026-09-11): the printer is never restarted during a print, and never
+without asking.** `reboot` in a root shell takes a printer down at once, and a print in progress goes
+with it. Both upstream clients reboot straight after every upload and reset. This app had inherited
+that for resets, and for uploads whenever database updates were allowed; commit 692a44c tied the
+upload reboot to that setting, which no longer applies.
+- Core has one way to send `reboot`: `PrinterService.restartIfIdle`. Immediately before the command
+  it reads `print_stats` and `idle_timeout` from Moonraker, and refuses when a job is printing or
+  paused, when Klipper is executing anything, or when the state cannot be read. There is no override,
+  and a missing or unknown state is an error, never "idle".
+- Uploads and resets no longer restart the printer. Once one is done, the Upload sheet asks. An idle
+  printer gets "Restart the printer?" Yes/No. A printer that is printing, paused or busy gets
+  "Automatically restart when the print finishes" or "Restart manually". A printer whose state
+  cannot be read is not restarted.
+- An automatic restart polls Moonraker, waits until the printer has been idle for two minutes (a
+  print starting resets the wait), then goes through the same guard. It lives in memory, so quitting
+  the app drops it rather than restarting the printer on some later launch, and it can be cancelled
+  from the Printers window.
+- The per-printer "Reboot after uploading" preference is gone; the question replaces it.
+
 ## D-011 — Location is a user-configurable list of places, and the CFS poll still owns its slots
 **Context:** The Inventory screen showed Location and % remaining as read-only text. The tool owner
 wanted both editable in place, and wanted the shelf-style locations to be a list the user

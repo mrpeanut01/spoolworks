@@ -26,6 +26,10 @@ struct LivePrinterTransport: PrinterTransporting {
     /// fails loudly if a pinned key later *changes*, which is the attack worth catching.
     let hostKeyPolicy: HostKeyPolicy
 
+    /// What the printer is doing, from Moonraker. It answers without a password, and every restart
+    /// is checked against it. Injectable so tests can script a print.
+    private let activityReader: PrinterActivityReading
+
     /// Builds the session for one call. Injectable so the option plumbing between the sheet and
     /// `PrinterService` can be exercised against `MockPrinterTransport` — that plumbing is exactly
     /// what went wrong once already, when every upload ran with the service's defaults whatever
@@ -33,9 +37,11 @@ struct LivePrinterTransport: PrinterTransporting {
     private let makeTransport: @Sendable (PrinterCredentials, HostKeyPolicy) -> PrinterTransport
 
     init(hostKeyPolicy: HostKeyPolicy = .acceptNew,
+         activityReader: PrinterActivityReading = MoonrakerClient(),
          makeTransport: @escaping @Sendable (PrinterCredentials, HostKeyPolicy) -> PrinterTransport
             = { LivePrinterTransport.ssh($0, policy: $1) }) {
         self.hostKeyPolicy = hostKeyPolicy
+        self.activityReader = activityReader
         self.makeTransport = makeTransport
     }
 
@@ -67,10 +73,9 @@ struct LivePrinterTransport: PrinterTransporting {
         try await service(credentials).downloadDatabaseFromPrinter(model(family))
     }
 
-    /// The sheet's choices go through as given. This used to call `upload` with `UploadOptions()`
-    /// — prevent on, reboot on — so the "Allow printer database updates" switch changed nothing
-    /// on the wire, declining the reboot still rebooted, and accepting it made the sheet open a
-    /// second session to reboot a printer that was already going down.
+    /// The sheet's choices go through as given. This used to call `upload` with `UploadOptions()`,
+    /// so the "Allow printer database updates" switch changed nothing on the wire. The upload does
+    /// not restart the printer; the sheet asks about that separately.
     func uploadDatabase(_ data: Data,
                         credentials: PrinterCredentials,
                         family: PrinterType,
@@ -83,10 +88,10 @@ struct LivePrinterTransport: PrinterTransporting {
         return result.version
     }
 
-    /// `PrinterService.reset` owns the reset semantics — the document's own version is kept, the
-    /// K1 side-car is written, and the reboot is unconditional — so nothing here second-guesses
-    /// it. Stamping the prevent sentinel on a factory catalogue, as the old upload path did, would
-    /// have blocked the very updates a reset exists to hand back to the printer.
+    /// `PrinterService.reset` owns the reset semantics — the document's own version is kept and the
+    /// K1 side-car is written — so nothing here second-guesses it. Stamping the prevent sentinel on
+    /// a factory catalogue, as the old upload path did, would have blocked the very updates a reset
+    /// exists to hand back to the printer. Like an upload, it does not restart the printer.
     func resetDatabase(_ data: Data,
                        credentials: PrinterCredentials,
                        family: PrinterType,
@@ -96,8 +101,16 @@ struct LivePrinterTransport: PrinterTransporting {
                                                  progress: progress)
     }
 
-    func reboot(_ credentials: PrinterCredentials, family _: PrinterType) async throws {
-        try await service(credentials).reboot()
+    func activity(host: String) async throws -> PrinterActivity {
+        try await activityReader.activity(host: host.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The service reads the printer's state itself, immediately before the command, so nothing
+    /// calling this can restart a printer that is printing.
+    func restartIfIdle(_ credentials: PrinterCredentials, family _: PrinterType) async throws {
+        try await service(credentials).restartIfIdle(
+            host: credentials.host.trimmingCharacters(in: .whitespacesAndNewlines),
+            checkingWith: activityReader)
     }
 
     func downloadBoxInfo(_ credentials: PrinterCredentials,

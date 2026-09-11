@@ -55,27 +55,41 @@ protocol PrinterTransporting: Sendable {
     func remoteDatabaseVersion(_ credentials: PrinterCredentials, family: PrinterType) async throws -> String
     /// The raw bytes of the printer's `material_database.json`.
     func downloadDatabase(_ credentials: PrinterCredentials, family: PrinterType) async throws -> Data
-    /// Pushes `data` to `…/box/material_database.json`, stamped and followed up as `options`
-    /// say — the version stamp, the K1 `material_option.json` side-car and the reboot are all the
-    /// service's to do, in that order, so the sheet does not open a second session to reboot a
-    /// printer the first one already restarted. Returns the version that was stamped on the
-    /// wire, so the caller can mirror it on the local file. `progress` is coarse and per-step.
+    /// Pushes `data` to `…/box/material_database.json`, stamped as `options` say, plus the K1
+    /// `material_option.json` side-car. Returns the version that was stamped on the wire, so the
+    /// caller can mirror it on the local file. `progress` is coarse and per-step. Never restarts
+    /// the printer.
     func uploadDatabase(_ data: Data,
                         credentials: PrinterCredentials,
                         family: PrinterType,
                         options: UploadOptions,
                         progress: @escaping @Sendable (PrinterProgress) -> Void) async throws -> String
-    /// Replaces the printer's database with the factory catalogue in `data`, version untouched,
-    /// and reboots unconditionally — the reset semantics SPEC/04 §3.1 spells out.
+    /// Replaces the printer's database with the factory catalogue in `data`, version untouched —
+    /// the reset semantics SPEC/04 §3.1 spells out, less its unconditional reboot.
     func resetDatabase(_ data: Data,
                        credentials: PrinterCredentials,
                        family: PrinterType,
                        progress: @escaping @Sendable (PrinterProgress) -> Void) async throws
-    /// The one and only remote command the Windows app ever issues (SPEC/04 §1.5).
-    func reboot(_ credentials: PrinterCredentials, family: PrinterType) async throws
+    /// What the printer is doing, read without a password.
+    func activity(host: String) async throws -> PrinterActivity
+    /// Restarts the printer only if it reports itself idle immediately beforehand; otherwise throws
+    /// `RestartRefusal` and sends nothing. The one restart the UI can ask for (D-006).
+    func restartIfIdle(_ credentials: PrinterCredentials, family: PrinterType) async throws
     /// The CFS's live report of what is loaded, for the Printer & CFS screen.
     func downloadBoxInfo(_ credentials: PrinterCredentials,
                          family: PrinterType) async throws -> MaterialBoxInfo
+}
+
+extension PrinterTransporting {
+    /// A transport with no way to read the printer — the stand-in, test doubles — cannot confirm
+    /// it is idle, so it never restarts it.
+    func activity(host _: String) async throws -> PrinterActivity {
+        throw PrinterUIError.notImplemented
+    }
+
+    func restartIfIdle(_: PrinterCredentials, family _: PrinterType) async throws {
+        throw PrinterUIError.notImplemented
+    }
 }
 
 /// Stand-in for previews and tests. Fails loudly and specifically rather than pretending to
@@ -102,10 +116,6 @@ struct UnimplementedPrinterTransport: PrinterTransporting {
                        credentials _: PrinterCredentials,
                        family _: PrinterType,
                        progress _: @escaping @Sendable (PrinterProgress) -> Void) async throws {
-        throw PrinterUIError.notImplemented
-    }
-
-    func reboot(_: PrinterCredentials, family _: PrinterType) async throws {
         throw PrinterUIError.notImplemented
     }
 
@@ -215,44 +225,11 @@ enum PrinterSettings {
         store.set(value, forKey: "allow_\(suffix(family))")
         // Drop the superseded key so a later read cannot resurrect the old answer.
         store.removeObject(forKey: "prevent_\(suffix(family))")
-        // Nothing to clear: `rebootAfterUpload` derives the interlock, so the stored preference
-        // can be left alone and comes back intact if updates are allowed again.
-    }
-
-    /// Whether an upload should restart the printer afterwards.
-    ///
-    /// **Derived, not merely stored.** Rebooting is meaningless while database updates are
-    /// blocked — a restart is when the printer's updater runs — so this reports false in that
-    /// case whatever is on disk. Enforcing the invariant only in the setter was not enough: a
-    /// printer whose `allow` value arrived by migration never went through the setter, and the
-    /// settings screen showed a disabled toggle switched on, which misstates what an upload will
-    /// do.
-    ///
-    /// The stored preference is left intact rather than cleared, so blocking updates and then
-    /// allowing them again restores the choice the user actually made instead of resetting it.
-    static func rebootAfterUpload(for family: PrinterType,
-                                  in store: UserDefaults = defaults) -> Bool {
-        guard allowDatabaseUpdates(for: family, in: store) else { return false }
-        return store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
-    }
-
-    static func setRebootAfterUpload(_ value: Bool, for family: PrinterType,
-                                     in store: UserDefaults = defaults) {
-        store.set(value, forKey: "reboot_\(suffix(family))")
-    }
-
-    /// The reboot choice as stored, with the interlock ignored.
-    ///
-    /// This is what the Upload sheet seeds its switch from. Seeding from the derived value read
-    /// as *off* while updates were blocked, and when the user then allowed updates in the sheet
-    /// and pressed Upload, that derived "off" was written back over the preference they had
-    /// actually made. The stored value is the only one that is theirs.
-    static func storedRebootAfterUpload(for family: PrinterType,
-                                        in store: UserDefaults = defaults) -> Bool {
-        store.object(forKey: "reboot_\(suffix(family))") as? Bool ?? true
     }
 
     static func forget(_ family: PrinterType, in store: UserDefaults = defaults) {
+        // `reboot_` is no longer read or written — the app asks before every restart (D-006) — but
+        // printers configured before that still carry it.
         for prefix in ["host_", "prevent_", "allow_", "reboot_"] {
             store.removeObject(forKey: prefix + suffix(family))
         }
@@ -293,7 +270,6 @@ struct PrinterConfiguration: Identifiable, Hashable {
     var family: PrinterType
     var host: String
     var allowDatabaseUpdates: Bool
-    var rebootAfterUpload: Bool
     var hasStoredPassword: Bool
     var databaseVersion: String
     var filamentCount: Int
@@ -342,6 +318,9 @@ final class PrinterViewModel: ObservableObject {
     /// wires it to `MaterialsViewModel`; without that the browser kept writing its own stale copy
     /// back over every download.
     var onDatabaseChanged: ((PrinterType) -> Void)?
+    /// Restarts waiting for a print to finish — the "automatically" answer to the Upload sheet's
+    /// question. Owned here, not by the sheet, because it has to outlive the sheet.
+    let restarts: PrinterRestartScheduler
 
     init(storage: MaterialStorage,
          transport: PrinterTransporting = UnimplementedPrinterTransport(),
@@ -351,6 +330,10 @@ final class PrinterViewModel: ObservableObject {
         self.transport = transport
         self.credentials = credentials
         self.defaults = defaults
+        self.restarts = PrinterRestartScheduler(transport: transport)
+        // Looked up when the restart is sent rather than captured when it is scheduled, so a
+        // password is not held for the length of a print.
+        restarts.credentials = { [weak self] family in self?.restartCredentials(for: family) }
     }
 
     static func previewValue() -> PrinterViewModel {
@@ -410,7 +393,6 @@ final class PrinterViewModel: ObservableObject {
             family: family,
             host: PrinterSettings.host(for: family, in: defaults),
             allowDatabaseUpdates: PrinterSettings.allowDatabaseUpdates(for: family, in: defaults),
-            rebootAfterUpload: PrinterSettings.rebootAfterUpload(for: family, in: defaults),
             hasStoredPassword: credentials.hasPassword(for: family),
             databaseVersion: version,
             filamentCount: count,
@@ -491,15 +473,16 @@ final class PrinterViewModel: ObservableObject {
 
     func setAllowDatabaseUpdates(_ value: Bool, for family: PrinterType) {
         PrinterSettings.setAllowDatabaseUpdates(value, for: family, in: defaults)
-        // Re-read rather than assume: `rebootAfterUpload` is derived from this value, so the row
-        // has to be refreshed from the source of truth in the same breath.
-        apply(family) { $0.rebootAfterUpload = PrinterSettings.rebootAfterUpload(for: family, in: defaults) }
         apply(family) { $0.allowDatabaseUpdates = value }
     }
 
-    func setRebootAfterUpload(_ value: Bool, for family: PrinterType) {
-        PrinterSettings.setRebootAfterUpload(value, for: family, in: defaults)
-        apply(family) { $0.rebootAfterUpload = value }
+    /// The credentials a scheduled restart sends with, looked up at the moment it is sent. Nil when
+    /// the printer has no address or no saved password, which makes the scheduler give up rather
+    /// than guess.
+    private func restartCredentials(for family: PrinterType) -> PrinterCredentials? {
+        guard let printer = printers.first(where: { $0.family == family }),
+              printer.isReachableOnPaper, printer.hasStoredPassword else { return nil }
+        return makeCredentials(host: printer.host, password: password(for: family))
     }
 
     func setPassword(_ password: String?, for family: PrinterType) {
