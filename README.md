@@ -109,11 +109,19 @@ Writing to a tag is the one destructive thing this app does, so:
 No Xcode needed — Command Line Tools are enough.
 
 ```bash
-swift build
-swift run SpoolworksTests   # 648 tests, no reader or camera required
-Tools/make-app.sh           # assemble Spoolworks.app
-Tools/make-dmg.sh           # build the disk image into dist/
+Tools/swift.sh build
+Tools/swift.sh run SpoolworksTests   # 737 tests, no reader or camera required
+Tools/make-app.sh                    # assemble Spoolworks.app
+Tools/make-dmg.sh                    # build the disk image into dist/
 ```
+
+`Tools/swift.sh` is `swift` with one workaround applied when it is needed. **Command Line Tools 27
+can't build the SwiftUI target with its own macOS 27 SDK**: SwiftUI's `@State` became a macro whose
+compiler plugin ships only with Xcode, and the default `swiftbuild` build system fails before it
+compiles anything. On that toolchain the scripts build against the newest macOS 26 SDK it still
+installs, using SwiftPM's native build system; on any other toolchain they change nothing.
+`Tools/swift-toolchain.sh` holds the detection and the `SPOOLWORKS_SDKROOT` /
+`SPOOLWORKS_BUILD_SYSTEM` overrides.
 
 The app is signed with a local certificate if you have one and ad-hoc otherwise; either way there
 is no Apple Developer ID, so the first launch needs a right-click ▸ **Open**.
@@ -158,7 +166,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 648 tests, runnable without hardware |
+| `SpoolworksTests` | 737 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
