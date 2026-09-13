@@ -48,6 +48,14 @@ let exitCode = TestDriver.run([
     printerUploadTests,
     materialDatabaseDocumentTests,
     printerUpdateTests,
+
+    // Adding one filament to a printer (D-013)
+    printerMaterialSpliceTests,
+    sshReplaceTests,
+    printerFilamentPushTests,
+    crealitySocketReplyTests,
+    filamentPushModelTests,
+
     crealityCloudTests,
     credentialStoreTests,
     fileCredentialStoreTests,

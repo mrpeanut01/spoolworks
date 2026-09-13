@@ -349,3 +349,60 @@ can click produces a claim the printer will contradict without saying so.
 still a window of up to 30 s in which a hand edit and the printer disagree; it closes on the next
 poll and both outcomes are logged. Re-selecting a CFS slot after moving a spool off it by hand is
 not possible — the poll is the only way back, which is the point.
+
+## D-013 — A tagged spool's filament is added to the printer one record at a time, on demand
+**Context:** A tag stores a filament id, and the CFS rejects a tag whose id its printer's database
+does not list. On 2026-09-11 a K2 Plus read a PolyTerra PLA tag correctly and logged
+`{"code":"key843", "msg":"rfid is error"}`, because `P1023` is a vendor-catalogue id. The only
+remedy the app had was Upload Database, which replaces the printer's file with the Mac's catalogue.
+That same day the printer's database was newer than the Mac's: five ids the bundle lacks, different
+content for all 96 shared records, and three slicer-synced `userMaterial` records under id `00004`.
+An upload would have rolled all of that back and pushed 194 vendor filaments nobody had tagged.
+Downloading first would not have helped either: the local catalogue merges by id, so the three
+`00004` records would have been folded into one.
+
+**Alternatives:** (a) keep the whole-catalogue upload and document its caveats; (b) re-encode the
+printer's file with the record added; (c) set the CFS slot directly over the printer's websocket
+(`set modifyMaterial`), as the touchscreen and Creality Print do; (d) splice one record into the
+printer's own bytes, offered after a verified write.
+
+**Chosen:** (d).
+- After a verified write, an id from the bundled factory catalogue is not checked. Any other id is
+  looked up in the printer's live list over its websocket — `get reqMaterials`, port 9999, no
+  password. If it is missing, Write tag and Intake offer **Add to printer**.
+- Adding reads `material_database.json` over SSH, appends the record in the file's own layout
+  (provenance keys dropped, `base.alias` added) and raises `result.count`. It writes the file back
+  with a guarded replace: the printer's `md5sum` must still match the file that was read (exit 3
+  otherwise), the old file is kept as `material_database.json.spoolworks-bak`, and the new one goes
+  through `upload`'s staging, size check and rename. The file is then read back and compared byte
+  for byte.
+- No version stamp and no reboot.
+
+**Why:**
+- (b) would reorder every key and reformat every number in a file the firmware wrote. That is
+  harmless to a parser, but the only thing proven on hardware is the printer's file byte for byte
+  plus one record (pushed by hand on 2026-09-11, md5-guarded), and the splice reproduces that.
+- (c) works per slot, not per filament. It has to be redone whenever a spool moves, it happens at
+  load time rather than when the tag is written, and a slot edit to an id the CFS cannot resolve did
+  not stick (see Evidence).
+- The websocket is used only to read. Its `set` requests are never sent.
+
+**Evidence, and what is still open:**
+- After the push, `reqMaterials` listed `P1023` at once, and the touchscreen's filament picker
+  offered PolyTerra PLA without a restart.
+- Setting slot 1A to it on the touchscreen, mid-print, made klippy log
+  `Tn_data[T1][material_type][0]: 0P1023`. The slot still reported a blank name and the touchscreen
+  reset to Unknown. The CFS side appears to resolve ids from a copy of the database loaded at startup.
+- **Not yet confirmed:** whether the tag is accepted after a re-read with no restart, after a Klipper
+  restart, or only after a full reboot. So the notice says the CFS *may* need a restart, and does
+  not offer one.
+
+**Impact:**
+- New code: `PrinterMaterialDocument` (the splice), `CrealityPrinterSocket` (read-only),
+  `PrinterService.addFilament`, `PrinterTransport.replace` with
+  `PrinterTransportError.remoteFileChanged`, and `FilamentPushModel` and `FilamentPushNotice` in
+  the UI.
+- A Creality database update can replace the file and drop an added record. The next verified write
+  for that filament notices and offers again.
+- MD5 is used only because busybox ships `md5sum`. It detects a changed file; it is not a security
+  control.

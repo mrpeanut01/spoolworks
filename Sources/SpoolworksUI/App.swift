@@ -24,6 +24,8 @@ final class AppEnvironment: ObservableObject {
     let cfsModel: CFSViewModel
     /// The Intake screen's own state machine.
     let intakeModel: IntakeViewModel
+    /// The offer to add a just-tagged filament to a printer that does not list it.
+    let filamentPushModel: FilamentPushModel
 
     /// Which sidebar destination the detail column is showing.
     ///
@@ -106,12 +108,44 @@ final class AppEnvironment: ObservableObject {
                                           materials: self.materialsModel,
                                           toasts: toasts)
         self.intakeModel = intakeModel
+        // A tag written for a filament its printer does not list is offered to that printer — one
+        // record, not the catalogue (D-013). The check needs no password; adding asks first.
+        let tagCatalog = self.tagModel.catalog
+        self.filamentPushModel = FilamentPushModel(
+            transport: LivePrinterTransport(),
+            filamentList: CrealityPrinterSocket(),
+            printer: { [weak printerModel] family in
+                guard let printer = printerModel?.printers.first(where: { $0.family == family }),
+                      printer.isReachableOnPaper else { return nil }
+                return FilamentPushModel.Printer(
+                    host: printer.host.trimmingCharacters(in: .whitespacesAndNewlines),
+                    name: printer.displayName)
+            },
+            credentials: { [weak printerModel] family in
+                guard let printerModel,
+                      let printer = printerModel.printers.first(where: { $0.family == family }),
+                      printer.hasStoredPassword else { return nil }
+                return printerModel.makeCredentials(host: printer.host,
+                                                    password: printerModel.password(for: family))
+            },
+            catalogueRecord: { [weak tagCatalog] id, family in
+                // The write screen's catalogue is already loaded for the family it just wrote.
+                if let tagCatalog, tagCatalog.printerType == family {
+                    return tagCatalog.filament(id: id)
+                }
+                return (try? MaterialDatabase(printerType: family, storage: storage).load())?
+                    .first { $0.id == id }
+            },
+            isFactoryFilament: FilamentPushModel.isInBundledCatalogue)
         // Everything the closure reaches is captured weakly, `tagModel` included: the closure is
         // owned by `tagModel`, which is owned by this environment, so a strong `self` here was a
         // cycle. Harmless for a process-lifetime object, but not what the other captures say.
         self.tagModel.onWriteSucceeded = {
-            [weak inventoryModel, weak intakeModel,
+            [weak inventoryModel, weak intakeModel, weak filamentPush = self.filamentPushModel,
              weak materials = self.materialsModel, weak tagModel = self.tagModel] summary in
+            // Ahead of the early returns below: Intake writes tags too.
+            filamentPush?.noteVerifiedWrite(filamentID: summary.record.materialId,
+                                            printerTypeString: summary.printerTypeString)
             guard let inventoryModel else { return }
             // Intake owns its own add-to-stock step and the user is meant to see both tags
             // verified before committing, so a write made there logs nothing on its own. It does

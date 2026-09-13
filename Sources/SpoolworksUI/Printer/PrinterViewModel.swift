@@ -78,6 +78,21 @@ protocol PrinterTransporting: Sendable {
     /// The CFS's live report of what is loaded, for the Printer & CFS screen.
     func downloadBoxInfo(_ credentials: PrinterCredentials,
                          family: PrinterType) async throws -> MaterialBoxInfo
+    /// Adds one filament to the printer's own database and changes nothing else there — see
+    /// `PrinterService.addFilament(_:to:)`.
+    func addFilament(_ filament: Filament,
+                     credentials: PrinterCredentials,
+                     family: PrinterType) async throws -> FilamentPushOutcome
+}
+
+extension PrinterTransporting {
+    /// Transports written before a single filament could be added — the stand-in, and test doubles
+    /// that only count CFS reads — refuse it rather than pretend it happened.
+    func addFilament(_: Filament,
+                     credentials _: PrinterCredentials,
+                     family _: PrinterType) async throws -> FilamentPushOutcome {
+        throw PrinterUIError.notImplemented
+    }
 }
 
 extension PrinterTransporting {

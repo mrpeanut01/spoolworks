@@ -120,6 +120,9 @@ public enum SSHOperation: Equatable, Sendable {
     case upload(path: String, byteCount: Int)
     case download(path: String)
     case run(command: String)
+    /// ``PrinterTransport/replace(data:at:expectingMD5:backupPath:)``: `upload`, guarded by the
+    /// current file's MD5 and keeping a backup of it.
+    case replace(path: String, byteCount: Int, expectedMD5: String, backupPath: String)
 
     /// Suffix appended to the destination to form the staging file.
     ///
@@ -153,6 +156,24 @@ public enum SSHOperation: Equatable, Sendable {
             return "cat \(SSHShell.quote(path))"
         case .run(let command):
             return command
+        case .replace(let path, let byteCount, let expectedMD5, let backupPath):
+            let destination = SSHShell.quote(path)
+            let staging = SSHShell.quote(path + SSHOperation.stagingSuffix)
+            let backup = SSHShell.quote(backupPath)
+            // Exits 4 and 3 come before a byte is written: no `md5sum` to check with, or a file that
+            // is no longer the one the edit was made to. Past the check it is `upload`'s staging, except
+            // the staging file starts as a `cp -p` of the original, so the new file keeps its owner and
+            // mode instead of being chmod-ed to a guess. The shape of what was run by hand against a
+            // K2 Plus on 2026-09-11.
+            return "command -v md5sum >/dev/null 2>&1 || exit 4; "
+                 + "[ \"$(md5sum < \(destination) | cut -d ' ' -f 1)\" = \(SSHShell.quote(expectedMD5)) ] || exit 3; "
+                 + "{ cp -p \(destination) \(backup)"
+                 + " && cp -p \(destination) \(staging)"
+                 + " && cat > \(staging)"
+                 + " && [ \"$(wc -c < \(staging))\" -eq \(byteCount) ]"
+                 + " && mv -f \(staging) \(destination)"
+                 + " && sync; }"
+                 + " || { rm -f \(staging); false; }"
         }
     }
 }
@@ -341,6 +362,20 @@ public final class SSHTransport: PrinterTransport, CustomStringConvertible {
         return String(decoding: output, as: UTF8.self)
     }
 
+    public func replace(data: Data, at remotePath: String, expectingMD5 expectedMD5: String,
+                        backupPath: String) async throws {
+        try SSHTransport.validate(remotePath: remotePath)
+        try SSHTransport.validate(remotePath: backupPath)
+        // It is quoted either way. A malformed checksum could only ever fail as "the file changed",
+        // which would send someone looking for a change that never happened.
+        guard expectedMD5.count == 32, expectedMD5.allSatisfy(\.isHexDigit) else {
+            throw PrinterTransportError.transportUnavailable("\"\(expectedMD5)\" is not an MD5 checksum")
+        }
+        _ = try await execute(.replace(path: remotePath, byteCount: data.count,
+                                       expectedMD5: expectedMD5.lowercased(), backupPath: backupPath),
+                              stdin: data)
+    }
+
     // MARK: Execution
 
     private func execute(_ operation: SSHOperation, stdin: Data?) async throws -> Data {
@@ -453,6 +488,19 @@ public final class SSHTransport: PrinterTransport, CustomStringConvertible {
             if lower.contains("no such file") || lower.contains("read-only file system") {
                 return .remoteCommandFailed(exitStatus: exitStatus,
                                             message: SSHTransport.firstLine(of: stderr))
+            }
+        case .replace(let path, _, _, _):
+            // The two exits the command reserves for "nothing was written", then `upload`'s
+            // signature for a staging file that came up short.
+            if exitStatus == 3 {
+                return .remoteFileChanged(path: path)
+            }
+            if exitStatus == 4 {
+                return .remoteCommandFailed(exitStatus: 4,
+                                            message: "the printer has no md5sum, so Spoolworks cannot check its file is unchanged")
+            }
+            if exitStatus == 1 && stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return .uploadIncomplete(path: path)
             }
         default:
             break

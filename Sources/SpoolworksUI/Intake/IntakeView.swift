@@ -20,6 +20,7 @@ struct IntakeView: View {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 18) {
                         methodCard
+                        FilamentPushNotice(model: env.filamentPushModel)
                         if model.isScan { tagPanel(tinted: false) }
                         formCard
                     }

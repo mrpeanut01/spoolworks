@@ -99,6 +99,14 @@ Status at last update: **737 automated tests passing**, 0 failing.
 | Restart safety (D-006) | uploads and resets send no command; the live transport refuses a printing printer and restarts an idle one at the trimmed address | regression | pass |
 | Restart safety (D-006) | only an idle printer is offered a restart now; printing, paused or busy are offered an automatic or a manual restart; an unreadable printer neither | UI state | pass |
 | Restart safety (D-006) | the automatic restart waits out the print, needs the quiet period, starts the wait again if a print starts, keeps waiting after a last-moment refusal, never takes an unreadable printer for idle, gives up without a password, and cancels cleanly | UI state | pass |
+| Filament push (D-013) | appending one record to a real K2 Plus capture leaves every byte intact except the insertion and `result.count` | unit | pass |
+| Filament push (D-013) | the printer's record order and duplicate `00004` ids survive; the new record drops provenance keys, gains `base.alias`, follows the printer's key order | unit | pass |
+| Filament push (D-013) | an id already listed is refused; a compact file stays compact; a file without `result.count` is not given one; non-envelopes are refused; strings escape and round-trip | unit | pass |
+| Filament push (D-013) | the Swift splice of the printer's pre-push file is byte-identical to the file pushed by hand (502,598 bytes, md5 `979601e6…`) | golden (one-off, 2026-09-11) | pass |
+| Filament push (D-013) | the guarded replace command, verbatim; exit 3 means the file changed, 4 no `md5sum`, a quiet 1 a short transfer; a non-MD5 checksum is refused before ssh runs | unit | pass |
+| Filament push (D-013) | `addFilament`: a listed id is left alone; a missing one is replaced under the original's md5 with a backup, then read back; a file changed mid-way is not overwritten; a bad read-back is reported | unit | pass |
+| Filament push (D-013) | websocket `retMaterials` reply parsed in order; status frames ignored; the request is a read-only `get`; the address is validated | unit | pass |
+| Filament push (D-013) | the offer: a missing vendor id is offered; a listed or factory id stays silent; no printer means no check; the second tag is not re-checked; Add pushes to that printer; a missing password is explained; a failed push retries; Not now stays quiet per filament; an unreachable printer is reported and can be checked again | UI state | pass |
 
 ## Hardware-in-the-loop (executed on the user's ACS ACR1552)
 
@@ -134,6 +142,23 @@ Read-only. Nothing was written to the printer and it was not rebooted.
 | Live database retrieved | 478,873 bytes, 98 records, version `1784284303` |
 | Our parser vs. the real database | pass — decodes, and round-trips **20** base keys + ~90 kvParam keys per record with zero loss |
 | Upload / reboot | **NOT RUN — would modify the printer** |
+
+## Hardware-in-the-loop (K2 Plus at 192.168.10.19, 2026-09-11): one filament added by hand
+
+Everything was read-only over Moonraker (:7125) and the printer's websocket (:9999), except one
+write: two `ssh` commands the user ran and authenticated themselves. See D-013.
+
+| Scenario | Result |
+|---|---|
+| PolyTerra PLA tag (`P1023`) presented to CFS box 1, slot A | read correctly (`AB1240276A21P1023047422A0330176301000000`), then rejected: klippy `key843 "rfid is error"` |
+| Printer's live filament list (`get reqMaterials`) | 104 records, 31 lettered ids (`P1001`…, `E1001`…), no `P1023`; identical to the downloaded `material_database.json` |
+| Printer database vs. bundled `k2.json` | printer is newer: version `1789091832`, 5 extra ids, all 96 shared records differ, 3 `userMaterial` records under `00004` |
+| One-record splice + md5-guarded replace, by hand | pass — `DONE`; backup `material_database.json.spoolworks-bak-20260911` |
+| `reqMaterials` after the push, no restart | lists `P1023` (105 records) |
+| Touchscreen filament picker after the push, no restart | offers PolyTerra PLA |
+| Slot 1A set to PolyTerra PLA on the touchscreen, mid-print | klippy stored `0P1023`; the slot reported a blank name and the touchscreen reset to Unknown |
+| CFS re-read of slot 1A after the push | **NOT YET RUN — waiting for the print to finish and the filament to be unloaded** |
+| Add to printer from the app | **NOT YET RUN** |
 
 ## UI scenarios — confirmed on hardware by the user
 

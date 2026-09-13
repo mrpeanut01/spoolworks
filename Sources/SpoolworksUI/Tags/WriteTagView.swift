@@ -64,6 +64,7 @@ struct WriteTagView: View {
                         } else if let tagged = justTagged {
                             AttachedBanner(spool: tagged)
                         }
+                        FilamentPushNotice(model: env.filamentPushModel)
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)
                         WriteOptionsCard()
