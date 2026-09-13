@@ -48,6 +48,14 @@ let exitCode = TestDriver.run([
     printerUploadTests,
     materialDatabaseDocumentTests,
     printerUpdateTests,
+
+    // Adding one filament to a printer (D-013)
+    printerMaterialSpliceTests,
+    sshReplaceTests,
+    printerFilamentPushTests,
+    crealitySocketReplyTests,
+    filamentPushModelTests,
+
     crealityCloudTests,
     credentialStoreTests,
     fileCredentialStoreTests,
@@ -81,6 +89,7 @@ let exitCode = TestDriver.run([
     sameMaterialGroupingTests,
     cfsIdentityAmbiguityTests,
     liveCFSFixtureTests,
+    untaggedLookalikeTests,
 
     // UI state machine (code-review fixes)
     spoolDraftTests,
@@ -105,6 +114,9 @@ let exitCode = TestDriver.run([
     intakeReaderContentionTests,
     intakeSlotStateTests,
     inventoryEditingTests,
+    tagAttachTests,
+    cfsLookalikeTests,
+    intakeTwinTests,
     inventoryFilterOptionTests,
     unloadDestinationTests,
     retiredSeedTests,

@@ -306,6 +306,10 @@ final class MaterialCatalog: ObservableObject {
     @Published private(set) var printerType: PrinterType?
     @Published private(set) var filaments: [Filament] = []
 
+    /// What the last load's refresh of untouched records did. The tag model turns a non-empty one
+    /// into a toast; see ``MaterialDatabase/refreshUntouchedRecords()``.
+    @Published private(set) var lastRefresh = MaterialRefreshOutcome()
+
     /// Distinct brands, sorted. `MainForm` populates this from `GetVendors()`.
     @Published private(set) var vendors: [String] = []
 
@@ -336,11 +340,17 @@ final class MaterialCatalog: ObservableObject {
         // `MaterialDatabase` is documented as not thread-safe and is not `Sendable`; it is
         // therefore created, used and destroyed entirely inside the detached task, which returns
         // only the `Sendable` `Filament` values.
-        let outcome = await Task.detached(priority: .userInitiated) { () -> Result<[Filament], Error> in
+        let outcome = await Task.detached(priority: .userInitiated) { () -> Result<([Filament], MaterialRefreshOutcome), Error> in
             do {
                 let storage = try MaterialStorage.applicationSupport()
                 let database = MaterialDatabase(printerType: type, storage: storage)
-                return .success(try database.load())
+                try database.load()
+                // Here, because this is the load that runs at launch: the Write tab asks for its
+                // family's catalogue before any window can, so untouched records are brought up to
+                // date before anything reads them. A failed refresh is not a failed load — the
+                // catalogue on disk is still valid, just not refreshed.
+                let refreshed = (try? database.refreshUntouchedRecords()) ?? MaterialRefreshOutcome()
+                return .success((database.filaments, refreshed))
             } catch {
                 return .failure(error)
             }
@@ -349,13 +359,15 @@ final class MaterialCatalog: ObservableObject {
         guard printerType == type else { return }   // the user moved on while we loaded
 
         switch outcome {
-        case let .success(list):
+        case let .success((list, refreshed)):
+            lastRefresh = refreshed
             filaments = list
             vendors = Set(list.map(\.vendor)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
             state = list.isEmpty
                 ? .unavailable("The \(type.displayName) catalogue is empty.")
                 : .ready
         case let .failure(error):
+            lastRefresh = MaterialRefreshOutcome()
             filaments = []
             vendors = []
             state = .unavailable(error.localizedDescription)
@@ -844,15 +856,23 @@ final class TagViewModel: ObservableObject {
     func printerTypeChanged(to type: PrinterType?) async {
         draft.printerType = type
         await catalog.load(type)
+        if let summary = catalog.lastRefresh.summary { toasts.success(summary) }
         if catalog.isReady {
             manualMaterialEntry = false
-            // Deliberately does **not** fall back to the first brand in the catalogue. An
-            // unattended default meant the form arrived claiming a specific material — the first
-            // one alphabetically — and a write started before anyone looked at it would put that
-            // material on the tag. A blank form cannot be written until a choice is made, which is
-            // the correct amount of friction for an irreversible operation. A brand already in the
-            // draft (from a read, or the user's own pick) is still honoured.
-            selectVendor(preferredVendor() ?? "")
+            if let preferred = preferredVendor() {
+                // A brand already in the draft (from a read, or the user's own pick) is honoured.
+                selectVendor(preferred)
+            } else {
+                // Creality by default — the brand, and **only** the brand. The material is left on
+                // "—" deliberately: an unattended material default meant the form arrived claiming
+                // a specific filament, and a write started before anyone looked (auto-write makes
+                // that a real risk) would put it on the tag. A form cannot be written until a
+                // material is chosen, which is the right amount of friction for an irreversible
+                // operation. Opening on Creality's list is not that; it just saves a click, where
+                // the alphabetical first brand is now Anycubic.
+                selectedVendor = catalog.vendors.contains(Self.defaultVendor) ? Self.defaultVendor : ""
+                selectMaterial(nil)
+            }
         } else {
             // No catalogue: the ID field becomes the input, pre-filled with whatever was there.
             manualMaterialEntry = true
@@ -914,6 +934,9 @@ final class TagViewModel: ObservableObject {
         }
         selectMaterial(filament)
     }
+
+    /// The brand the Write tab opens on when nothing in the draft says otherwise.
+    static let defaultVendor = "Creality"
 
     /// Keeps the current brand across a family switch when that brand still exists.
     private func preferredVendor() -> String? {

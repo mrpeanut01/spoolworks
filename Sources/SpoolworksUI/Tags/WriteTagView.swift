@@ -58,12 +58,13 @@ struct WriteTagView: View {
                         // screen looks identical whether the next verified write attaches to a
                         // spool in stock or creates a new record, and those are very different.
                         if let target = taggingTarget {
-                            AttachBanner(spool: target, what: "written") {
+                            AttachBanner(spool: target, direction: .write) {
                                 inventory.cancelTagRequest()
                             }
                         } else if let tagged = justTagged {
                             AttachedBanner(spool: tagged)
                         }
+                        FilamentPushNotice(model: env.filamentPushModel)
                         TagFormCard(monitor: monitor, model: model)
                         AutoWriteCard(monitor: monitor, model: model)
                         WriteOptionsCard()

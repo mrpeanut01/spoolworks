@@ -257,13 +257,12 @@ struct MaterialsView: View {
 
     // MARK: - Table
 
+    // No colour columns. Every shipped record's `base.colors` is `#ffffff` or `#000000` — a
+    // placeholder the Windows app never read and no tag takes — so those columns only ever showed
+    // black or white as though that described the filament. The value is still in the data, because
+    // the printer's format carries it; it is simply not presented.
     private var table: some View {
         Table(model.filteredRows, selection: $model.selection, sortOrder: $model.sortOrder) {
-            TableColumn("Colour") { row in
-                swatch(for: row)
-            }
-            .width(min: 34, ideal: 34, max: 40)
-
             TableColumn("ID", value: \.materialID) { row in
                 Text(row.materialID)
                     .font(.system(.body, design: .monospaced))
@@ -297,12 +296,6 @@ struct MaterialsView: View {
             }
             .width(min: 50, ideal: 60)
 
-            TableColumn("Colour Name", value: \.colorName) { row in
-                Text(row.colorName.isEmpty ? row.colorHex : row.colorName)
-                    .foregroundStyle(row.colorName.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-            }
-            .width(min: 90, ideal: 130)
-
             TableColumn("Traits", value: \.traits) { row in
                 // Text, not an icon or a tint: soluble/support must not be colour-only encoding.
                 Text(row.traits.isEmpty ? "—" : row.traits)
@@ -326,28 +319,6 @@ struct MaterialsView: View {
         .accessibilityLabel("Filaments in the \(model.printerType.displayName) database")
     }
 
-    private func swatch(for row: FilamentRow) -> some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(row.swatch ?? Color.clear)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(Color.primary.opacity(0.25))
-            )
-            .overlay {
-                if row.swatch == nil {
-                    // Unparseable hex: say so instead of rendering a plausible-looking blank.
-                    Image(systemName: "questionmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 18, height: 18)
-            // The swatch is decorative; the value is carried by the Colour Name column too, so a
-            // VoiceOver user never depends on the colour itself.
-            .accessibilityLabel(row.colorName.isEmpty ? "Colour \(row.colorHex)" : "Colour \(row.colorName)")
-            .help(row.colorName.isEmpty ? row.colorHex : "\(row.colorName) (\(row.colorHex))")
-    }
-
     @ViewBuilder
     private func contextMenu(for ids: Set<FilamentRow.ID>) -> some View {
         let selected = model.rows.filter { ids.contains($0.id) }
@@ -355,7 +326,6 @@ struct MaterialsView: View {
             Button("Edit Filament…") { model.editor = .edit(only.filament) }
             Button("Duplicate as New…") { model.editor = .add(template: only.filament) }
             Divider()
-            Button("Copy Colour Hex") { copy(only.colorHex) }
             Button("Copy Filament ID") { copy(only.materialID) }
             Divider()
         }

@@ -349,3 +349,126 @@ can click produces a claim the printer will contradict without saying so.
 still a window of up to 30 s in which a hand edit and the printer disagree; it closes on the next
 poll and both outcomes are logged. Re-selecting a CFS slot after moving a spool off it by hand is
 not possible — the poll is the only way back, which is the point.
+
+## D-013 — A tagged spool's filament is added to the printer one record at a time, on demand
+**Context:** A tag stores a filament id, and the CFS rejects a tag whose id its printer's database
+does not list. On 2026-09-11 a K2 Plus read a PolyTerra PLA tag correctly and logged
+`{"code":"key843", "msg":"rfid is error"}`, because `P1023` is a vendor-catalogue id. The only
+remedy the app had was Upload Database, which replaces the printer's file with the Mac's catalogue.
+That same day the printer's database was newer than the Mac's: five ids the bundle lacks, different
+content for all 96 shared records, and three slicer-synced `userMaterial` records under id `00004`.
+An upload would have rolled all of that back and pushed 194 vendor filaments nobody had tagged.
+Downloading first would not have helped either: the local catalogue merges by id, so the three
+`00004` records would have been folded into one.
+
+**Alternatives:** (a) keep the whole-catalogue upload and document its caveats; (b) re-encode the
+printer's file with the record added; (c) set the CFS slot directly over the printer's websocket
+(`set modifyMaterial`), as the touchscreen and Creality Print do; (d) splice one record into the
+printer's own bytes, offered after a verified write.
+
+**Chosen:** (d).
+- After a verified write, an id from the bundled factory catalogue is not checked. Any other id is
+  looked up in the printer's live list over its websocket — `get reqMaterials`, port 9999, no
+  password. If it is missing, Write tag and Intake offer **Add to printer**.
+- Adding reads `material_database.json` over SSH, appends the record in the file's own layout
+  (provenance keys dropped, `base.alias` added) and raises `result.count`. It writes the file back
+  with a guarded replace: the printer's `md5sum` must still match the file that was read (exit 3
+  otherwise), the old file is kept as `material_database.json.spoolworks-bak`, and the new one goes
+  through `upload`'s staging, size check and rename. The file is then read back and compared byte
+  for byte.
+- No version stamp and no reboot.
+
+**Why:**
+- (b) would reorder every key and reformat every number in a file the firmware wrote. That is
+  harmless to a parser, but the only thing proven on hardware is the printer's file byte for byte
+  plus one record (pushed by hand on 2026-09-11, md5-guarded), and the splice reproduces that.
+- (c) works per slot, not per filament. It has to be redone whenever a spool moves, it happens at
+  load time rather than when the tag is written, and a slot edit to an id the CFS cannot resolve did
+  not stick (see Evidence).
+- The websocket is used only to read. Its `set` requests are never sent.
+
+**Evidence, and what is still open:**
+- After the push, `reqMaterials` listed `P1023` at once, and the touchscreen's filament picker
+  offered PolyTerra PLA without a restart.
+- Setting slot 1A to it on the touchscreen, mid-print, made klippy log
+  `Tn_data[T1][material_type][0]: 0P1023`. The slot still reported a blank name and the touchscreen
+  reset to Unknown. The CFS side appears to resolve ids from a copy of the database loaded at startup.
+- **Not yet confirmed:** whether the tag is accepted after a re-read with no restart, after a Klipper
+  restart, or only after a full reboot. So the notice says the CFS *may* need a restart, and does
+  not offer one.
+
+**Impact:**
+- New code: `PrinterMaterialDocument` (the splice), `CrealityPrinterSocket` (read-only),
+  `PrinterService.addFilament`, `PrinterTransport.replace` with
+  `PrinterTransportError.remoteFileChanged`, and `FilamentPushModel` and `FilamentPushNotice` in
+  the UI.
+- A Creality database update can replace the file and drop an added record. The next verified write
+  for that filament notices and offers again.
+- MD5 is used only because busybox ships `md5sum`. It detects a changed file; it is not a security
+  control.
+
+## D-014 — A factory tag identifies a filament, not a spool: untagged spools are matched by resemblance, and the user is asked
+**Context:** The tool owner counted a Creality Hyper PLA White onto the shelf still sealed, so it
+went into stock untagged, while another spool of the same filament was already loaded in the CFS.
+Once the bag was open there was no way to give the shelf record its tag:
+- Read / identify matched the tag to the **loaded** spool, and the attach was refused with "That tag
+  already belongs to…". The request banner stayed up, so it looked as though the app was still
+  trying.
+- Intake refused it as a duplicate of the loaded spool, with no way to continue.
+- Loading it into the CFS would have been "discovered" as a second record beside the shelf one.
+
+All three have one cause. Every factory spool of one filament and colour carries the **same**
+payload, serial `000001` included (see `SpoolIdentity`), so "this record is already in stock" says
+nothing about which spool is on the reader. `SpoolInventory.reconcile` has always accepted twins,
+and tells them apart by slot. The attach and Intake refusals were written as though payloads were
+unique.
+
+**Alternatives:**
+(a) *Record each tag's UID on its spool, and identify by UID.* Rejected for now. The CFS never
+reports a UID, so it would not help the poll, and no spool already in stock has one recorded. It
+remains the only way a desk reader could ever tell two factory twins apart.
+(b) *Bind automatically when exactly one untagged spool resembles the tag.* Rejected. Resemblance
+is a guess: colours are picked by eye or by camera. A wrong silent bind rewrites a record's colour,
+identity and remaining figure, and is invisible until the figures stop making sense.
+(c) *Keep refusing, and tell the user to retire the shelf record and re-intake.* Rejected: it
+throws away the history and the location the user entered.
+
+**Chosen:**
+1. The twin refusal in `InventoryViewModel.attachTag(record:)` applies only to a tag whose serial
+   is its own. A `000001` tag may identify several spools; a Spoolworks-written serial may not.
+2. **Resemblance** (`Spool.looksLike` / `couldBe`, `SpoolInventory.untaggedLookalikes`): the same
+   filament (by filament id where the spool has one, otherwise by brand and name) and a colour
+   within ΔE 25. Only untagged spools that are off the printer are offered. Resemblance is only
+   ever used to **ask**.
+3. **Inventory rail:** "Attach RFID spool" (was "Read its tag") opens Read / identify for that
+   spool. The first tag attaches; a `TagPairing` then asks for the other side of the hub and checks
+   it carries the same record. "One side is enough" stops waiting. A tag that is evidently another
+   filament or colour is questioned ("Attach anyway / Not this tag") rather than silently
+   rewriting the record.
+4. **Read / identify, unasked:** a read that resembles an untagged spool offers "Attach to this
+   spool / Not this time". The offer names the tagged twin, when there is one, and says why the tag
+   cannot settle it.
+5. **Intake:** the same offer. A duplicate that shares only a factory payload gets "Continue as a
+   new spool" beside "Open the spool in stock". The notice says when the matched spool is loaded in
+   the printer, since that makes it unlikely to be the one on the reader. A unique-serial duplicate
+   is still refused.
+6. **CFS:** `reconcile(holdingLookalikes:declined:)` holds a slot that resembles an untagged spool
+   instead of discovering it, and reports it as a `LookalikeSlot`. A banner above every screen asks
+   "Is it that spool?". Yes gives the spool the slot's identity and re-runs the poll on the same
+   snapshot, so the spool lands in its slot with the CFS's figure at once. No discovers it and
+   remembers the answer for that slot and payload. No scan is needed: the printer read the tag, and
+   both sides carry the same record.
+7. The Printer & CFS slot cells now look their spool up by slot position, not identity. Looking up
+   by identity showed the same record in both slots of a twin pair.
+
+**Why:** The app cannot know which of two identical spools is in hand, and the user always can.
+Asking costs one click. Guessing costs a corrupted record, and refusing (the old behaviour) cost the
+user their record.
+
+**Impact:**
+- While a CFS question is unanswered the slot has no spool, so job consumption from it is held by
+  `CFSViewModel.pendingGrams` and charged on the next poll after the answer.
+- Declined answers live in memory only. The discovered spool becomes the slot's incumbent, so the
+  question does not come back while it stays loaded.
+- Factory twins remain indistinguishable to a desk reader. The hero on Read / identify says "One of
+  N spools with this tag" rather than claiming a single match.

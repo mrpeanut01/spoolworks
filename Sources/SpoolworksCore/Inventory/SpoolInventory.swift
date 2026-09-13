@@ -188,6 +188,31 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         spool(identity: SpoolIdentity(record: record))
     }
 
+    /// Untagged spools in stock that could be the one a tag or a slot describes, closest colour
+    /// first.
+    ///
+    /// Only spools **off the printer**. A spool the CFS reports as loaded is, by that fact, neither
+    /// the one on a desk reader nor the one just put into another slot. See
+    /// ``Spool/looksLike(brand:name:filamentId:colorHex:)`` for what counts as looking alike, and
+    /// why the answer is only ever used to ask.
+    public func untaggedLookalikes(brand: String,
+                                   name: String,
+                                   filamentId: String,
+                                   colorHex: String) -> [Spool] {
+        active.enumerated()
+            .filter { _, spool in
+                spool.isUntagged && !spool.location.isOnPrinter
+                    && spool.looksLike(brand: brand, name: name,
+                                       filamentId: filamentId, colorHex: colorHex)
+            }
+            .sorted { lhs, rhs in
+                let a = lhs.element.colourDistance(toHex: colorHex) ?? .infinity
+                let b = rhs.element.colourDistance(toHex: colorHex) ?? .infinity
+                return a != b ? a < b : lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
     // MARK: Writing
 
     public mutating func add(_ spool: Spool) {
@@ -228,9 +253,48 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
         public var discovered: [UUID] = []
         public var updated: [UUID] = []
         public var unloaded: [UUID] = []
+        /// Slots held back from discovery because an untagged spool in stock looks like them. Not
+        /// a change — nothing was written — so it is not counted by ``isEmpty``.
+        public var lookalikes: [LookalikeSlot] = []
 
         public var isEmpty: Bool { discovered.isEmpty && updated.isEmpty && unloaded.isEmpty }
         public var changeCount: Int { discovered.count + updated.count + unloaded.count }
+    }
+
+    /// One slot holding one payload — what "no, that is a different spool" is remembered against.
+    ///
+    /// Keyed on both, so the answer lapses on its own once the slot is emptied or refilled with
+    /// something else.
+    public struct SlotClaim: Hashable, Sendable {
+        public let location: SpoolLocation
+        public let identity: SpoolIdentity
+
+        public init(location: SpoolLocation, identity: SpoolIdentity) {
+            self.location = location
+            self.identity = identity
+        }
+    }
+
+    /// A loaded slot that is not yet in stock under its own identity, but looks like an untagged
+    /// spool that is.
+    ///
+    /// The case this exists for: a Creality spool counted onto a shelf still sealed in its bag,
+    /// later opened and loaded. The printer reads its tag — so nothing needs scanning — but a
+    /// factory payload names a filament and a colour, not a spool, so it cannot say *which* spool
+    /// it is. Discovering it would put a second record beside the one the user already made;
+    /// binding it silently would guess. So the slot is left unbound and the user is asked.
+    public struct LookalikeSlot: Hashable, Sendable, Identifiable {
+        /// `"T1C"`.
+        public let label: String
+        public let location: SpoolLocation
+        public let identity: SpoolIdentity
+        /// The slot as the printer reported it, for its description and whether it read a tag.
+        public let slot: CFSSlot
+        /// Untagged spools it could be, closest colour first. Never empty.
+        public let candidates: [UUID]
+
+        public var id: String { "\(label)|\(identity)" }
+        public var claim: SlotClaim { SlotClaim(location: location, identity: identity) }
     }
 
     /// Brings the inventory into step with a `material_box_info.json` snapshot.
@@ -252,7 +316,9 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
     /// 2. **Newcomers.** Remaining slots take any unbound spool with a matching identity.
     /// 3. **Discovery.** Slots still unmatched become new spools when `addingUnknown` is set — a
     ///    spool physically in the printer that the inventory has never seen is a gap, not something
-    ///    to stay quiet about.
+    ///    to stay quiet about. With `holdingLookalikes`, a slot that looks like an untagged spool in
+    ///    stock is reported in ``ReconcileReport/lookalikes`` instead, unless its claim is in
+    ///    `declined` — see ``LookalikeSlot``.
     ///
     /// Finally, spools that were on the printer and no longer are lose their location. Their
     /// remaining figure is left alone — it was last measured, and nothing better exists — and the
@@ -272,7 +338,9 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
     public mutating func reconcile(with info: MaterialBoxInfo,
                                    at date: Date = .now,
                                    addingUnknown: Bool = true,
-                                   unloadTo: SpoolLocation = .unknown) -> ReconcileReport {
+                                   unloadTo: SpoolLocation = .unknown,
+                                   holdingLookalikes: Bool = false,
+                                   declined: Set<SlotClaim> = []) -> ReconcileReport {
         var report = ReconcileReport()
         var seen = Set<UUID>()
 
@@ -352,6 +420,25 @@ public struct SpoolInventory: Codable, Hashable, Sendable {
                 if changed { report.updated.append(spools[index].id) }
 
             } else if addingUnknown {
+                // -- pass 3a: an untagged lookalike already in stock -------------------------
+                // A question for the user, not a binding to make here. The slot stays unbound,
+                // so consumption drawn from it is held rather than charged to a guess.
+                if holdingLookalikes,
+                   !declined.contains(SlotClaim(location: entry.location, identity: entry.identity)) {
+                    let candidates = untaggedLookalikes(brand: entry.slot.brand,
+                                                        name: entry.slot.name,
+                                                        filamentId: entry.identity.filamentId,
+                                                        colorHex: entry.slot.rgbHex)
+                    if !candidates.isEmpty {
+                        report.lookalikes.append(LookalikeSlot(label: entry.label,
+                                                               location: entry.location,
+                                                               identity: entry.identity,
+                                                               slot: entry.slot,
+                                                               candidates: candidates.map(\.id)))
+                        continue
+                    }
+                }
+
                 // -- pass 3: discovery -------------------------------------------------------
                 var spool = Spool(identity: entry.identity,
                                   brand: entry.slot.brand,

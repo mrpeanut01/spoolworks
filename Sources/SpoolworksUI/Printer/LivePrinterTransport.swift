@@ -117,4 +117,10 @@ struct LivePrinterTransport: PrinterTransporting {
                          family: PrinterType) async throws -> MaterialBoxInfo {
         try await service(credentials).boxInfo(of: model(family))
     }
+
+    func addFilament(_ filament: Filament,
+                     credentials: PrinterCredentials,
+                     family: PrinterType) async throws -> FilamentPushOutcome {
+        try await service(credentials).addFilament(filament, to: model(family))
+    }
 }

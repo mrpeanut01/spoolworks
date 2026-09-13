@@ -242,6 +242,14 @@ public struct PrinterProgress: Equatable, Sendable {
 
 public typealias PrinterProgressHandler = @Sendable (PrinterProgress) -> Void
 
+/// What adding one filament to a printer did. See ``PrinterService/addFilament(_:to:)``.
+public enum FilamentPushOutcome: Equatable, Sendable {
+    /// The printer already listed the id, so nothing was written.
+    case alreadyOnPrinter
+    /// The record was added. The file it replaced is at `backupPath` on the printer.
+    case added(backupPath: String)
+}
+
 public struct UploadResult: Equatable, Sendable {
     /// The database bytes actually written to the printer, version stamp included. The Windows
     /// app rewrites its *local* file with the same stamp (`UploadForm.cs:153-158`), so callers
@@ -521,6 +529,44 @@ public struct PrinterService: Sendable {
         return lower.contains("closed by remote host")
             || lower.contains("connection reset")
             || lower.contains("broken pipe")
+    }
+
+    // MARK: Add one filament (PC → printer)
+
+    /// Appended to the database path for the copy ``addFilament(_:to:)`` keeps of the file it
+    /// replaces. One file, overwritten by each push: every push only adds, so the latest backup
+    /// still holds everything the ones before it did.
+    public static let filamentBackupSuffix = ".spoolworks-bak"
+
+    /// Adds `filament` to the printer's own `material_database.json` and changes nothing else in it.
+    ///
+    /// ``upload(database:to:options:progress:)`` puts the Mac's catalogue on the printer; this puts
+    /// one record into the printer's. Read, splice (``PrinterMaterialDocument/appending(_:to:)``),
+    /// write back only while the file is still the one that was read, then read it again to check.
+    /// No version stamp and no reboot: the printer keeps taking Creality's updates, and when its
+    /// CFS picks the filament up is still being established on hardware (D-013).
+    public func addFilament(_ filament: Filament, to model: PrinterModel) async throws -> FilamentPushOutcome {
+        let path = model.materialDatabasePath
+        let original = try await transport.download(from: path)
+        if try PrinterMaterialDocument.filamentIDs(in: original).contains(filament.id) {
+            return .alreadyOnPrinter
+        }
+        let updated = try PrinterMaterialDocument.appending(filament, to: original)
+
+        try Task.checkCancellation()
+        let backupPath = path + PrinterService.filamentBackupSuffix
+        try await transport.replace(data: updated,
+                                    at: path,
+                                    expectingMD5: PrinterMaterialDocument.md5Hex(original),
+                                    backupPath: backupPath)
+
+        // The guarded write checked the byte count; this checks the bytes.
+        let readBack = try await transport.download(from: path)
+        guard readBack == updated else {
+            throw FilamentSpliceError.verificationFailed(
+                "the printer's file did not read back as written; the copy at \(backupPath) is the last known good one")
+        }
+        return .added(backupPath: backupPath)
     }
 
     // MARK: Update (printer → PC)

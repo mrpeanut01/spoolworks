@@ -20,6 +20,7 @@ struct IntakeView: View {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 18) {
                         methodCard
+                        FilamentPushNotice(model: env.filamentPushModel)
                         if model.isScan { tagPanel(tinted: false) }
                         formCard
                     }
@@ -124,6 +125,19 @@ struct IntakeView: View {
         if model.isScan { tagModel.beginIdentification() }
     }
 
+    /// The offer to attach a read tag to an untagged spool, naming the tagged twin when there is
+    /// one — that twin is why the tag cannot settle it alone.
+    private func lookalikeMessage(_ spool: Spool) -> String {
+        var text = "This tag matches \(spool.label), which is in stock without a tag "
+            + "(\(spool.location.description)). If that is the spool in your hand, attach the tag "
+            + "to it rather than adding a second record."
+        if let twin = model.duplicate {
+            text += " It also reads the same as \(twin.label) (\(twin.location.description)) — "
+                + "Creality tags for one filament and colour are identical."
+        }
+        return text
+    }
+
     // MARK: Step 1
 
     private var methodCard: some View {
@@ -168,11 +182,28 @@ struct IntakeView: View {
             if let mismatch = model.mismatch {
                 InlineFailure(text: mismatch).padding(.top, 14)
             }
-            if let duplicate = model.duplicate {
-                DuplicateNotice(spool: duplicate) {
-                    model.openDuplicate()
-                    env.sidebarSelection = .inventory
+            if let lookalike = model.lookalike {
+                SpoolPrompt(message: lookalikeMessage(lookalike)) {
+                    Button("Attach this tag to it") {
+                        guard model.attachToLookalike() else { return }
+                        // The other side is asked for on Read / identify, where a pairing in
+                        // progress is shown. Both sides already read here need nothing more.
+                        if inventory.pairing?.isComplete == false {
+                            env.sidebarSelection = .identify
+                        }
+                    }
+                    Button("Add as a new spool") { model.dismissLookalike() }
                 }
+                .padding(.top, 14)
+            } else if let duplicate = model.duplicate {
+                DuplicateNotice(spool: duplicate,
+                                isAmbiguous: model.duplicateIsAmbiguous,
+                                addingAnother: model.addingAnotherLikeDuplicate,
+                                addAnother: { model.addAnotherLikeDuplicate() },
+                                open: {
+                                    model.openDuplicate()
+                                    env.sidebarSelection = .inventory
+                                })
                 .padding(.top, 14)
             }
         }
@@ -652,23 +683,47 @@ private struct TagRow: View {
     }
 }
 
+/// A tag whose record is already in stock.
+///
+/// Two different situations share this, and the notice has to tell them apart because the right
+/// answer is opposite. A tag with a serial of its own **is** that spool, and the only sensible
+/// thing to offer is opening it. A factory tag only says *which filament and colour*: every
+/// Creality spool of one kind carries the same record, so the spool in stock may well not be the
+/// one on the reader — especially when the printer reports that one as loaded — and adding another
+/// has to be possible.
 private struct DuplicateNotice: View {
     let spool: Spool
+    let isAmbiguous: Bool
+    let addingAnother: Bool
+    let addAnother: () -> Void
     let open: () -> Void
 
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
-            Image(systemName: "info.circle.fill").foregroundStyle(Theme.accent)
-            Text("This tag already belongs to \(spool.label) in stock — \(spool.remainingLabel) left, \(spool.location.description).")
-                .font(Theme.caption)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Theme.Spacing.s)
-            Button("Open it", action: open).buttonStyle(.sw(.ghost, size: 11.5, h: 10, v: 6))
+    private var message: String {
+        let state = "\(spool.remainingLabel) left, \(spool.location.description)"
+        guard isAmbiguous else {
+            return "This tag already belongs to \(spool.label) in stock — \(state)."
         }
-        .padding(Theme.Spacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.accent.opacity(0.08))
-        .overlay(Rectangle().strokeBorder(Theme.accent, lineWidth: 1))
+        if addingAnother {
+            return "Adding this as another spool beside \(spool.label). Both carry the same tag "
+                + "record; the CFS tells them apart by the slot each is loaded in."
+        }
+        var text = "This tag reads the same as \(spool.label) in stock — \(state). Creality tags "
+            + "for one filament and colour are identical, so the tag alone cannot say which spool "
+            + "it is."
+        if spool.location.isOnPrinter {
+            text += " That one is loaded in the printer, so the spool on the reader is probably "
+                + "another."
+        }
+        return text
+    }
+
+    var body: some View {
+        SpoolPrompt(symbol: "info.circle.fill", message: message) {
+            if isAmbiguous && !addingAnother {
+                Button("Continue as a new spool", action: addAnother)
+            }
+            Button(isAmbiguous ? "Open the spool in stock" : "Open it", action: open)
+        }
     }
 }
 

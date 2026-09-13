@@ -286,11 +286,17 @@ public protocol MaterialSeedProviding: Sendable {
     /// but the **id is ours**, so a tag written against one is ignored until the catalogue has
     /// been uploaded to the printer. Merging them would lose that distinction permanently.
     func vendorCatalogueData(for printerType: PrinterType) throws -> Data?
+
+    /// The refresh index for this family, or `nil` where there is none — see
+    /// ``MaterialDatabase/refreshUntouchedRecords()`` and ``FilamentFingerprint``.
+    func refreshIndexData(for printerType: PrinterType) throws -> Data?
 }
 
 public extension MaterialSeedProviding {
     /// Most providers have no third-party catalogue; the bundled one does.
     func vendorCatalogueData(for printerType: PrinterType) throws -> Data? { nil }
+    /// Most providers have no refresh index; the bundled one does.
+    func refreshIndexData(for printerType: PrinterType) throws -> Data? { nil }
 }
 
 /// Reads the seed from the app bundle (`k1.json` / `k2.json` / `hi.json`).
@@ -335,17 +341,39 @@ public struct BundledMaterialSeed: MaterialSeedProviding {
         do { return try Data(contentsOf: url) }
         catch { throw MaterialDatabaseError.storage("reading \(url.lastPathComponent): \(error.localizedDescription)") }
     }
+
+    /// `refresh-k2.json` — built by `Tools/build-refresh-index.py` from the catalogues' git history.
+    public func refreshIndexData(for printerType: PrinterType) throws -> Data? {
+        guard let url = SpoolworksCoreResources.url(forResource: "refresh-\(printerType.rawValue)",
+                                                    withExtension: "json") else { return nil }
+        do { return try Data(contentsOf: url) }
+        catch { throw MaterialDatabaseError.storage("reading \(url.lastPathComponent): \(error.localizedDescription)") }
+    }
 }
 
 /// An in-memory seed, for tests and for callers that fetch a catalogue themselves.
 public struct StaticMaterialSeed: MaterialSeedProviding {
     private let payloads: [PrinterType: Data]
-    public init(_ payloads: [PrinterType: Data]) { self.payloads = payloads }
+    private let vendorPayloads: [PrinterType: Data]
+    private let refreshPayloads: [PrinterType: Data]
+    public init(_ payloads: [PrinterType: Data],
+                vendor: [PrinterType: Data] = [:],
+                refresh: [PrinterType: Data] = [:]) {
+        self.payloads = payloads
+        self.vendorPayloads = vendor
+        self.refreshPayloads = refresh
+    }
     public func seedData(for printerType: PrinterType) throws -> Data {
         guard let data = payloads[printerType] else {
             throw MaterialDatabaseError.seedUnavailable(printerType)
         }
         return data
+    }
+    public func vendorCatalogueData(for printerType: PrinterType) throws -> Data? {
+        vendorPayloads[printerType]
+    }
+    public func refreshIndexData(for printerType: PrinterType) throws -> Data? {
+        refreshPayloads[printerType]
     }
 }
 
@@ -839,6 +867,79 @@ public final class MaterialDatabase {
         return added
     }
 
+    // MARK: Refreshing untouched records
+
+    /// Brings every record that is exactly as an earlier version of this app shipped it up to the
+    /// version shipped now, and leaves every other record exactly as it is.
+    ///
+    /// Adding a catalogue is additive by design, so a correction to a record someone already has
+    /// never reached them: 0.6.0 took the Bambu-ecosystem plate temperatures and exhaust-fan speeds
+    /// out of 113 vendor records, and anyone who had added them in 0.5.0 kept the old values. The
+    /// captured seed had the same problem at a larger scale — every one of the 66 records shipped
+    /// before 0.5.0 carries Creality's older start G-code, without the `{if !multicolor_method}`
+    /// guard the 2026 capture added.
+    ///
+    /// **Which records are "untouched" is decided by content, never by assumption.** The bundled
+    /// refresh index lists, for each shipped id, its current ``FilamentFingerprint`` and the
+    /// fingerprints of every earlier version. A local record matching an earlier one is by
+    /// construction exactly as shipped and is replaced. A record matching none — edited in this
+    /// app, edited by hand, or reshaped by a printer download — is reported and left alone. That
+    /// is the safe direction to fail in: the worst outcome of a missed match is a record that stays
+    /// stale, never an edit that is lost.
+    ///
+    /// Independent of `result.version`. A version describes a whole catalogue's edition; this is a
+    /// per-record question, and a catalogue at the newest version can still hold a stale record
+    /// that arrived before a top-up.
+    ///
+    /// - Returns: what was refreshed and what was kept. Saves only when something was refreshed.
+    @discardableResult
+    public func refreshUntouchedRecords() throws -> MaterialRefreshOutcome {
+        guard isLoaded else { throw MaterialDatabaseError.notLoaded(printerType) }
+        guard let indexData = try seed.refreshIndexData(for: printerType) else {
+            return MaterialRefreshOutcome()
+        }
+        let index: MaterialRefreshIndex
+        do { index = try JSONDecoder().decode(MaterialRefreshIndex.self, from: indexData) }
+        catch { throw MaterialDatabaseError.malformed("refresh index: \(error.localizedDescription)") }
+
+        // The records shipped now, from both bundled catalogues. Their ids never collide — a test
+        // pins that — so one map is unambiguous.
+        var shipped: [String: Filament] = [:]
+        if let file = try? Self.decode(try seed.seedData(for: printerType)) {
+            for filament in file.result.list { shipped[filament.base.id] = filament }
+        }
+        if let data = (try? seed.vendorCatalogueData(for: printerType)) ?? nil,
+           let file = try? Self.decode(data) {
+            for filament in file.result.list { shipped[filament.base.id] = filament }
+        }
+
+        var outcome = MaterialRefreshOutcome()
+        var trusted: [String: Bool] = [:]
+        for position in filaments.indices {
+            let local = filaments[position]
+            let id = local.base.id
+            guard let entry = index.records[id], let replacement = shipped[id] else { continue }
+            // An index that disagrees with the catalogue beside it is a build defect. Acting on it
+            // would install a record the index does not describe, so that id is skipped instead.
+            let consistent = trusted[id] ?? (FilamentFingerprint.of(replacement) == entry.fingerprint)
+            trusted[id] = consistent
+            guard consistent else { continue }
+
+            let mine = FilamentFingerprint.of(local)
+            if mine == entry.fingerprint { continue }
+            if entry.supersedes.contains(mine) {
+                filaments[position] = Self.trimIdentity(replacement)
+                outcome.refreshed.append(id)
+            } else {
+                outcome.keptChanged.append(id)
+            }
+        }
+        guard !outcome.refreshed.isEmpty else { return outcome }
+        hasUnsavedChanges = true
+        try save()
+        return outcome
+    }
+
     /// - Returns: the ids added, in seed order. Empty when there was nothing to do.
     @discardableResult
     public func topUpFromSeed() throws -> [String] {
@@ -861,5 +962,40 @@ public final class MaterialDatabase {
         setVersion(file.result.version)
         try save()
         return added
+    }
+}
+
+// MARK: - Refresh index
+
+/// `refresh-<family>.json`: for every record the app ships, its current fingerprint and the
+/// fingerprints of every earlier version it replaces. Built by `Tools/build-refresh-index.py`.
+public struct MaterialRefreshIndex: Decodable, Sendable {
+    public struct Entry: Decodable, Sendable {
+        public let fingerprint: String
+        public let supersedes: [String]
+    }
+    public let records: [String: Entry]
+}
+
+/// What ``MaterialDatabase/refreshUntouchedRecords()`` did.
+public struct MaterialRefreshOutcome: Equatable, Sendable {
+    /// Records that were exactly as an earlier version shipped them, and now match this one.
+    public var refreshed: [String] = []
+    /// Records with a newer shipped version, left alone because they differ from every version
+    /// ever shipped — edited here, edited by hand, or reshaped by a printer download.
+    public var keptChanged: [String] = []
+
+    public init() {}
+
+    /// One sentence for a toast, or `nil` when nothing was refreshed.
+    public var summary: String? {
+        guard !refreshed.isEmpty else { return nil }
+        let count = refreshed.count
+        var text = "Updated \(count) filament\(count == 1 ? "" : "s") to the latest catalogue"
+        if !keptChanged.isEmpty {
+            let kept = keptChanged.count
+            text += "; \(kept) that had been changed \(kept == 1 ? "was" : "were") left as \(kept == 1 ? "it was" : "they were")"
+        }
+        return text
     }
 }

@@ -528,3 +528,139 @@ let inventoryStoreTests = TestSuite(name: "Inventory persistence", cases: [
         t.expect(store.exists(), "file written")
     },
 ])
+
+// MARK: - Untagged lookalikes
+
+/// A spool counted onto a shelf with no tag: no identity, described by hand.
+private func shelfSpool(colour: String = "C8301F",
+                        name: String = "Hyper PLA",
+                        location: SpoolLocation = .shelf("Shelf")) -> Spool {
+    var spool = makeSpool(colour: colour, location: location, tagSource: .untagged, identity: false)
+    spool.name = name
+    return spool
+}
+
+// A Creality factory tag names a filament and a colour, not a spool, so a spool that went into
+// stock untagged can only be recognised by resembling what the tag says. These pin what counts as
+// resembling, and that the CFS poll asks rather than inventing a second record.
+let untaggedLookalikeTests = TestSuite(name: "Untagged lookalikes", cases: [
+
+    test("an untagged shelf spool is found by brand, name and a nearby colour") { t in
+        let shelf = shelfSpool()
+        let inventory = SpoolInventory(spools: [shelf])
+        let found = inventory.untaggedLookalikes(brand: "Creality", name: "hyper pla",
+                                                 filamentId: "101001", colorHex: "C12E1F")
+        t.equal(found.map(\.id), [shelf.id], "a hand-picked red is close enough to the tag's")
+    },
+
+    test("tagged, loaded, retired, differently coloured and different spools are not offered") { t in
+        let tagged = makeSpool(serial: "000001", colour: "C12E1F", location: .shelf("Shelf"))
+        let loaded = shelfSpool(location: .cfs(box: "T1", slot: "B"))
+        let white = shelfSpool(colour: "FFFFFF")
+        let petg = shelfSpool(name: "CR-PETG")
+        let unnamed = shelfSpool(name: "")
+        let retired = shelfSpool()
+        var inventory = SpoolInventory(spools: [tagged, loaded, white, petg, unnamed, retired])
+        inventory.retire(id: retired.id)
+
+        let found = inventory.untaggedLookalikes(brand: "Creality", name: "Hyper PLA",
+                                                 filamentId: "101001", colorHex: "C12E1F")
+        t.equal(found.count, 0, "none of them could be the spool the tag is on")
+    },
+
+    test("the closest colour is offered first") { t in
+        let near = shelfSpool(colour: "C12E1F")
+        let further = shelfSpool(colour: "D04030")
+        let inventory = SpoolInventory(spools: [further, near])
+        let found = inventory.untaggedLookalikes(brand: "Creality", name: "Hyper PLA",
+                                                 filamentId: "101001", colorHex: "C12E1F")
+        t.equal(found.map(\.id), [near.id, further.id], "ordered by colour distance")
+    },
+
+    test("a filament id, where the spool has one, outranks its name") { t in
+        var pending = shelfSpool(name: "Something typed by hand")
+        pending.identity = SpoolIdentity(vendorId: "0276", filamentId: "101001",
+                                         colorHex: "C12E1F", serialNumber: "482913")
+        var other = shelfSpool()
+        other.identity = SpoolIdentity(vendorId: "0276", filamentId: "101002",
+                                       colorHex: "C12E1F", serialNumber: "553311")
+        let inventory = SpoolInventory(spools: [pending, other])
+        let found = inventory.untaggedLookalikes(brand: "Creality", name: "Hyper PLA",
+                                                 filamentId: "101001", colorHex: "C12E1F")
+        t.equal(found.map(\.id), [pending.id], "matched on the id the tag carries")
+    },
+
+    test("a spool the user chose is only questioned when it is evidently another") { t in
+        let unnamed = shelfSpool(name: "")
+        t.expect(unnamed.couldBe(brand: "Creality", name: "Hyper PLA",
+                                 filamentId: "101001", colorHex: "C12E1F"),
+                 "nothing to compare is not a contradiction")
+        t.expect(!shelfSpool(name: "CR-PETG").couldBe(brand: "Creality", name: "Hyper PLA",
+                                                      filamentId: "101001", colorHex: "C12E1F"),
+                 "a different filament is")
+        t.expect(!shelfSpool().couldBe(brand: "Creality", name: "Hyper PLA",
+                                       filamentId: "101001", colorHex: "000000"),
+                 "and so is black against red")
+    },
+
+    test("a loaded slot like an untagged shelf spool is held, not discovered") { t in
+        let shelf = shelfSpool()
+        var inventory = SpoolInventory(spools: [shelf])
+        let report = inventory.reconcile(with: boxInfo([slot("A", serial: "000001", percent: "80")]),
+                                         holdingLookalikes: true)
+        t.equal(report.discovered.count, 0, "no second record")
+        t.equal(report.lookalikes.count, 1, "the slot is asked about")
+        t.equal(report.lookalikes.first?.label, "T1A", "by its label")
+        t.equal(report.lookalikes.first?.candidates, [shelf.id], "naming the shelf spool")
+        t.equal(inventory.spools.count, 1, "the inventory is unchanged")
+        t.equal(inventory.spool(id: shelf.id)?.location, .shelf("Shelf"), "nothing moved on a guess")
+    },
+
+    test("without holding, and once declined, the slot is discovered as before") { t in
+        let info = boxInfo([slot("A", serial: "000001", percent: "80")])
+
+        var plain = SpoolInventory(spools: [shelfSpool()])
+        t.equal(plain.reconcile(with: info).discovered.count, 1, "the default is unchanged")
+
+        var declined = SpoolInventory(spools: [shelfSpool()])
+        guard let identity = info.loadedSlots.first?.slot.identity else {
+            t.expect(false, "the fixture slot has an identity"); return
+        }
+        let claim = SpoolInventory.SlotClaim(location: .cfs(box: "T1", slot: "A"), identity: identity)
+        let report = declined.reconcile(with: info, holdingLookalikes: true, declined: [claim])
+        t.equal(report.discovered.count, 1, "a spool of its own")
+        t.equal(report.lookalikes.count, 0, "and not asked again")
+    },
+
+    // The user's own case: one white Hyper PLA already in the CFS, a second counted onto the shelf
+    // sealed, then opened and loaded beside the first.
+    test("a twin already loaded does not stop the new slot being asked about") { t in
+        let info = boxInfo([slot("A", serial: "000001", percent: "40"),
+                            slot("C", serial: "000001", percent: "100")])
+        guard let identity = info.loadedSlots.first?.slot.identity else {
+            t.expect(false, "the fixture slot has an identity"); return
+        }
+        var loaded = makeSpool(serial: "000001", percent: 40, location: .cfs(box: "T1", slot: "A"))
+        loaded.identity = identity
+        let shelf = shelfSpool()
+        var inventory = SpoolInventory(spools: [loaded, shelf])
+
+        let report = inventory.reconcile(with: info, holdingLookalikes: true)
+        t.equal(report.lookalikes.map(\.label), ["T1C"], "only the new slot is in question")
+        t.equal(inventory.spool(id: loaded.id)?.location, .cfs(box: "T1", slot: "A"),
+                "the twin keeps its own slot")
+
+        // Answering yes gives the shelf spool the slot's identity; the next pass binds it.
+        var answered = shelf
+        answered.identity = identity
+        answered.tagSource = .crealityFactory
+        inventory.update(answered)
+        let after = inventory.reconcile(with: info, holdingLookalikes: true)
+        t.equal(after.lookalikes.count, 0, "nothing left to ask")
+        t.equal(after.discovered.count, 0, "and nothing discovered")
+        t.equal(inventory.spool(id: shelf.id)?.location, .cfs(box: "T1", slot: "C"), "loaded into C")
+        t.equal(inventory.spool(id: shelf.id)?.remainingPercent, 100, "with the printer's figure")
+        t.equal(inventory.spool(id: loaded.id)?.location, .cfs(box: "T1", slot: "A"),
+                "and the twins did not swap")
+    },
+])

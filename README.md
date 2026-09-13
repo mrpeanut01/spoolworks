@@ -51,6 +51,28 @@ on every poll.
 One other correction: **length code `0165` is 500 g, not 1 kg.** The design's decoded-field panel
 says 1 kg; `Utils.cs:172-188`, the ESP32 firmware and the printer dump all disagree. 1 kg is `0330`.
 
+## Tagging a filament the printer doesn't know
+
+A tag stores a filament id, not a description, and the CFS rejects an id its printer's database
+doesn't list. Creality's own ids are on every printer. The vendor catalogue's ids — `P1023`,
+PolyTerra PLA, for one — belong to Spoolworks, so no printer has them until something adds them.
+
+So after a verified write, Spoolworks checks:
+1. A Creality id is taken on trust.
+2. Any other id is looked up in the printer's live filament list, over its local websocket, with no
+   password.
+3. If the printer doesn't list it, Write tag and Intake offer **Add to printer**.
+
+Adding puts that one filament into the printer's own database and changes nothing else in it.
+Spoolworks reads the file, splices the record in, and writes the result back only if the printer's
+file hasn't changed in the meantime. The previous file is kept beside it as
+`material_database.json.spoolworks-bak`. This is not the Printers window's **Upload Database**,
+which replaces the printer's whole catalogue with the Mac's. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+D-013 explains why.
+
+The touchscreen lists an added filament straight away. The CFS may not recognise its tag until the
+printer restarts.
+
 ## Reading a spool's colour with the camera
 
 Intake's Method B needs a colour for a spool that has no tag to read it from, and typing a hex code
@@ -205,6 +227,10 @@ meodai colour-name dataset; and Creality's material data.
   `SSHTransport` (it previously used a stand-in that threw "not implemented" from every method),
   and the transport itself is tested — but no database has been uploaded to, and no CFS polled
   from, a real printer since that wiring landed.
+- **Add to printer has only been done by hand so far.** The splice and the guarded write reproduce
+  a push made manually to a K2 Plus on 2026-09-11, but the app's own code path has not yet run
+  against a printer. It is also still open when the CFS starts accepting an added filament's tag:
+  with no restart, after a Klipper restart, or only after a reboot (D-013).
 - **Verify by read-back cannot be switched off.** The design offers it as a checkbox; making it
   one would let someone disable the check that distinguishes "the reader returned `90 00`" from
   "the bytes are on the tag". It is shown as always-on instead. A verified write always logs its

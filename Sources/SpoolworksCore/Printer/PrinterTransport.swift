@@ -35,6 +35,15 @@ public protocol PrinterTransport: Sendable {
     /// The only command the existing clients ever issue is `reboot` (SPEC-04 §1.5).
     @discardableResult
     func run(command: String) async throws -> String
+
+    /// Replaces `remotePath` with `data` — but only while the file there is still the one the
+    /// caller read, whose MD5 is `expectedMD5` — keeping the file it replaces at `backupPath`.
+    ///
+    /// For edits made to a copy of a printer file. Creality's updater, the touchscreen and Creality
+    /// Print all write `material_database.json` too, and an unconditional ``upload(data:to:)`` of an
+    /// edited copy would silently discard whatever they wrote in between. Atomic the same way.
+    func replace(data: Data, at remotePath: String, expectingMD5 expectedMD5: String,
+                 backupPath: String) async throws
 }
 
 // MARK: - Errors
@@ -77,6 +86,10 @@ public enum PrinterTransportError: Error, Equatable, CustomStringConvertible {
     /// was *not* moved into place. The database on the printer is untouched.
     case uploadIncomplete(path: String)
 
+    /// The file on the printer is no longer the one the edit was made to, so the replacement was
+    /// not written. The printer's file is untouched.
+    case remoteFileChanged(path: String)
+
     /// A remote path failed validation before we ever spawned a process.
     case invalidRemotePath(String)
 
@@ -109,6 +122,9 @@ public enum PrinterTransportError: Error, Equatable, CustomStringConvertible {
                                    : "The printer returned an error (exit \(status)): \(message)"
         case .uploadIncomplete(let path):
             return "The transfer to \(path) was incomplete, so the printer's file was left unchanged."
+        case .remoteFileChanged(let path):
+            return "\(path) changed on the printer while Spoolworks was working on a copy of it, so "
+                 + "nothing was written. Try again."
         case .invalidRemotePath(let path):
             return "Invalid remote path: \(path)"
         case .invalidHost(let host):
@@ -134,12 +150,15 @@ public final class MockPrinterTransport: PrinterTransport, @unchecked Sendable {
         case upload(path: String, byteCount: Int)
         case download(path: String)
         case run(command: String)
+        case replace(path: String, byteCount: Int, expectedMD5: String, backupPath: String)
 
         public var description: String {
             switch self {
             case .upload(let p, let n): return "upload(\(n) bytes → \(p))"
             case .download(let p):      return "download(\(p))"
             case .run(let c):           return "run(\(c))"
+            case .replace(let p, let n, let md5, let b):
+                return "replace(\(n) bytes → \(p) if md5 \(md5), backup \(b))"
             }
         }
     }
@@ -238,6 +257,26 @@ public final class MockPrinterTransport: PrinterTransport, @unchecked Sendable {
             throw PrinterTransportError.remoteFileNotFound(path: remotePath)
         }
         return data
+    }
+
+    /// Behaves like the printer: refuses a file whose MD5 no longer matches, and otherwise keeps
+    /// the old file at `backupPath` before replacing it.
+    public func replace(data: Data, at remotePath: String, expectingMD5 expectedMD5: String,
+                        backupPath: String) async throws {
+        let call = Call.replace(path: remotePath, byteCount: data.count,
+                                expectedMD5: expectedMD5, backupPath: backupPath)
+        try await record(call)
+        try lock.withLock {
+            guard let current = _files[remotePath] else {
+                throw PrinterTransportError.remoteFileNotFound(path: remotePath)
+            }
+            guard PrinterMaterialDocument.md5Hex(current) == expectedMD5 else {
+                throw PrinterTransportError.remoteFileChanged(path: remotePath)
+            }
+            _files[backupPath] = current
+            _files[remotePath] = data
+            _uploads[remotePath] = data
+        }
     }
 
     @discardableResult

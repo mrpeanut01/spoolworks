@@ -27,6 +27,12 @@ struct IdentifyView: View {
     @ObservedObject var inventory: InventoryViewModel
 
     @State private var showDebug = false
+    /// Tags answered "Not this time", so presenting one again does not ask again.
+    @State private var declinedLookalikeUIDs: Set<[UInt8]> = []
+    /// Why the last tag presented during a pairing was not the spool's other side.
+    @State private var pairingProblem: String?
+    /// A tag read for the spool the user asked to attach, that does not look like that spool.
+    @State private var unlikeReadUID: [UInt8]?
 
     /// The untagged spool waiting for this read, if the user asked for one from Inventory.
     private var attachTarget: Spool? {
@@ -34,25 +40,131 @@ struct IdentifyView: View {
         return inventory.inventory.spool(id: id)
     }
 
-    /// Binds a freshly read tag to the spool that asked for it.
+    /// What the catalogue calls a record's filament. The tag carries only the id.
+    private func catalogue(_ record: SpoolRecord) -> (brand: String, name: String, type: String) {
+        let row = env.materialsModel.rows.first { $0.id == record.materialId }
+        return (row?.brand ?? "", row?.name ?? "", row?.materialType ?? "")
+    }
+
+    /// `"Creality Hyper PLA · #FFFFFF"`, or the filament id where the catalogue has no name.
+    private func tagDescription(_ record: SpoolRecord) -> String {
+        let described = catalogue(record)
+        let head = [described.brand, described.name].filter { !$0.isEmpty }.joined(separator: " ")
+        return "\(head.isEmpty ? "filament \(record.filamentId)" : head) · #\(record.rgbHex)"
+    }
+
+    /// Binds a read tag to `spool`, and starts waiting for the spool's other side.
     ///
     /// The source is derived from the tag rather than assumed: `isProgrammed` means sector 1 opened
     /// with the UID-derived key, which is only true of a tag something in this family wrote. A
     /// factory tag opens with the default key, and calling it Spoolworks-written would be a claim
     /// about provenance the app has no basis for.
-    private func attachIfRequested() {
-        guard inventory.awaitingTagFor != nil,
-              let read = model.lastRead, let record = read.record else { return }
-        let type = env.materialsModel.rows.first { $0.id == record.materialId }?.materialType ?? ""
+    private func attach(_ read: TagReadResult, to spool: Spool) {
+        guard let record = read.record else { return }
+        inventory.attachTag(to: spool)
         inventory.attachTag(record: record,
-                                     materialType: type,
-                                     source: read.isProgrammed ? .spoolworksWritten : .crealityFactory)
+                            materialType: catalogue(record).type,
+                            source: read.isProgrammed ? .spoolworksWritten : .crealityFactory,
+                            readUIDs: [read.uid])
+    }
+
+    /// Decides what a freshly read tag means here: the other side of a spool being paired, the tag
+    /// a spool was waiting for, or simply a tag to identify.
+    private func handleRead() {
+        pairingProblem = nil
+        unlikeReadUID = nil
+        guard let read = model.lastRead else { return }
+
+        if let pairing = inventory.pairing {
+            if pairing.isComplete {
+                // A finished pairing stays on screen for its own tags and gives way to the next.
+                if !pairing.contains(read.uid) { inventory.endPairing() }
+            } else {
+                switch inventory.absorbPairedRead(uid: read.uid, record: read.record) {
+                case .sameTag, .completed: return
+                case let .mismatch(why):
+                    pairingProblem = why
+                    return
+                case .notPairing: break
+                }
+            }
+        }
+
+        guard let target = attachTarget, let record = read.record else { return }
+        let described = catalogue(record)
+        // Asked for by the user, so only a tag that is *evidently* another spool is questioned —
+        // a black PETG tag presented for a white PLA record is a wrong spool picked up, and
+        // attaching it would quietly rewrite that record's colour.
+        if target.couldBe(brand: described.brand, name: described.name,
+                          filamentId: record.filamentId, colorHex: record.rgbHex) {
+            attach(read, to: target)
+        } else {
+            unlikeReadUID = read.uid
+        }
+    }
+
+    /// Untagged spools in stock the tag on screen looks like — the offer made when nobody asked.
+    private var lookalikes: [Spool] {
+        guard attachTarget == nil, let read = model.lastRead, let record = read.record,
+              !declinedLookalikeUIDs.contains(read.uid) else { return [] }
+        if let pairing = inventory.pairing, pairing.contains(read.uid) || !pairing.isComplete {
+            return []
+        }
+        let described = catalogue(record)
+        return inventory.untaggedLookalikes(for: record, brand: described.brand, name: described.name)
     }
 
     /// The inventory row this tag belongs to, if any.
+    ///
+    /// A tag just attached answers for itself: with factory tags alike across every spool of a
+    /// filament and colour, looking the record up would return whichever twin was listed first.
     private var matched: Spool? {
-        guard let record = model.lastRead?.record else { return nil }
+        guard let read = model.lastRead, let record = read.record else { return nil }
+        if let pairing = inventory.pairing, pairing.contains(read.uid),
+           let spool = inventory.inventory.spool(id: pairing.spoolID) {
+            return spool
+        }
         return inventory.existing(for: record)
+    }
+
+    private var heroKicker: String {
+        guard let read = model.lastRead, let record = read.record, matched != nil else {
+            return "Not in inventory"
+        }
+        if let pairing = inventory.pairing, pairing.contains(read.uid) { return "Attached to this spool" }
+        let identity = SpoolIdentity(record: record)
+        let sharing = inventory.inventory.active.filter { $0.identity == identity }.count
+        return sharing > 1 ? "One of \(sharing) spools with this tag" : "Matched in inventory"
+    }
+
+    /// The offer to attach a tag nobody asked about to the untagged spool it looks like.
+    private func lookalikePrompt(_ first: Spool, others: [Spool], read: TagReadResult) -> some View {
+        var message = "This tag matches \(first.label), which is in stock without a tag "
+            + "(\(first.location.description)). If that is the spool on the reader, attach the tag to it."
+        if let record = read.record, let twin = inventory.existing(for: record), twin.id != first.id {
+            message += twin.location.isOnPrinter
+                ? " It reads the same as \(twin.label) in \(twin.location.description) because "
+                    + "Creality tags for one filament and colour are identical — but that spool is "
+                    + "in the printer, not on the reader."
+                : " It also reads the same as \(twin.label) (\(twin.location.description)) — "
+                    + "Creality tags for one filament and colour are identical, so the tag alone "
+                    + "cannot say which spool it is."
+        }
+        return SpoolPrompt(message: message) {
+            Button("Attach to this spool") { attach(read, to: first) }
+            if !others.isEmpty {
+                Menu("A different one") {
+                    ForEach(others) { spool in
+                        Button("\(spool.label) · \(spool.location.description)") {
+                            attach(read, to: spool)
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            Button("Not this time") { declinedLookalikeUIDs.insert(read.uid) }
+        }
     }
 
     var body: some View {
@@ -75,11 +187,42 @@ struct IdentifyView: View {
                 // Which spool this read is for, when it is for one. Without it the screen looks
                 // identical whether the next tag attaches to a record in stock or merely gets
                 // identified, and those are very different outcomes.
-                if let target = attachTarget {
-                    AttachBanner(spool: target, what: "read") {
-                        inventory.cancelTagRequest()
+                if let pairing = inventory.pairing,
+                   let spool = inventory.inventory.spool(id: pairing.spoolID) {
+                    PairingBanner(spool: spool, pairing: pairing, problem: pairingProblem) {
+                        inventory.endPairing()
+                        pairingProblem = nil
                     }
                     .padding(.bottom, 18)
+                } else if let target = attachTarget {
+                    Group {
+                        if let read = model.lastRead, read.uid == unlikeReadUID {
+                            SpoolPrompt(symbol: "exclamationmark.triangle.fill",
+                                        tint: Theme.warning,
+                                        message: "This tag reads as "
+                                            + (read.record.map(tagDescription) ?? "no spool record")
+                                            + ", which does not look like \(target.label). Attach it "
+                                            + "to that spool anyway?") {
+                                Button("Attach anyway") {
+                                    attach(read, to: target)
+                                    unlikeReadUID = nil
+                                }
+                                Button("Not this tag") { unlikeReadUID = nil }
+                                Button("Stop attaching") {
+                                    inventory.cancelTagRequest()
+                                    unlikeReadUID = nil
+                                }
+                            }
+                        } else {
+                            AttachBanner(spool: target, direction: .read) {
+                                inventory.cancelTagRequest()
+                            }
+                        }
+                    }
+                    .padding(.bottom, 18)
+                } else if let first = lookalikes.first, let read = model.lastRead {
+                    lookalikePrompt(first, others: Array(lookalikes.dropFirst()), read: read)
+                        .padding(.bottom, 18)
                 }
 
                 HStack(alignment: .top, spacing: 24) {
@@ -119,7 +262,7 @@ struct IdentifyView: View {
         // A read asked for from Inventory attaches to the spool that asked. Keyed on the UID rather
         // than the record, for the same reason Intake is: a spool's two tags carry the *same*
         // payload, so watching the record would miss the second one entirely.
-        .onChange(of: model.lastRead?.uid ?? []) { _, _ in attachIfRequested() }
+        .onChange(of: model.lastRead?.uid ?? []) { _, _ in handleRead() }
         // The loop. Every arrival is a new presentation, including the *same* tag lifted and put
         // back — which the model otherwise treats as nothing having happened, deliberately, because
         // on every other screen one tag means one read. Here re-presenting a tag is the gesture:
@@ -169,7 +312,7 @@ struct IdentifyView: View {
             HStack(alignment: .top, spacing: 20) {
                 Swatch(hex: record.rgbHex, size: 120)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(matched == nil ? "Not in inventory" : "Matched in inventory")
+                    Text(heroKicker)
                         .kicker()
                         .padding(.bottom, 8)
                     Text(matched?.label ?? "Filament \(record.filamentId)")
