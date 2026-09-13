@@ -406,3 +406,69 @@ printer's own bytes, offered after a verified write.
   for that filament notices and offers again.
 - MD5 is used only because busybox ships `md5sum`. It detects a changed file; it is not a security
   control.
+
+## D-014 — A factory tag identifies a filament, not a spool: untagged spools are matched by resemblance, and the user is asked
+**Context:** The tool owner counted a Creality Hyper PLA White onto the shelf still sealed, so it
+went into stock untagged, while another spool of the same filament was already loaded in the CFS.
+Once the bag was open there was no way to give the shelf record its tag:
+- Read / identify matched the tag to the **loaded** spool, and the attach was refused with "That tag
+  already belongs to…". The request banner stayed up, so it looked as though the app was still
+  trying.
+- Intake refused it as a duplicate of the loaded spool, with no way to continue.
+- Loading it into the CFS would have been "discovered" as a second record beside the shelf one.
+
+All three have one cause. Every factory spool of one filament and colour carries the **same**
+payload, serial `000001` included (see `SpoolIdentity`), so "this record is already in stock" says
+nothing about which spool is on the reader. `SpoolInventory.reconcile` has always accepted twins,
+and tells them apart by slot. The attach and Intake refusals were written as though payloads were
+unique.
+
+**Alternatives:**
+(a) *Record each tag's UID on its spool, and identify by UID.* Rejected for now. The CFS never
+reports a UID, so it would not help the poll, and no spool already in stock has one recorded. It
+remains the only way a desk reader could ever tell two factory twins apart.
+(b) *Bind automatically when exactly one untagged spool resembles the tag.* Rejected. Resemblance
+is a guess: colours are picked by eye or by camera. A wrong silent bind rewrites a record's colour,
+identity and remaining figure, and is invisible until the figures stop making sense.
+(c) *Keep refusing, and tell the user to retire the shelf record and re-intake.* Rejected: it
+throws away the history and the location the user entered.
+
+**Chosen:**
+1. The twin refusal in `InventoryViewModel.attachTag(record:)` applies only to a tag whose serial
+   is its own. A `000001` tag may identify several spools; a Spoolworks-written serial may not.
+2. **Resemblance** (`Spool.looksLike` / `couldBe`, `SpoolInventory.untaggedLookalikes`): the same
+   filament (by filament id where the spool has one, otherwise by brand and name) and a colour
+   within ΔE 25. Only untagged spools that are off the printer are offered. Resemblance is only
+   ever used to **ask**.
+3. **Inventory rail:** "Attach RFID spool" (was "Read its tag") opens Read / identify for that
+   spool. The first tag attaches; a `TagPairing` then asks for the other side of the hub and checks
+   it carries the same record. "One side is enough" stops waiting. A tag that is evidently another
+   filament or colour is questioned ("Attach anyway / Not this tag") rather than silently
+   rewriting the record.
+4. **Read / identify, unasked:** a read that resembles an untagged spool offers "Attach to this
+   spool / Not this time". The offer names the tagged twin, when there is one, and says why the tag
+   cannot settle it.
+5. **Intake:** the same offer. A duplicate that shares only a factory payload gets "Continue as a
+   new spool" beside "Open the spool in stock". The notice says when the matched spool is loaded in
+   the printer, since that makes it unlikely to be the one on the reader. A unique-serial duplicate
+   is still refused.
+6. **CFS:** `reconcile(holdingLookalikes:declined:)` holds a slot that resembles an untagged spool
+   instead of discovering it, and reports it as a `LookalikeSlot`. A banner above every screen asks
+   "Is it that spool?". Yes gives the spool the slot's identity and re-runs the poll on the same
+   snapshot, so the spool lands in its slot with the CFS's figure at once. No discovers it and
+   remembers the answer for that slot and payload. No scan is needed: the printer read the tag, and
+   both sides carry the same record.
+7. The Printer & CFS slot cells now look their spool up by slot position, not identity. Looking up
+   by identity showed the same record in both slots of a twin pair.
+
+**Why:** The app cannot know which of two identical spools is in hand, and the user always can.
+Asking costs one click. Guessing costs a corrupted record, and refusing (the old behaviour) cost the
+user their record.
+
+**Impact:**
+- While a CFS question is unanswered the slot has no spool, so job consumption from it is held by
+  `CFSViewModel.pendingGrams` and charged on the next poll after the answer.
+- Declined answers live in memory only. The discovered spool becomes the slot's incumbent, so the
+  question does not come back while it stays loaded.
+- Factory twins remain indistinguishable to a desk reader. The hero on Read / identify says "One of
+  N spools with this tag" rather than claiming a single match.

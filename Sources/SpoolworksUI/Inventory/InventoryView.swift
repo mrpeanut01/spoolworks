@@ -449,12 +449,14 @@ private struct InventoryDetailRail: View {
                 // A Creality spool arrives already tagged and sealed in mylar the reader cannot
                 // see through, so it is counted onto the shelf and its factory tag is *read* when
                 // the bag is opened. A third-party spool has no tag at all and needs one written.
-                Button("Read its tag") {
+                // Named for what the user is holding, not for the mechanism. "Read its tag" was
+                // taken for a way to *identify* the spool, which Read / identify already does.
+                Button("Attach RFID spool") {
                     model.attachTag(to: spool)
                     env.sidebarSelection = .identify
                 }
                 .buttonStyle(.sw(.secondary, block: true))
-                .help("Reads the tag already on this spool and attaches it to this record.")
+                .help("Read both of this spool's tags on the reader and attach them to this record.")
 
                 Button("Write a tag for it") {
                     model.attachTag(to: spool)

@@ -488,3 +488,96 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         grams % 1000 == 0 && grams >= 1000 ? "\(grams / 1000) kg" : "\(grams) g"
     }
 }
+
+// MARK: - Resemblance
+
+/// Whether a spool's description agrees with what a tag or a CFS slot says it is.
+///
+/// Needed because a **Creality factory tag identifies a filament and a colour, not a spool**. Every
+/// factory Hyper PLA White carries the same payload, serial `000001` included (see
+/// ``SpoolIdentity``), so the tag in someone's hand cannot say which of their white Hyper PLA spools
+/// it is on. When one of those spools went into stock untagged — counted onto a shelf still sealed
+/// in its bag — the only thing linking its tag to the record is that the two *describe the same
+/// thing*.
+///
+/// Resemblance is a reason to **ask**, never a reason to act. Every caller turns it into a question
+/// the user answers; nothing binds a tag to a spool on resemblance alone.
+extension Spool {
+
+    /// How far apart two colours may be, in CIE76 ΔE, and still be offered as the same spool.
+    ///
+    /// Generous on purpose. An untagged spool's colour was picked by eye or scanned with a camera,
+    /// and a camera reads white filament as `F2F0EB` as readily as `FFFFFF` — about ΔE 4 — while a
+    /// saturated red can land 15–20 away. Two genuinely different colours of one material sit much
+    /// further apart: white to black is ΔE 100, red to orange about 40. A false match costs one
+    /// "Not this time"; a missed one leaves the user with a tag the app will not attach.
+    public static let lookalikeColourTolerance: Double = 25
+
+    public enum MaterialAgreement: Sendable, Equatable {
+        case same
+        case different
+        /// Nothing to compare — no filament id on one side and no name on the other.
+        case unknown
+    }
+
+    /// Whether this spool is the same *filament* a tag or slot describes.
+    ///
+    /// The filament id is the better witness where both sides have one: it is what the tag actually
+    /// carries. Brand and name are the fallback for a spool with no identity at all, and they
+    /// compare cleanly because both sides take them from the catalogue row in the first place.
+    public func materialAgreement(brand otherBrand: String,
+                                  name otherName: String,
+                                  filamentId otherID: String) -> MaterialAgreement {
+        if let id = identity?.filamentId, !id.isEmpty, !otherID.isEmpty {
+            return id == otherID ? .same : .different
+        }
+        guard !name.isEmpty, !otherName.isEmpty else { return .unknown }
+        let sameName = name.caseInsensitiveCompare(otherName) == .orderedSame
+        // A blank brand on either side is not a disagreement: a spool typed in by hand may name the
+        // filament without its maker.
+        let sameBrand = brand.isEmpty || otherBrand.isEmpty
+            || brand.caseInsensitiveCompare(otherBrand) == .orderedSame
+        return sameName && sameBrand ? .same : .different
+    }
+
+    /// CIE76 ΔE between this spool's colour and `hex`, or nil when either cannot be parsed.
+    public func colourDistance(toHex hex: String) -> Double? {
+        guard let mine = try? RGB8(hex: colorHex),
+              let theirs = try? RGB8(hex: Spool.normaliseHex(hex)) else { return nil }
+        return LabColor(mine).deltaE(to: LabColor(theirs))
+    }
+
+    /// True when this spool is **positively** the filament described and close in colour — enough
+    /// to offer "is this the one?" without having been asked.
+    public func looksLike(brand: String, name: String, filamentId: String, colorHex: String) -> Bool {
+        guard materialAgreement(brand: brand, name: name, filamentId: filamentId) == .same else {
+            return false
+        }
+        return colourDistance(toHex: colorHex).map { $0 <= Self.lookalikeColourTolerance } ?? false
+    }
+
+    /// True unless this spool is **evidently not** the filament described.
+    ///
+    /// The weaker test, for when the user has already said which spool a tag is for. Having nothing
+    /// to compare is not a contradiction, so it passes; a different filament, or a colour well
+    /// outside the tolerance, does not.
+    public func couldBe(brand: String, name: String, filamentId: String, colorHex: String) -> Bool {
+        guard materialAgreement(brand: brand, name: name, filamentId: filamentId) != .different else {
+            return false
+        }
+        return colourDistance(toHex: colorHex).map { $0 <= Self.lookalikeColourTolerance } ?? true
+    }
+}
+
+extension SpoolRecord {
+    /// Whether two records could be the two sides of one spool: everything the inventory keys on,
+    /// plus the spool size.
+    ///
+    /// Date, batch and reserve are deliberately left out. They are not part of what the inventory
+    /// matches on, and a comparison that failed on them would refuse a tag that identifies the
+    /// spool perfectly well.
+    public func carriesSamePayload(as other: SpoolRecord) -> Bool {
+        SpoolIdentity(record: self) == SpoolIdentity(record: other)
+            && filamentLength == other.filamentLength
+    }
+}

@@ -125,6 +125,30 @@ final class IntakeViewModel: ObservableObject {
     /// silently creating a duplicate.
     @Published private(set) var duplicate: Spool?
 
+    /// Set when the user has said the spool on the reader is **not** ``duplicate``, only alike.
+    ///
+    /// Offered only for a factory tag (``duplicateIsAmbiguous``). Every Creality spool of one
+    /// filament and colour carries the same payload, so a record already holding it is no evidence
+    /// the spool in hand is that record — owning two of the same filament is the ordinary reason to
+    /// be at Intake at all. A tag with a serial of its own is different: it was written for one
+    /// spool, and "another spool with this tag" would be a copy, which stays refused.
+    @Published private(set) var addingAnotherLikeDuplicate = false
+
+    /// An untagged spool in stock that the tag looks like, offered before a second record is added.
+    ///
+    /// The case this exists for: a Creality spool counted onto a shelf while still sealed, whose
+    /// factory tag is read here once the bag is opened. Adding it would put a second record beside
+    /// the one the user already made. Attaching the tag to that record is almost always what was
+    /// meant — but only almost, so it is asked.
+    @Published private(set) var lookalike: Spool?
+
+    /// Whether the tag opened with the UID-derived key, for the provenance an attach records.
+    private var decodedIsProgrammed = false
+
+    /// True when ``duplicate`` shares only a factory payload with this tag. See
+    /// ``addingAnotherLikeDuplicate``.
+    var duplicateIsAmbiguous: Bool { duplicate?.identity?.hasGenericSerial == true }
+
     /// Raised when a tag arrives whose payload is not the one already being intaken — a second
     /// spool presented before the first was confirmed. Filling the empty slot with it would build
     /// a record from two different spools' tags.
@@ -349,7 +373,8 @@ final class IntakeViewModel: ObservableObject {
     }
 
     var stateLabel: String {
-        if let duplicate { return "Already in stock · \(duplicate.serialLabel)" }
+        if lookalike != nil { return "Matches an untagged spool" }
+        if let duplicate, !addingAnotherLikeDuplicate { return "Already in stock · \(duplicate.serialLabel)" }
         if isScan { return decoded == nil ? "Method A · waiting for tag" : "Tag read · \(sourceLabel)" }
         return "Method B · enter and tag"
     }
@@ -363,7 +388,7 @@ final class IntakeViewModel: ObservableObject {
     /// offers "Add to stock (tags pending)" — because a spool on a shelf is real whether or not it
     /// has been tagged yet.
     var canConfirm: Bool {
-        if duplicate != nil { return false }
+        if duplicate != nil && !addingAnotherLikeDuplicate { return false }
         if isScan { return decoded != nil }
         if writtenDrift != nil { return false }
         return !brand.isEmpty || !name.isEmpty
@@ -391,8 +416,13 @@ final class IntakeViewModel: ObservableObject {
     }
 
     var hint: String {
-        if let duplicate {
-            return "This tag already belongs to \(duplicate.label) in stock. Nothing to add."
+        if let lookalike {
+            return "This tag matches \(lookalike.label), in stock without a tag. Attach it, or add a new spool."
+        }
+        if let duplicate, !addingAnotherLikeDuplicate {
+            return duplicateIsAmbiguous
+                ? "This tag reads the same as \(duplicate.label) in stock. Continue as a new spool if it is not that one."
+                : "This tag already belongs to \(duplicate.label) in stock. Nothing to add."
         }
         if isScan {
             return decoded == nil
@@ -515,6 +545,7 @@ final class IntakeViewModel: ObservableObject {
         }
 
         absorbedUIDs.insert(result.uid)
+        decodedIsProgrammed = result.isProgrammed
         mismatch = nil
         failure = nil
         uidLabel = result.uid.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -536,6 +567,7 @@ final class IntakeViewModel: ObservableObject {
 
     /// Fills the form from a decoded tag, and flags a spool already in stock.
     private func adopt(_ record: SpoolRecord) {
+        let isFirstTag = decoded == nil
         decoded = record
         duplicate = inventory.existing(for: record)
         colorHex = record.rgbHex
@@ -553,6 +585,14 @@ final class IntakeViewModel: ObservableObject {
             name = row.name
             materialType = row.materialType
         }
+
+        // Once per spool, not per tag: the second side carries the same record, and looking again
+        // would bring back an offer the user has just answered. After the catalogue lookup, because
+        // a spool with no identity can only be compared by brand and name.
+        guard isFirstTag else { return }
+        lookalike = duplicate == nil || duplicateIsAmbiguous
+            ? inventory.untaggedLookalikes(for: record, brand: brand, name: name).first
+            : nil
     }
 
     /// Writes one of the spool's two blank tags (method B).
@@ -639,7 +679,7 @@ final class IntakeViewModel: ObservableObject {
     /// Not `==`: a record also carries a date, a batch and a reserve field, none of which the
     /// inventory keys on, and a comparison that failed on those would refuse a matching tag.
     private static func samePayload(_ a: SpoolRecord, _ b: SpoolRecord) -> Bool {
-        SpoolIdentity(record: a) == SpoolIdentity(record: b) && a.filamentLength == b.filamentLength
+        a.carriesSamePayload(as: b)
     }
 
     /// Puts the form back in step with what a tag now physically holds.
@@ -753,6 +793,41 @@ final class IntakeViewModel: ObservableObject {
         reset(keepingMethod: true)
     }
 
+    /// Attaches the tag on the reader to ``lookalike`` instead of adding a record for it.
+    ///
+    /// Every side already read here goes with it, so a spool whose two tags were both read at
+    /// Intake is finished; one read leaves Inventory waiting for the other side, which Read /
+    /// identify asks for. Returns false when nothing was attached.
+    @discardableResult
+    func attachToLookalike() -> Bool {
+        guard isScan, let spool = lookalike, let record = decoded else { return false }
+        inventory.attachTag(to: spool)
+        guard inventory.attachTag(record: record,
+                                  materialType: materialType,
+                                  source: decodedIsProgrammed ? .spoolworksWritten : .crealityFactory,
+                                  readUIDs: Array(absorbedUIDs)) else {
+            inventory.cancelTagRequest()
+            return false
+        }
+        // Deliberately not `beginIdentification`, as Discard does: the tag still on the reader
+        // would be read straight back in, and would now match the spool it was just attached to.
+        reset()
+        return true
+    }
+
+    /// The spool on the reader is not ``lookalike``: carry on adding it as a spool of its own.
+    func dismissLookalike() {
+        lookalike = nil
+        if duplicateIsAmbiguous { addingAnotherLikeDuplicate = true }
+    }
+
+    /// The spool on the reader is not ``duplicate``, only alike: add it as another.
+    func addAnotherLikeDuplicate() {
+        guard duplicateIsAmbiguous else { return }
+        addingAnotherLikeDuplicate = true
+        lookalike = nil
+    }
+
     func openDuplicate() {
         guard let duplicate else { return }
         // Revealed, not merely selected: with a filter on that hides it, a bare selection fell
@@ -843,6 +918,9 @@ final class IntakeViewModel: ObservableObject {
         tagsRequired = 2
         decoded = nil
         duplicate = nil
+        addingAnotherLikeDuplicate = false
+        lookalike = nil
+        decodedIsProgrammed = false
         failure = nil
         mismatch = nil
         absorbedUIDs.removeAll()

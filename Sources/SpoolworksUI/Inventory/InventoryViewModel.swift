@@ -136,20 +136,63 @@ final class InventoryViewModel: ObservableObject {
     /// has no tag yet.
     func attachTag(to spool: Spool) {
         awaitingTagFor = spool.id
+        pairing = nil
     }
 
     func cancelTagRequest() {
         awaitingTagFor = nil
+        pairing = nil
+    }
+
+    /// A spool whose tag has just been read and attached, and how many of its two sides have been
+    /// seen.
+    ///
+    /// A spool carries a tag on each side of the hub, both holding the same record, so the printer
+    /// can read one whichever way round it is loaded. Reading the second is not needed to identify
+    /// the spool — but it is the only check that both sides really carry the record, and a spool
+    /// with one unreadable side reads half the time in a CFS. So attaching by reading asks for the
+    /// other side, and says so, rather than finishing silently after one.
+    struct TagPairing: Equatable {
+        let spoolID: Spool.ID
+        /// The record the first side carried. The second has to carry the same.
+        let record: SpoolRecord
+        /// UIDs seen so far. Keyed on UID because the two sides share a payload: the same tag
+        /// presented twice must not count as both.
+        fileprivate(set) var uids: [[UInt8]]
+
+        var isComplete: Bool { uids.count >= 2 }
+        func contains(_ uid: [UInt8]) -> Bool { uids.contains(uid) }
+    }
+
+    /// The pairing in progress, or the one just finished — kept until the next spool so the screen
+    /// can go on saying which spool the tag on the reader was attached to.
+    @Published private(set) var pairing: TagPairing?
+
+    /// What happened to a read offered to the pairing in progress.
+    enum PairedRead: Equatable {
+        /// No pairing is waiting for a second side.
+        case notPairing
+        /// The side already counted, presented again.
+        case sameTag
+        /// The other side, carrying the same record. The pairing is complete.
+        case completed
+        /// A tag that cannot be the other side. Carries the sentence that says why.
+        case mismatch(String)
     }
 
     /// Attaches a tag's record to the spool that was waiting for one.
+    ///
+    /// `readUIDs` are the physical tags this record was *read* from — empty for a write, which has
+    /// its own second-side prompt on the Write screen. One UID leaves a ``pairing`` waiting for
+    /// the other side; two complete it at once, for a caller that has already read both.
     ///
     /// Returns false when there was no request, when the spool has since gone, or when the tag
     /// already belongs to a *different* spool — so a caller can fall back to its own handling.
     @discardableResult
     func attachTag(record: SpoolRecord,
                    materialType: String,
-                   source: TagSource = .spoolworksWritten) -> Bool {
+                   source: TagSource = .spoolworksWritten,
+                   readUIDs: [[UInt8]] = []) -> Bool {
         guard let id = awaitingTagFor, var spool = inventory.spool(id: id) else { return false }
         // A retired spool is a closed record, and a tag cannot reopen it. `confirmRetire` drops
         // the request itself; this catches a spool retired by any other route, such as a reload.
@@ -158,12 +201,18 @@ final class InventoryViewModel: ObservableObject {
             return false
         }
 
-        // A tag that already identifies another spool must not be made to identify this one too.
-        // Two records with one identity is the state reconciliation cannot resolve — the CFS poll
-        // would bind slots to whichever it found first and their histories would swap. Refused
-        // loudly rather than quietly, because the user has a real spool in their hand and needs to
-        // know why nothing happened.
-        if let owner = inventory.spool(matching: record), owner.id != spool.id {
+        // A tag whose serial is its own must not be made to identify a second spool: that tag was
+        // written for one spool, and a twin would be a copy of a record, not a second sighting.
+        // Refused loudly rather than quietly, because the user has a real spool in their hand and
+        // needs to know why nothing happened.
+        //
+        // A factory tag is the opposite case, and refusing it was the bug. Every Creality spool of
+        // one filament and colour carries the same payload, serial `000001` included, so a spool
+        // already in stock under that identity says nothing about whether *this* tag is its. Two
+        // spools sharing it is the ordinary state of a shelf with two of the same filament on it,
+        // and `SpoolInventory.reconcile` already tells such twins apart by the slot each is in.
+        if let owner = inventory.spool(matching: record), owner.id != spool.id,
+           !SpoolIdentity(record: record).hasGenericSerial {
             toasts.error("That tag already belongs to \(owner.label). Nothing was changed.")
             return false
         }
@@ -179,15 +228,73 @@ final class InventoryViewModel: ObservableObject {
         // read will report. Leaving the two to disagree would make the spool fail to match itself.
         spool.colorHex = record.rgbHex
         spool.colorName = colorName(forHex: record.rgbHex)
-        spool.note(kind: .movement,
-                   detail: source == .crealityFactory ? "Tag read and attached"
-                                                      : "Tag written and verified")
+
+        var uids: [[UInt8]] = []
+        for uid in readUIDs where !uids.contains(uid) { uids.append(uid) }
+        pairing = uids.isEmpty ? nil : TagPairing(spoolID: spool.id, record: record, uids: uids)
+
+        // Read or written is decided by either signal. A factory tag cannot have been written here
+        // whatever the caller passed, and a tag read back by UID was read.
+        let detail: String
+        let message: String
+        switch (uids.count, source == .crealityFactory) {
+        case (0, false):
+            detail = "Tag written and verified"
+            message = "Tag written for \(spool.label)"
+        case (0, true):
+            detail = "Tag read and attached"
+            message = "Tag attached to \(spool.label)"
+        case (1, _):
+            detail = "Tag read and attached"
+            message = "Tag attached to \(spool.label) — present its other side to confirm the pair"
+        default:
+            detail = "Both tags read and attached"
+            message = "Both tags attached to \(spool.label)"
+        }
+        spool.note(kind: .movement, detail: detail)
         inventory.update(spool)
         persist()
-        toasts.success(source == .crealityFactory
-                       ? "Tag attached to \(spool.label)"
-                       : "Tag written for \(spool.label)")
+        toasts.success(message)
         return true
+    }
+
+    /// Offers a read to the pairing waiting for a spool's second side.
+    @discardableResult
+    func absorbPairedRead(uid: [UInt8], record: SpoolRecord?) -> PairedRead {
+        guard var current = pairing, !current.isComplete else { return .notPairing }
+        if current.contains(uid) { return .sameTag }
+        guard var spool = inventory.spool(id: current.spoolID), !spool.isRetired else {
+            pairing = nil
+            return .notPairing
+        }
+        guard let record, record.carriesSamePayload(as: current.record) else {
+            let read = record.map { "\($0.filamentId) · #\($0.rgbHex)" } ?? "no spool record"
+            return .mismatch("That tag reads as \(read), not the record on \(spool.label)'s first "
+                             + "tag, so it is not that spool's other side. Present the tag on the "
+                             + "other side of the hub, or finish with one side.")
+        }
+        current.uids.append(uid)
+        pairing = current
+        spool.note(kind: .movement, detail: "Second tag read — both sides match")
+        inventory.update(spool)
+        persist()
+        toasts.success("Both tags attached to \(spool.label)")
+        return .completed
+    }
+
+    /// Stops waiting for a second side, or forgets a finished pairing once the next spool arrives.
+    func endPairing() {
+        pairing = nil
+    }
+
+    /// Untagged spools in stock that a freshly read tag looks like, closest colour first.
+    ///
+    /// `brand` and `name` come from the catalogue, which this model does not hold: the tag carries
+    /// only a filament id. Blank when the catalogue does not know the id, in which case a spool with
+    /// no identity has nothing to be compared on and is not offered.
+    func untaggedLookalikes(for record: SpoolRecord, brand: String, name: String) -> [Spool] {
+        inventory.untaggedLookalikes(brand: brand, name: name,
+                                     filamentId: record.filamentId, colorHex: record.rgbHex)
     }
 
     /// Records that the one-shot in ``retireSeededPlaces()`` has run.
@@ -359,6 +466,7 @@ final class InventoryViewModel: ObservableObject {
         // A tag request does not outlive its spool. Left standing, the next tag read or written —
         // for some other spool entirely — would attach to a record that has just been closed.
         if awaitingTagFor == spool.id { awaitingTagFor = nil }
+        if pairing?.spoolID == spool.id { pairing = nil }
         persist()
         toasts.info("Retired — \(spool.label) · serial \(spool.serialLabel)")
     }
@@ -644,13 +752,38 @@ final class InventoryViewModel: ObservableObject {
 
     // MARK: CFS reconciliation
 
+    /// Loaded slots that look like an untagged spool in stock, waiting for the user to say whether
+    /// they are that spool. See ``SpoolworksCore/SpoolInventory/LookalikeSlot``.
+    @Published private(set) var pendingLookalikes: [SpoolInventory.LookalikeSlot] = []
+
+    /// Slots the user has said are *not* the untagged spool they look like. Held in memory only:
+    /// the answer discovers the slot as a spool of its own, and from then on that spool is the
+    /// slot's incumbent, so the question does not arise again.
+    private var declinedLookalikes: Set<SpoolInventory.SlotClaim> = []
+
+    /// The snapshot the last poll reconciled, so an answer about a held slot takes effect now
+    /// rather than on the next poll, 30 s later.
+    private var lastBoxInfo: MaterialBoxInfo?
+
     /// Folds a printer poll into the inventory and reports what moved.
     @discardableResult
     func reconcile(with info: MaterialBoxInfo) -> SpoolInventory.ReconcileReport {
+        lastBoxInfo = info
+        // A declined claim lapses once its slot no longer holds that payload.
+        let loaded = Set(info.loadedSlots.compactMap { box, slot in
+            slot.identity.map { SpoolInventory.SlotClaim(location: .cfs(box: box.boxID,
+                                                                          slot: slot.materialId),
+                                                          identity: $0) }
+        })
+        declinedLookalikes.formIntersection(loaded)
+
         // Where a spool goes when the printer stops reporting it — the user's choice, resolved
         // here because `SpoolInventory` deliberately knows nothing about the place list.
         let report = inventory.reconcile(with: info,
-                                         unloadTo: places.location(for: places.unloadDestination))
+                                         unloadTo: places.location(for: places.unloadDestination),
+                                         holdingLookalikes: true,
+                                         declined: declinedLookalikes)
+        if pendingLookalikes != report.lookalikes { pendingLookalikes = report.lookalikes }
         if !report.isEmpty {
             persist()
             if !report.discovered.isEmpty {
@@ -659,6 +792,46 @@ final class InventoryViewModel: ObservableObject {
             }
         }
         return report
+    }
+
+    /// The user says a held slot *is* this untagged spool: it takes the slot's identity and, by
+    /// re-running the poll, its place in the slot and the CFS's measured remaining figure.
+    ///
+    /// Nothing is scanned. The printer has already read the tag, and a factory tag's record is the
+    /// same on both sides of the hub, so there is nothing a desk reader could add.
+    func confirmLookalike(_ held: SpoolInventory.LookalikeSlot, as spoolID: Spool.ID) {
+        guard var spool = inventory.spool(id: spoolID), !spool.isRetired, spool.isUntagged,
+              !spool.location.isOnPrinter else {
+            toasts.error("That spool can no longer take this slot's tag. Nothing was changed.")
+            if let info = lastBoxInfo { reconcile(with: info) }
+            return
+        }
+        spool.identity = held.identity
+        spool.plannedSerial = nil
+        // A slot configured by hand on the touchscreen carries a payload but read no tag, and
+        // calling that spool "Creality" would claim a tag nobody has seen.
+        spool.tagSource = held.slot.hasTag ? .crealityFactory : .untagged
+        if spool.materialType.isEmpty { spool.materialType = held.slot.materialType }
+        spool.colorHex = held.identity.colorHex
+        spool.colorName = colorName(forHex: held.identity.colorHex)
+        spool.note(kind: .movement,
+                   detail: held.slot.hasTag ? "Tag read by the printer in \(held.label) and attached"
+                                            : "Matched to the payload set for \(held.label)")
+        inventory.update(spool)
+        persist()
+        pendingLookalikes.removeAll { $0.id == held.id }
+        // The poll that asked is re-run against the same snapshot rather than waited for, so the
+        // spool lands in its slot now: pass 2 binds it by the identity it has just been given.
+        if let info = lastBoxInfo { reconcile(with: info) }
+        toasts.success("\(spool.label) is the spool in \(held.location.description)")
+    }
+
+    /// The user says a held slot is a spool of its own. It is discovered the way any unknown slot
+    /// is, and not asked about again while it stays loaded.
+    func declineLookalike(_ held: SpoolInventory.LookalikeSlot) {
+        declinedLookalikes.insert(held.claim)
+        pendingLookalikes.removeAll { $0.id == held.id }
+        if let info = lastBoxInfo { reconcile(with: info) }
     }
 
     // MARK: Building a spool

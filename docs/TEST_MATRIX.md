@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
-Status at last update: **737 automated tests passing**, 0 failing.
+Status at last update: **801 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -107,6 +107,11 @@ Status at last update: **737 automated tests passing**, 0 failing.
 | Filament push (D-013) | `addFilament`: a listed id is left alone; a missing one is replaced under the original's md5 with a backup, then read back; a file changed mid-way is not overwritten; a bad read-back is reported | unit | pass |
 | Filament push (D-013) | websocket `retMaterials` reply parsed in order; status frames ignored; the request is a read-only `get`; the address is validated | unit | pass |
 | Filament push (D-013) | the offer: a missing vendor id is offered; a listed or factory id stays silent; no printer means no check; the second tag is not re-checked; Add pushes to that printer; a missing password is explained; a failed push retries; Not now stays quiet per filament; an unreachable printer is reported and can be checked again | UI state | pass |
+| Untagged spools (D-014) | an untagged, off-printer spool resembles a tag by filament (id outranks name) and colour within ΔE 25, closest first; tagged, loaded, retired, other-colour, other-filament and unnamed spools are not offered; `couldBe` questions only an evident mismatch | unit | pass |
+| Untagged spools (D-014) | reconcile holds a slot like an untagged spool instead of discovering it; a declined claim, or no holding, discovers as before; with a twin already loaded only the new slot is asked about, and once answered the spool is bound with the CFS figure and the twins do not swap | unit | pass |
+| Untagged spools (D-014) | a factory tag attaches despite a loaded twin with the same record; a unique-serial tag owned elsewhere is still refused; the first side waits for a second with the same record (same UID ignored, other record refused); two reads complete at once; a write does not pair; cancel and retire end a pairing | UI state | pass |
+| Untagged spools (D-014) | the CFS asks instead of adding a second spool; Yes binds the shelf spool into its slot now with the printer's reading and is not asked again; No discovers a spool of its own once | UI state | pass |
+| Untagged spools (D-014) | Intake: a factory duplicate can continue as a new spool and shares the record; a unique-serial duplicate cannot; a tag like an untagged spool is offered to it (twin or not), attaches, and waits for the other side; declining allows the twin and the second side does not re-offer | UI state | pass |
 
 ## Hardware-in-the-loop (executed on the user's ACS ACR1552)
 

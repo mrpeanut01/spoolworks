@@ -84,8 +84,14 @@ struct RootView: View {
             HStack(spacing: 0) {
                 Sidebar(env: env, inventory: env.inventoryModel)
                 Rectangle().fill(Theme.rule).frame(width: Theme.ruleWidth)
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                VStack(spacing: 0) {
+                    // Above every screen, not on Printer & CFS alone: a spool is loaded at the
+                    // printer, and whoever loaded it is rarely looking at that screen when the
+                    // poll notices.
+                    LookalikeSlotBanners(inventory: env.inventoryModel)
+                    detail
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
         }
         .background(Theme.background)

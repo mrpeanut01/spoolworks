@@ -127,7 +127,7 @@ struct PrinterCFSView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 4),
                       spacing: 0) {
                 ForEach(box.list) { slot in
-                    SlotCell(slot: slot, box: box, spool: matchedSpool(slot))
+                    SlotCell(slot: slot, box: box, spool: matchedSpool(slot, in: box))
                 }
             }
             .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
@@ -153,9 +153,14 @@ struct PrinterCFSView: View {
 
     /// The inventory row a slot resolves to, so the cell can show the spool's own history rather
     /// than only the firmware's snapshot.
-    private func matchedSpool(_ slot: CFSSlot) -> Spool? {
-        guard let identity = slot.identity else { return nil }
-        return inventory.inventory.spool(identity: identity)
+    ///
+    /// By **position**, not identity. Reconciliation has already bound each slot to one spool and
+    /// recorded it as that spool's location; looking up by identity instead returned the first
+    /// spool with the payload, so two factory spools of one filament and colour both showed the
+    /// same record — and a slot still waiting on "is this your untagged spool?" showed its twin.
+    private func matchedSpool(_ slot: CFSSlot, in box: CFSBox) -> Spool? {
+        let location = SpoolLocation.cfs(box: box.boxID, slot: slot.materialId)
+        return inventory.inventory.active.first { $0.location == location }
     }
 
     // MARK: Side panels

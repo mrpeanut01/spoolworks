@@ -89,6 +89,7 @@ let exitCode = TestDriver.run([
     sameMaterialGroupingTests,
     cfsIdentityAmbiguityTests,
     liveCFSFixtureTests,
+    untaggedLookalikeTests,
 
     // UI state machine (code-review fixes)
     spoolDraftTests,
@@ -113,6 +114,9 @@ let exitCode = TestDriver.run([
     intakeReaderContentionTests,
     intakeSlotStateTests,
     inventoryEditingTests,
+    tagAttachTests,
+    cfsLookalikeTests,
+    intakeTwinTests,
     inventoryFilterOptionTests,
     unloadDestinationTests,
     retiredSeedTests,
