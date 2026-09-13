@@ -263,6 +263,7 @@ for required in "Contents/MacOS/${APP_NAME}" "Contents/Info.plist" "Contents/Pkg
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/k2.json" \
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/hi.json" \
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/vendor-k2.json" \
+                "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/refresh-k2.json" \
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/filament-swatches.json"; do
     if [[ ! -e "${APP_BUNDLE}/${required}" ]]; then
         echo "make-app.sh: missing ${required}" >&2

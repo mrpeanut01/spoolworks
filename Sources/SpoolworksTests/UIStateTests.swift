@@ -988,4 +988,21 @@ let writeFormPlaceholderTests = TestSuite(name: "Write form placeholder rows", c
             t.expect(h.model.manualMaterialEntry, "unknown id keeps the manual path")
         }
     },
+
+    // Creality's list by default - the brand, and only the brand. The alphabetical first brand is
+    // now Anycubic, which is not what a Creality tag writer should open on; but a material chosen
+    // for you is a material a hasty or automatic write puts on the tag, so that stays unset.
+    test("the Write tab opens on Creality, with no material chosen") { t in
+        runOnMain {
+            let h = makeHarness()
+            await h.model.prepareCatalog()
+            guard h.model.catalog.isReady else {
+                t.record("no K2 catalogue to open on", file: #file, line: #line); return
+            }
+            t.equal(h.model.selectedVendor, "Creality", "Creality's list, by default")
+            t.equal(h.model.draft.materialID, "",
+                    "but no material - a default one could be written to a tag unseen")
+            t.expect(!h.model.manualMaterialEntry, "on the picker, not manual entry")
+        }
+    },
 ])

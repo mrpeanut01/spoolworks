@@ -29,7 +29,12 @@ struct FilamentDraft {
     var dryingTime = ""
     var density = ""
     var diameter = ""
-    var color: Color = .blue
+    // No colour. Every shipped record's `base.colors` is the `#ffffff`/`#000000` placeholder, which
+    // the Windows app never reads and a tag never takes (the spool's colour is chosen at write
+    // time). The picker offered a choice that changed nothing a user could see. The field still
+    // round-trips untouched — the printer's format carries it — `filament(printerType:)` just
+    // leaves it alone: an edit keeps the record's own value, and a new record gets
+    // `MaterialBase`'s `#ffffff`, the value most of Creality's own records carry.
     var isSoluble = false
     var isSupport = false
     var params: [KVParam] = []
@@ -71,7 +76,6 @@ struct FilamentDraft {
         draft.softeningTemp = "0"
         draft.dryingTemp = "0"
         draft.dryingTime = "0"
-        draft.color = Color(RGB8(r: 0, g: 0, b: 255))
         // `Invalid paramList` (`FilamentForm.cs:236`) rejects an empty slicer profile. When there is
         // no template to clone, seed the two keys the app itself owns so a from-scratch filament is
         // not born un-saveable.
@@ -97,7 +101,6 @@ struct FilamentDraft {
         dryingTime = String(filament.base.dryingTime)
         density = Self.trimTrailingZeros(filament.base.density)
         diameter = filament.base.diameter
-        color = FilamentColor.color(fromHex: filament.base.colors.first ?? "") ?? .blue
         isSoluble = filament.base.isSoluble
         isSupport = filament.base.isSupport
         params = filament.kvParam
@@ -232,7 +235,6 @@ struct FilamentDraft {
         base.brand = brand.trimmingCharacters(in: .whitespacesAndNewlines)
         base.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         base.materialType = materialType.trimmingCharacters(in: .whitespacesAndNewlines)
-        base.colors = [FilamentColor.hex(from: color)]
         base.minTemp = Int(minTemp.trimmingCharacters(in: .whitespacesAndNewlines)) ?? base.minTemp
         base.maxTemp = Int(maxTemp.trimmingCharacters(in: .whitespacesAndNewlines)) ?? base.maxTemp
         base.softeningTemp = Int(softeningTemp.trimmingCharacters(in: .whitespacesAndNewlines)) ?? base.softeningTemp
@@ -288,7 +290,6 @@ struct FilamentEditorView: View {
     @State private var saveError: String?
     @State private var paramSearch = ""
     @State private var paramsExpanded = false
-    @State private var colorName: String?
     @FocusState private var focused: FilamentDraft.Field?
 
     private var isEditingExisting: Bool {
@@ -332,7 +333,6 @@ struct FilamentEditorView: View {
                                        printerType: model.printerType,
                                        existingIDs: model.existingIDs)
             paramsExpanded = draft.params.count <= 4
-            refreshColorName()
         }
     }
 
@@ -416,23 +416,6 @@ struct FilamentEditorView: View {
                         errorLabel(.materialType)
                     }
                 }
-            }
-
-            Section("Colour") {
-                // Replaces the blank 259 × 40 button whose only affordance was its fill colour
-                // (`MainForm.cs:698-712`); `ColorPicker` brings the native colour panel for free.
-                ColorPicker("Filament colour", selection: $draft.color, supportsOpacity: false)
-                    .onChange(of: draft.color) { _, _ in refreshColorName() }
-                LabeledContent("Hex") {
-                    Text(FilamentColor.hex(from: draft.color))
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-                LabeledContent("Nearest name") {
-                    Text(colorName ?? "—")
-                        .foregroundStyle(colorName == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                }
-                .help("Closest entry in the bundled colour table, used when naming a spool")
             }
 
             Section("Temperatures") {
@@ -634,13 +617,6 @@ struct FilamentEditorView: View {
             } else {
                 dismiss()
             }
-        }
-    }
-
-    private func refreshColorName() {
-        let hex = FilamentColor.hex(from: draft.color)
-        Task {
-            colorName = await ColorNameResolver.shared.name(forHex: hex)
         }
     }
 

@@ -5,35 +5,6 @@ import SpoolworksCore
 
 // MARK: - Colour bridging
 
-/// SwiftUI `Color` ⇄ `SpoolworksCore.RGB8` ⇄ the `"#rrggbb"` strings stored in `base.colors`.
-///
-/// Every conversion pins to **device sRGB** before reading components, as `RGB8`'s own
-/// documentation requires: the tag payload and the colour table are raw 8-bit sRGB code values with
-/// no colour management, so a display-P3 component read would silently shift every channel.
-enum FilamentColor {
-    /// `"#rrggbb"`, lower-case — the wire form used by `MaterialBase.colors`.
-    static let fallbackHex = "#0000ff"
-
-    static func rgb(fromHex hex: String) -> RGB8? {
-        try? RGB8(hex: hex)
-    }
-
-    static func color(fromHex hex: String) -> Color? {
-        guard let rgb = rgb(fromHex: hex) else { return nil }
-        return Color(rgb)
-    }
-
-    static func hex(from color: Color) -> String {
-        guard let srgb = NSColor(color).usingColorSpace(.sRGB) else { return fallbackHex }
-        func channel(_ value: CGFloat) -> UInt8 {
-            UInt8(clamping: Int((value * 255).rounded()))
-        }
-        return RGB8(r: channel(srgb.redComponent),
-                    g: channel(srgb.greenComponent),
-                    b: channel(srgb.blueComponent)).cssHexString
-    }
-}
-
 extension Color {
     init(_ rgb: RGB8) {
         self.init(.sRGB,
@@ -44,45 +15,15 @@ extension Color {
     }
 }
 
-/// Nearest-named-colour lookup, off the main actor and memoised.
-///
-/// `ColorMatcher` scans 31,861 entries per lookup. That is 0.037 ms in release but ~14 ms in a
-/// debug build, so resolving a 66-row table inline during `body` would cost most of a second on
-/// every redraw. The table is therefore rendered from a cache that this actor fills in the
-/// background; rows show their hex until the name arrives.
-actor ColorNameResolver {
-    /// One process-wide instance: the parsed table is ~700 KB and the cache is only useful shared.
-    static let shared = ColorNameResolver()
-
-    private var matcher: ColorMatcher?
-    private var cache: [String: String] = [:]
-
-    func name(forHex hex: String) -> String? {
-        if let hit = cache[hex] { return hit.isEmpty ? nil : hit }
-        if matcher == nil { matcher = try? ColorMatcher.shared() }
-        guard let matcher else { return nil }
-        let resolved = (try? matcher.nearestName(forHex: hex)) ?? nil
-        cache[hex] = resolved ?? ""
-        return resolved
-    }
-
-    func names(forHexes hexes: [String]) -> [String: String] {
-        var out: [String: String] = [:]
-        for hex in Set(hexes) {
-            if let name = name(forHex: hex) { out[hex] = name }
-        }
-        return out
-    }
-}
-
 // MARK: - Row model
 
 /// One row of the filament `Table`. A value type so `KeyPathComparator` sorting is trivial and the
 /// table diffs cleanly.
 struct FilamentRow: Identifiable, Hashable {
     var filament: Filament
-    /// Nearest entry in `colors.bin`, filled asynchronously. Empty until resolved.
-    var colorName: String = ""
+    // No colour. Every shipped record's `base.colors` is the `#ffffff`/`#000000` placeholder, so a
+    // colour column only ever showed black or white as though it meant something — and resolving a
+    // name for it was a 31,861-row scan per row. The field still round-trips; it is not presented.
 
     /// The table's identity for this row: `base.id`, for every record whose id is unique in the
     /// file — all of them, in a well-formed catalogue. `Table` traps on duplicate identifiers, and
@@ -92,25 +33,19 @@ struct FilamentRow: Identifiable, Hashable {
     /// ``materialID`` instead, which does not change which record an edit lands on.
     let id: String
 
-    init(filament: Filament, colorName: String = "", id: String? = nil) {
+    init(filament: Filament, id: String? = nil) {
         self.filament = filament
-        self.colorName = colorName
         self.id = id ?? filament.base.id
     }
 
-    /// Rows for a catalogue in file order, with duplicate ids made unique and colour names carried
-    /// over from `previous` so the table does not flicker back to hex on every save.
-    static func rows(from filaments: [Filament],
-                     carryingColorNamesFrom previous: [FilamentRow] = []) -> [FilamentRow] {
-        let names = Dictionary(previous.map { ($0.colorHex, $0.colorName) },
-                               uniquingKeysWith: { first, second in first.isEmpty ? second : first })
+    /// Rows for a catalogue in file order, with duplicate ids made unique.
+    static func rows(from filaments: [Filament]) -> [FilamentRow] {
         var seen: [String: Int] = [:]
         return filaments.map { filament in
             let base = filament.base.id
             let ordinal = (seen[base] ?? 0) + 1
             seen[base] = ordinal
             return FilamentRow(filament: filament,
-                               colorName: names[filament.base.colors.first ?? ""] ?? "",
                                id: ordinal == 1 ? base : "\(base)#\(ordinal)")
         }
     }
@@ -122,8 +57,6 @@ struct FilamentRow: Identifiable, Hashable {
     var materialType: String { filament.base.materialType }
     var minTemp: Int { filament.base.minTemp }
     var maxTemp: Int { filament.base.maxTemp }
-    var colorHex: String { filament.base.colors.first ?? "" }
-    var swatch: Color? { FilamentColor.color(fromHex: colorHex) }
 
     /// Rendered as text as well as an icon — see the accessibility rule against colour-only
     /// encoding. Empty when the filament is neither soluble nor support.
@@ -136,7 +69,7 @@ struct FilamentRow: Identifiable, Hashable {
 
     /// Free-text haystack for the search field.
     var searchHaystack: String {
-        [materialID, brand, name, materialType, colorHex, colorName, traits]
+        [materialID, brand, name, materialType, traits]
             .joined(separator: " ")
             .lowercased()
     }
@@ -232,7 +165,6 @@ final class MaterialsViewModel: ObservableObject {
 
     let storage: MaterialStorage
     private var database: MaterialDatabase?
-    private let resolver = ColorNameResolver.shared
     private var pendingSave: Task<Void, Never>?
     /// The in-flight catalogue load, so switching families cancels the one it supersedes.
     private var loadTask: Task<Void, Never>?
@@ -324,6 +256,10 @@ final class MaterialsViewModel: ObservableObject {
             guard printerType == generation else { return }   // the user moved on while we loaded
 
             db.adopt(file)
+            // Records nobody changed are brought up to the catalogue this version ships; anything
+            // that differs from every shipped version is left alone. Idempotent, so it costs nothing
+            // once the Write tab's load at launch has already done it.
+            let refreshed = (try? db.refreshUntouchedRecords()) ?? MaterialRefreshOutcome()
             database = db
             version = db.version
             rows = FilamentRow.rows(from: db.filaments)
@@ -331,7 +267,7 @@ final class MaterialsViewModel: ObservableObject {
             seedAdditions = db.pendingSeedAdditions().count
             vendorAdditions = db.pendingVendorAdditions().count
             loadState = .loaded
-            await resolveColorNames(for: generation)
+            if let summary = refreshed.summary { toast = ToastMessage(summary, style: .success) }
         } catch {
             guard printerType == generation else { return }
             database = nil
@@ -349,7 +285,7 @@ final class MaterialsViewModel: ObservableObject {
         guard let database else { return }
         do {
             let added = try database.topUpFromSeed()
-            rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+            rows = FilamentRow.rows(from: database.filaments)
             version = database.version
             seedAdditions = database.pendingSeedAdditions().count
             saveFailure = nil
@@ -357,7 +293,6 @@ final class MaterialsViewModel: ObservableObject {
                                  ? "The catalogue already had every bundled filament"
                                  : "\(added.count) filament\(added.count == 1 ? "" : "s") added",
                                  style: .success)
-            await resolveColorNames()
         } catch {
             saveFailure = Self.message(for: error)
         }
@@ -369,7 +304,7 @@ final class MaterialsViewModel: ObservableObject {
         guard let database else { return }
         do {
             let added = try database.addVendorCatalogue()
-            rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+            rows = FilamentRow.rows(from: database.filaments)
             vendorAdditions = database.pendingVendorAdditions().count
             saveFailure = nil
             toast = ToastMessage(added.isEmpty
@@ -377,7 +312,6 @@ final class MaterialsViewModel: ObservableObject {
                                  : "\(added.count) third-party filament\(added.count == 1 ? "" : "s") added"
                                    + " — upload the catalogue to the printer before writing tags",
                                  style: .success)
-            await resolveColorNames()
         } catch {
             saveFailure = Self.message(for: error)
         }
@@ -410,22 +344,6 @@ final class MaterialsViewModel: ObservableObject {
         }
         loadTask?.cancel()
         loadTask = Task { [weak self] in await self?.load() }
-    }
-
-    /// - Parameter generation: the family these names belong to, when the caller has one. A name
-    ///   resolution that finishes after the user has switched families must not repaint the new
-    ///   family's rows with the old one's colour names.
-    private func resolveColorNames(for generation: PrinterType? = nil) async {
-        let hexes = rows.map(\.colorHex).filter { !$0.isEmpty }
-        guard !hexes.isEmpty else { return }
-        let names = await resolver.names(forHexes: hexes)
-        if let generation, printerType != generation { return }
-        guard !names.isEmpty else { return }
-        rows = rows.map { row in
-            var copy = row
-            copy.colorName = names[row.colorHex] ?? ""
-            return copy
-        }
     }
 
     // MARK: Mutations
@@ -490,7 +408,7 @@ final class MaterialsViewModel: ObservableObject {
     }
 
     private func persist(after database: MaterialDatabase, note: String?) async {
-        rows = FilamentRow.rows(from: database.filaments, carryingColorNamesFrom: rows)
+        rows = FilamentRow.rows(from: database.filaments)
         version = database.version
 
         let snapshot = database.snapshot()
@@ -506,7 +424,6 @@ final class MaterialsViewModel: ObservableObject {
             // Whatever was on disk, this write is now what is on disk.
             diskChangedWhileUnsaved = false
             if let note { toast = ToastMessage(note) }
-            await resolveColorNames()
         } catch {
             // The in-memory catalogue keeps the change; the banner tells the user it is not on disk
             // yet and offers Retry. Windows swallowed this entirely (`MatDb.cs:161-190`).

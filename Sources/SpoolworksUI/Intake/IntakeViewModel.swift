@@ -439,6 +439,16 @@ final class IntakeViewModel: ObservableObject {
         Array(Set(materials.rows.map(\.brand))).filter { !$0.isEmpty }.sorted()
     }
 
+    /// The brand Method B starts on: Creality when the catalogue has it, else the first brand.
+    ///
+    /// It was simply the first brand alphabetically, which happened to be Creality while the
+    /// catalogue held Creality, Generic, Polymaker and eSUN. The vendor catalogue put Anycubic and
+    /// Bambu Lab ahead of it, so Method B quietly began opening on an Anycubic filament — for an app
+    /// whose tags are Creality tags, read by a Creality printer.
+    nonisolated static func defaultCatalogueBrand(in brands: [String]) -> String {
+        brands.contains("Creality") ? "Creality" : (brands.first ?? "")
+    }
+
     /// The filaments the catalogue holds for a brand.
     func materials(for brand: String) -> [FilamentRow] {
         materials.rows.filter { $0.brand == brand }.sorted { $0.name < $1.name }
@@ -468,7 +478,10 @@ final class IntakeViewModel: ObservableObject {
         // wrong. Picking CR-ABS and keeping "Hyper PLA" writes a tag whose id and whose name
         // disagree, and the inventory row then reads as a filament the spool is not.
         name = row.name
-        if let hex = row.colorHex.isEmpty ? nil : row.colorHex { colorHex = Spool.normaliseHex(hex) }
+        // Not the colour. It used to be taken from the catalogue too, and every shipped record's
+        // `base.colors` is the `#ffffff`/`#000000` placeholder — so choosing a material quietly
+        // replaced the colour you had already set with black or white. A spool's colour is a fact
+        // about the spool; the catalogue has nothing to say about it.
     }
 
     // MARK: Actions
@@ -636,8 +649,8 @@ final class IntakeViewModel: ObservableObject {
     /// between. Once the bytes are on the tag it is the form that is wrong, so the tag's values
     /// win.
     private func adoptWritten(_ record: SpoolRecord) {
-        // The material first: its `didSet` pulls brand, name, type and the catalogue's placeholder
-        // colour, and the tag's own colour has to land after that.
+        // The material first: its `didSet` pulls brand, name and type from the catalogue, and the
+        // tag's own values have to land after that.
         if record.materialId != materialID,
            let row = materials.rows.first(where: { $0.id == record.materialId }) {
             catalogueBrand = row.brand
@@ -769,9 +782,9 @@ final class IntakeViewModel: ObservableObject {
         method = .manual
 
         // Order matters. Setting `materialID` runs `adoptCatalogueMaterial`, which overwrites
-        // brand, name, type *and* colour from the catalogue — so the catalogue goes first and the
-        // spool's own values go last, or the clone would come back wearing the catalogue's
-        // placeholder colour instead of the one it is a clone of.
+        // brand, name and type from the catalogue — so the catalogue goes first and the spool's
+        // own values go last, or the clone would come back described as the catalogue row rather
+        // than as the spool it is a clone of.
         let byID = spool.identity.flatMap { identity -> FilamentRow? in
             let base = identity.filamentId
             guard !base.isEmpty else { return nil }
@@ -852,7 +865,7 @@ final class IntakeViewModel: ObservableObject {
         // from Method B with a non-first brand chosen left Method A showing a brand, name, type and
         // colour that had been read off nothing, and a tag whose id the catalogue did not know was
         // then confirmed with those invented values.
-        catalogueBrand = isScan ? "" : (catalogueBrands.first ?? "")
+        catalogueBrand = isScan ? "" : Self.defaultCatalogueBrand(in: catalogueBrands)
         serial = Self.allocateSerial()
     }
 

@@ -90,6 +90,20 @@ private func makeBundleSeededDatabase(_ temp: TempStorage, ids: [String],
     return db
 }
 
+/// A K2 database whose file holds records exactly as earlier builds shipped them - Generic PLA from
+/// the 2025 seed and Bambu PLA Basic from 0.5.0 - over the real bundled seed, vendor catalogue and
+/// refresh index.
+private func previouslyShippedDatabase(_ temp: TempStorage) throws -> MaterialDatabase {
+    guard let url = Bundle.module.url(forResource: "catalogue-as-previously-shipped", withExtension: "json") else {
+        throw MaterialDatabaseError.storage("fixture catalogue-as-previously-shipped.json is missing")
+    }
+    try temp.storage.createDirectoryIfNeeded()
+    try Data(contentsOf: url).write(to: temp.storage.url(for: .k2), options: .atomic)
+    let db = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: BundledMaterialSeed())
+    try db.load()
+    return db
+}
+
 // MARK: - Suite
 
 let materialDatabaseTests = TestSuite(name: "Material database", cases: [
@@ -606,6 +620,133 @@ let materialDatabaseTests = TestSuite(name: "Material database", cases: [
         try db.update(mine)
         t.equal(try db.addVendorCatalogue(), [], "nothing to add")
         t.equal(db.filament(id: "B1002")?.name, "Mine, hand-tuned", "and the edit survives")
+    },
+
+    // MARK: - Refreshing untouched records
+
+    // The index is built in Python from git history and checked here in Swift. If the two
+    // fingerprint implementations ever drift, every refresh silently matches nothing - so this
+    // recomputes all of them, on the real shipped data, and fails loudly instead.
+    test("every fingerprint in the refresh index matches the catalogue it ships beside") { t in
+        let seed = BundledMaterialSeed()
+        guard let indexData = try seed.refreshIndexData(for: .k2) else {
+            t.record("no refresh index is bundled for k2", file: #file, line: #line); return
+        }
+        let index = try JSONDecoder().decode(MaterialRefreshIndex.self, from: indexData)
+        var shipped = try MaterialDatabase.decode(try seed.seedData(for: .k2)).result.list
+        if let vendor = try seed.vendorCatalogueData(for: .k2) {
+            shipped += try MaterialDatabase.decode(vendor).result.list
+        }
+        t.equal(index.records.count, shipped.count, "one entry per shipped record")
+        var mismatched: [String] = []
+        for filament in shipped where index.records[filament.id]?.fingerprint != FilamentFingerprint.of(filament) {
+            mismatched.append(filament.id)
+        }
+        t.equal(mismatched, [], "Swift and Python agree on every record")
+    },
+
+    // The case this exists for, on records exactly as they left earlier builds: Generic PLA from
+    // the 2025 seed (older start G-code, no multicolour guard) and Bambu PLA Basic from 0.5.0
+    // (vendor plate temperatures and exhaust-fan speeds).
+    test("a record exactly as an earlier version shipped it is brought up to date") { t in
+        let temp = TempStorage()
+        let db = try previouslyShippedDatabase(temp)
+        let outcome = try db.refreshUntouchedRecords()
+        t.equal(Set(outcome.refreshed), ["00001", "B1002"], "both are refreshed")
+        t.equal(outcome.keptChanged, [], "and nothing is reported as changed")
+
+        let seed = BundledMaterialSeed()
+        let current = try MaterialDatabase.decode(try seed.seedData(for: .k2)).result.list
+            + MaterialDatabase.decode(try seed.vendorCatalogueData(for: .k2)!).result.list
+        for id in ["00001", "B1002"] {
+            guard let now = current.first(where: { $0.id == id }), let mine = db.filament(id: id) else {
+                t.record("\(id) missing", file: #file, line: #line); continue
+            }
+            t.equal(FilamentFingerprint.of(mine), FilamentFingerprint.of(now), "\(id) now matches this version")
+        }
+        // Written, not just held in memory: the next launch must not have to do it again.
+        let reloaded = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: seed)
+        try reloaded.load()
+        t.equal(try reloaded.refreshUntouchedRecords().refreshed, [], "the refresh reached the disk")
+    },
+
+    // The rule that makes it safe to do automatically.
+    test("a record that was changed is left exactly as it is, and reported") { t in
+        let temp = TempStorage()
+        let db = try previouslyShippedDatabase(temp)
+        guard var bambu = db.filament(id: "B1002") else {
+            t.record("fixture lacks B1002", file: #file, line: #line); return
+        }
+        bambu.base.minTemp = 205
+        try db.update(bambu)
+
+        let outcome = try db.refreshUntouchedRecords()
+        t.equal(outcome.refreshed, ["00001"], "the untouched record is refreshed")
+        t.equal(outcome.keptChanged, ["B1002"], "the changed one is reported")
+        t.equal(db.filament(id: "B1002")?.base.minTemp, 205, "and keeps the change")
+    },
+
+    test("a catalogue that is already current is not touched") { t in
+        let temp = TempStorage()
+        let db = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: BundledMaterialSeed())
+        try db.load()
+        t.equal(try db.refreshUntouchedRecords(), MaterialRefreshOutcome(), "nothing to do")
+        t.expect(!db.hasUnsavedChanges, "and nothing written")
+    },
+
+    test("refreshing twice changes nothing the second time") { t in
+        let temp = TempStorage()
+        let db = try previouslyShippedDatabase(temp)
+        t.equal(try db.refreshUntouchedRecords().refreshed.count, 2, "first pass refreshes")
+        t.equal(try db.refreshUntouchedRecords(), MaterialRefreshOutcome(), "second pass is a no-op")
+    },
+
+    // A build that ships an index and a catalogue that disagree must not install a record the
+    // index does not describe.
+    test("an index that disagrees with its catalogue refreshes nothing") { t in
+        let temp = TempStorage()
+        let old = sampleFilament(id: "01001", name: "Old")
+        let new = sampleFilament(id: "01001", name: "New")
+        let index = """
+        {"records":{"01001":{"fingerprint":"0000000000000000","supersedes":["\(FilamentFingerprint.of(old))"]}}}
+        """
+        let seed = StaticMaterialSeed(
+            [.k2: try MaterialDatabase.encode(MaterialDatabaseFile(list: [new]))],
+            refresh: [.k2: Data(index.utf8)])
+        try temp.storage.createDirectoryIfNeeded()
+        try MaterialDatabase.encode(MaterialDatabaseFile(list: [old])).write(to: temp.storage.url(for: .k2))
+        let db = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: seed)
+        try db.load()
+        t.equal(try db.refreshUntouchedRecords(), MaterialRefreshOutcome(), "nothing refreshed")
+        t.equal(db.filament(id: "01001")?.name, "Old", "the local record stands")
+    },
+
+    test("a record the index does not know is left alone") { t in
+        let temp = TempStorage()
+        let db = try previouslyShippedDatabase(temp)
+        try db.add(sampleFilament(id: "Z9001", name: "Mine"))
+        let outcome = try db.refreshUntouchedRecords()
+        t.expect(!outcome.refreshed.contains("Z9001") && !outcome.keptChanged.contains("Z9001"),
+                 "not refreshed, and not reported either - there is nothing to refresh it to")
+        t.equal(db.filament(id: "Z9001")?.name, "Mine", "untouched")
+    },
+
+    test("a refresh before a load is refused") { t in
+        let temp = TempStorage()
+        let db = MaterialDatabase(printerType: .k2, storage: temp.storage, seed: BundledMaterialSeed())
+        t.throwsError(MaterialDatabaseError.notLoaded(.k2)) { _ = try db.refreshUntouchedRecords() }
+    },
+
+    test("the refresh summary reads as a sentence") { t in
+        var outcome = MaterialRefreshOutcome()
+        t.equal(outcome.summary, nil, "silent when nothing changed")
+        outcome.refreshed = ["00001"]
+        t.equal(outcome.summary, "Updated 1 filament to the latest catalogue", "singular")
+        outcome.refreshed = ["00001", "B1002"]
+        outcome.keptChanged = ["G1008"]
+        t.equal(outcome.summary,
+                "Updated 2 filaments to the latest catalogue; 1 that had been changed was left as it was",
+                "plural, with what was kept")
     },
 
     // MARK: - CRUD

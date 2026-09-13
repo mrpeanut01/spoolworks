@@ -1097,6 +1097,54 @@ let printerViewModelTests = TestSuite(name: "Printer and materials wiring", case
         }
     },
 
+    // The editor no longer shows a colour, and it must not start inventing one either: an edit keeps
+    // the record's own `base.colors`, and a brand-new filament gets the `#ffffff` placeholder most
+    // of Creality's own records carry - the field is still part of the printer's format.
+    test("the editor keeps a record's colour without showing it") { t in
+        let original = Filament(printerIntName: PrinterType.k2.printerIntName,
+                                kvParam: ["filament_type": "PLA", "filament_vendor": "Generic"],
+                                base: MaterialBase(id: "01001", brand: "Generic", name: "Test PLA",
+                                                   materialType: "PLA", colors: ["#123456"]))
+        t.equal(FilamentDraft(original).filament(printerType: .k2).base.colors, ["#123456"],
+                "an edit keeps the record's own value")
+
+        var blank = FilamentDraft.make(mode: .add(template: nil), printerType: .k2, existingIDs: [])
+        blank.brand = "Generic"
+        blank.name = "New"
+        blank.materialType = "PLA"
+        t.equal(blank.filament(printerType: .k2).base.colors, ["#ffffff"],
+                "a new record gets the common placeholder")
+    },
+
+    // Choosing a material used to replace the spool's colour with the catalogue's, and every shipped
+    // record's colour is the black-or-white placeholder - so a red spool turned white the moment its
+    // material was picked.
+    test("choosing a catalogue material leaves the spool's colour alone") { t in
+        onMain {
+            let (model, _, cleanup) = await makeCatalogueIntake()
+            defer { cleanup() }
+            model.method = .manual
+            model.colorHex = "C12E1F"
+            guard let row = model.materials(for: "Generic").first else {
+                t.record("the bundled catalogue has no Generic filament", file: #file, line: #line); return
+            }
+            model.catalogueBrand = "Generic"
+            model.materialID = row.id
+            t.equal(model.brand, "Generic", "the description follows the material")
+            t.equal(model.colorHex, "C12E1F", "the colour does not")
+        }
+    },
+
+    // The first brand alphabetically was Creality until the vendor catalogue put Anycubic and
+    // Bambu Lab ahead of it, and Method B quietly started opening on an Anycubic filament.
+    test("Method B opens on Creality, not on whichever brand sorts first") { t in
+        t.equal(IntakeViewModel.defaultCatalogueBrand(in: ["Anycubic", "Bambu Lab", "Creality", "Generic"]),
+                "Creality", "Creality, though two brands sort ahead of it")
+        t.equal(IntakeViewModel.defaultCatalogueBrand(in: ["Anycubic", "Generic"]), "Anycubic",
+                "the first brand when the catalogue has no Creality")
+        t.equal(IntakeViewModel.defaultCatalogueBrand(in: []), "", "nothing when there are no brands")
+    },
+
     // A tag stores the id in five bytes, so a five-character id with an accent was accepted here
     // and refused at the tag. And the drying fields silently fell back to the original on save.
     test("the editor refuses ids a tag cannot hold and non-numeric drying fields") { t in
