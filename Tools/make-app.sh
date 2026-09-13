@@ -30,7 +30,7 @@ APP_NAME="Spoolworks"
 DISPLAY_NAME="Spoolworks"
 BUNDLE_ID="com.obsidiang.spoolworks"
 # Windows AssemblyInfo reports 16.0.0.0; this is a rewrite, so the macOS port versions from 1.
-SHORT_VERSION="0.7.0"
+SHORT_VERSION="0.8.0"
 MIN_SYSTEM_VERSION="14.0"
 
 while [[ $# -gt 0 ]]; do
