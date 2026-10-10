@@ -472,3 +472,84 @@ user their record.
   question does not come back while it stays loaded.
 - Factory twins remain indistinguishable to a desk reader. The hero on Read / identify says "One of
   N spools with this tag" rather than claiming a single match.
+
+## D-015 — HueForge gets a library file Spoolworks owns, with ids derived from the filament; TDs are labelled by where they came from
+**Context:** HueForge needs the user's filaments — line, colour, polymer and transmission distance
+(TD). Spoolworks holds the first three for every spool in stock. HueForge documents none of its
+file formats, so they were read off the installed 0.9.4.3: its 20 shipped vendor libraries (890
+entries), the strings of its import dialog, and `thehueforge/hueforge-community-library-example`.
+
+What HueForge offers:
+- **Library JSON** — `{"Filaments":[{Brand, Color, Name, Owned, Transmissivity, Type, uuid}]}`, with
+  optional `Tags` / `Secondary_*`. The same shape for the personal, vendor and community libraries.
+- **CSV** — required `Brand, Type, Color, Name, TD`; optional `Owned, Uuid`; anything else ignored.
+- ***Filaments ▸ Import*** — copies a file into *Vendor Libraries* / *Community Libraries*, or
+  merges it into the personal library, matching on uuid and then on name, and offering *Replace
+  Entire File* / *Update Selected Entries* / *Update All Entries*.
+- **Community sources** — a `manifest.json` URL HueForge polls and re-downloads from.
+- No API, no URL scheme for filaments, no watch folder.
+
+**Decision:**
+- One entry per *filament*, not per spool. Retired spools are left out; everything else is `Owned`.
+- Brand is the product line: Spoolworks' brand + name with the polymer taken back off
+  (`Creality` + `Hyper PLA` → `Creality Hyper`), which is HueForge's own convention.
+- The uuid is a hash of line, polymer and colour. HueForge matches on uuid first, so this is what
+  makes a second export an update. The colour's *name* and the TD are deliberately not in the hash.
+- Sync writes `Vendor Libraries/Spoolworks.json` and nothing else. `personal_library.json` is
+  HueForge's working copy, rewritten while it runs; writing it would lose one side's edits.
+- Sync refuses any path inside a `.app` — the shipped libraries live in the bundle and a file added
+  there breaks its signature.
+- TD is looked up in HueForge's own libraries (same line and polymer, same name or ΔE ≤ 5), else
+  estimated as the median of the nearest colours, else typed. The source is shown on every row,
+  because an estimate and a measurement are the same number in the file.
+- The user's TDs and exclusions live in `hueforge.json` beside the inventory, keyed by filament.
+
+**Not verified:** Spoolworks cannot drive HueForge, so that HueForge *loads* an unlisted file from
+*Vendor Libraries* at startup rests on its import dialog doing exactly that copy. The export file
+through *Filaments ▸ Import* is the route its own strings describe end to end. The CSV `Owned`
+column is written as `true`/`false`; HueForge's parser for it was not observable.
+
+## D-016 — A colour is named by its maker's list, decided by lead rather than distance, and the user's answer is final
+**Context:** Every colour was named by `ColorMatcher`, the nearest of 31,861 generic names. A
+factory Creality Hyper PLA Red read "Cherry Pie", Skin "Malibu Dune", Blue "Naval Adventures". The
+measured manufacturer swatches were already bundled, but only as a picker. Three separate causes:
+- The lookup was brand-blind.
+- **A tag's hex is a code, not a measurement.** The factory Hyper PLA Blue tag carries `0A2989`
+  (navy); the filament is listed at `0081BF`. ΔE2000 ≈ 31 — no metric joins them.
+- The printer's catalogue files third-party filament as brand `Generic` with the maker in the name.
+
+Tried against the 24 distinct filaments in the owner's stock before building anything.
+
+**Decision:**
+- `BrandColourCatalogue` holds two sources together: the Open Filament Database (published colours,
+  156 makers) and filamentcolors.xyz (measured, 150 makers; 67 in common). Each lookup searches the
+  spool's own **line** first, then the rest of the maker's range, one result per distinct name.
+- Lines are compared as word sets with the maker removed and the polymer added, so the printer's
+  `Polymaker ABS` meets the maker's `PolyLite ABS`. Exact set first: `Hyper PLA` is also contained
+  in `Hyper PLA-CF`, a different product.
+- Distance is CIEDE2000. CIE76 was kept where it already was (spread reporting, HueForge TDs).
+- **A name is taken automatically only when the nearest candidate has a clear lead** over the next
+  differently-named one (≥ 4 and ≥ 1.5×), within ΔE 15. An absolute threshold cannot work: correct
+  matches sit at ΔE 11 and wrong ones at 0.4.
+- The maker's wider range names a spool only when its line is absent from the lists altogether. A
+  listed line with nothing near is a question, not a licence to borrow a neighbour's name.
+- Lookalikes from other makers (no maker identified) are offered on the camera sheet and never used
+  to name anything.
+- What the user says is stored in `colour-names.json` keyed `filamentId|HEX` (or maker, line and
+  hex without an id) and applied to every spool with that key.
+- `Spool.colorNameSource` records which of the three it was. Existing spools decode with `nil` and
+  are **offered** a rename; nothing already on screen changes unasked.
+- On the camera sheet, choosing a filament replaces the reading with that filament's hex.
+
+**Consequences / limits:**
+- Of the owner's 24 filaments, the lists settle 8 unaided (Black, White, Grey, Red, Skin and their
+  ABS/TPU counterparts); the rest are asked once. Hyper Stardust, HP Ultra and the translucent PETG
+  are in neither source.
+- Published hexes are nominal. A camera reading lands nearer the measured swatches, which exist for
+  fewer lines.
+- The 4 / 1.5× / 15 figures were set from that one inventory. They are constants on
+  `ColourNameResolver` with a test each, and are the first thing to revisit if a wrong name is
+  auto-applied.
+- The camera sheet's filament list has not been exercised against a live camera in this change;
+  its matching is the same call the Inventory rail makes.
+

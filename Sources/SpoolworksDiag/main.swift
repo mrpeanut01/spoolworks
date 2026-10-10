@@ -28,6 +28,15 @@ func usage() {
                                 it never reaches the process list or the shell
                                 history. Read-only.
 
+      spooldiag colours            Name every spool's colour the way the app would, and
+                                show the maker's nearest colours for each. Read-only.
+
+      spooldiag hueforge [--csv] [--out PATH]
+                                Show the inventory as a HueForge filament library,
+                                with where each transmission distance came from.
+                                With --out, write it as JSON (or CSV) for
+                                HueForge's Filaments > Import. Read-only otherwise.
+
     Only `write --confirm` modifies a tag; everything else is read-only.
     """)
 }
@@ -400,6 +409,62 @@ case "boxinfo":
             print("  \(spool.remainingLabel.padding(toLength: 5, withPad: " ", startingAt: 0))"
                   + "  \(spool.location.description)  \(spool.label)")
         }
+    }
+
+case "colours":
+    do {
+        let store = try InventoryStore.applicationSupport()
+        let matcher = try? ColorMatcher.shared()
+        let resolver = ColourNameResolver(
+            catalogue: .shared,
+            learned: LearnedColourNamesStore(directory: store.directory).load(),
+            generic: { hex in (try? matcher?.nearestName(forHex: hex)) ?? "" })
+        var seen = Set<String>()
+        for spool in try store.load().active {
+            let key = "\(spool.brand)|\(spool.name)|\(spool.colorHex)"
+            guard seen.insert(key).inserted else { continue }
+            let r = resolver.resolve(brand: spool.brand, name: spool.name,
+                                     material: spool.materialType,
+                                     filamentId: spool.identity?.filamentId ?? "",
+                                     hex: spool.colorHex)
+            print("\(spool.brand) / \(spool.name) #\(spool.colorHex)  now \"\(spool.colorName)\""
+                  + "  ->  \"\(r.name)\" [\(r.source.rawValue)]")
+            for m in r.suggestions.prefix(5) {
+                print(String(format: "      %5.1f  %@  (%@, %@)", m.deltaE, m.colour.label,
+                             "\(m.scope)", m.colour.source.rawValue))
+            }
+        }
+    } catch {
+        print("colours: \(error.localizedDescription)")
+        exit(1)
+    }
+
+case "hueforge":
+    // The Manage ▸ HueForge… window without the window: same inventory file, same preferences,
+    // same lookup in HueForge's own libraries.
+    do {
+        let store = try InventoryStore.applicationSupport()
+        let entries = HueForgeExporter.entries(
+            for: try store.load(),
+            preferences: try HueForgePreferencesStore(directory: store.directory).load(),
+            reference: HueForgeInstall.reference())
+        for entry in entries {
+            let f = entry.filament
+            print("  \(entry.isIncluded ? "+" : "-") \(f.color)  TD \(HueForgeLibrary.number(f.transmissivity))"
+                  + "  [\(entry.tdSource.label)]  \(f.brand) · \(f.name) · \(f.type)"
+                  + "  ×\(entry.spoolIDs.count)")
+        }
+        print("\(entries.count) filaments")
+        if let i = args.firstIndex(of: "--out"), i + 1 < args.count {
+            let library = HueForgeExporter.library(from: entries)
+            let url = URL(fileURLWithPath: args[i + 1])
+            let data = args.contains("--csv") ? Data(library.csvString().utf8) : try library.jsonData()
+            try data.write(to: url, options: .atomic)
+            print("wrote \(library.filaments.count) to \(url.path)")
+        }
+    } catch {
+        print("hueforge: \(error.localizedDescription)")
+        exit(1)
     }
 
 default:

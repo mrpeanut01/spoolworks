@@ -280,7 +280,7 @@ private struct StatusCell: View {
 /// The windows the sidebar offers. Not `SidebarItem` cases: those switch the detail column and can
 /// be *selected*, and these open a window and cannot.
 enum ManageWindow: String, CaseIterable, Identifiable {
-    case materials, printers, locations
+    case materials, printers, locations, hueForge
 
     var id: String { rawValue }
 
@@ -289,6 +289,7 @@ enum ManageWindow: String, CaseIterable, Identifiable {
         case .materials: return "Materials"
         case .printers: return "Printers"
         case .locations: return "Locations"
+        case .hueForge: return "HueForge"
         }
     }
 
@@ -297,6 +298,7 @@ enum ManageWindow: String, CaseIterable, Identifiable {
         case .materials: return "books.vertical"
         case .printers: return "server.rack"
         case .locations: return "mappin.and.ellipse"
+        case .hueForge: return "square.and.arrow.up.on.square"
         }
     }
 
@@ -305,6 +307,7 @@ enum ManageWindow: String, CaseIterable, Identifiable {
         case .materials: return "The filament catalogue every screen resolves ids against"
         case .printers: return "Addresses and passwords the CFS poll uses"
         case .locations: return "Where you keep spools, and where they go when unloaded"
+        case .hueForge: return "Send the filaments in stock to HueForge"
         }
     }
 
@@ -313,6 +316,7 @@ enum ManageWindow: String, CaseIterable, Identifiable {
         case .materials: return AppEnvironment.materialsWindowID
         case .printers: return AppEnvironment.printersWindowID
         case .locations: return AppEnvironment.locationsWindowID
+        case .hueForge: return AppEnvironment.hueForgeWindowID
         }
     }
 }

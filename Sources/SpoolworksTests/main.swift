@@ -136,5 +136,18 @@ let exitCode = TestDriver.run([
     inventoryLayoutTests,
     inventorySortTests,
     sortToggleTests,
+
+    // Naming a colour the way its maker does
+    deltaE2000Tests,
+    brandColourCatalogueTests,
+    colourNameResolverTests,
+    inventoryColourNameTests,
+
+    // HueForge export and sync
+    hueForgeLibraryTests,
+    hueForgeExportTests,
+    hueForgeTransmissivityTests,
+    hueForgeInstallTests,
+    hueForgeViewModelTests,
 ])
 exit(exitCode)

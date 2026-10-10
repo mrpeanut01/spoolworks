@@ -218,6 +218,10 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
     /// The nearest named colour, for the `"Creality Hyper PLA · White"` label. Stored rather than
     /// derived so the domain layer does not need the 636 KB colour table to render a list.
     public var colorName: String
+    /// Whether ``colorName`` is the maker's name or only a description of the colour. `nil` for a
+    /// spool recorded before the distinction existed — treated as a description, and offered a
+    /// rename rather than given one. See ``ColourNameResolver``.
+    public var colorNameSource: ColourNameSource?
     public var netWeightGrams: Int
 
     // -- observation ---------------------------------------------------------------------------
@@ -272,6 +276,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
                 materialType: String,
                 colorHex: String,
                 colorName: String = "",
+                colorNameSource: ColourNameSource? = nil,
                 netWeightGrams: Int = 1000,
                 remainingPercent: Double = 100,
                 location: SpoolLocation = .unknown,
@@ -289,6 +294,7 @@ public struct Spool: Identifiable, Hashable, Codable, Sendable {
         self.materialType = materialType
         self.colorHex = Self.normaliseHex(colorHex)
         self.colorName = colorName
+        self.colorNameSource = colorNameSource
         self.netWeightGrams = netWeightGrams
         self.remainingPercent = Self.clamp(remainingPercent)
         self.location = location

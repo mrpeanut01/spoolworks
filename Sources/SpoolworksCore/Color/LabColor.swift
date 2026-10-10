@@ -182,6 +182,62 @@ public struct LabColor: Equatable, Sendable {
         return (dl * dl + da * da + db * db).squareRoot()
     }
 
+    /// CIEDE2000 — the colour difference to use when the question is "would a person call these
+    /// the same colour", which is the question behind matching a filament to its maker's list.
+    ///
+    /// ``deltaE(to:)`` is plain distance in Lab, and Lab is not as even as it was meant to be: it
+    /// overstates differences between saturated colours and understates them between near-greys.
+    /// A saturated red and its maker's swatch can sit 15 apart there and look alike, while two
+    /// greys 5 apart are visibly different. CIEDE2000 corrects lightness, chroma and hue separately
+    /// and adds a rotation term for the blue region, where Lab is worst.
+    ///
+    /// Implemented from Sharma, Wu & Dalal (2005), with kL = kC = kH = 1, and checked against the
+    /// test pairs published with that paper.
+    public func deltaE2000(to other: LabColor) -> Double {
+        func degrees(_ radians: Double) -> Double { radians * 180 / .pi }
+        func radians(_ degrees: Double) -> Double { degrees * .pi / 180 }
+        func hue(_ a: Double, _ b: Double) -> Double {
+            guard a != 0 || b != 0 else { return 0 }
+            let h = degrees(atan2(b, a))
+            return h < 0 ? h + 360 : h
+        }
+        let pow25to7 = 6_103_515_625.0
+
+        let cMean = (chroma + other.chroma) / 2
+        let g = 0.5 * (1 - (pow(cMean, 7) / (pow(cMean, 7) + pow25to7)).squareRoot())
+        let a1 = (1 + g) * a, a2 = (1 + g) * other.a
+        let c1 = (a1 * a1 + b * b).squareRoot(), c2 = (a2 * a2 + other.b * other.b).squareRoot()
+        let h1 = hue(a1, b), h2 = hue(a2, other.b)
+
+        let dL = other.l - l
+        let dC = c2 - c1
+        var dh = h2 - h1
+        if c1 * c2 == 0 { dh = 0 } else if dh > 180 { dh -= 360 } else if dh < -180 { dh += 360 }
+        let dH = 2 * (c1 * c2).squareRoot() * sin(radians(dh / 2))
+
+        let lMean = (l + other.l) / 2
+        let cpMean = (c1 + c2) / 2
+        let hMean: Double
+        if c1 * c2 == 0 {
+            hMean = h1 + h2
+        } else if abs(h1 - h2) <= 180 {
+            hMean = (h1 + h2) / 2
+        } else {
+            hMean = h1 + h2 < 360 ? (h1 + h2 + 360) / 2 : (h1 + h2 - 360) / 2
+        }
+
+        let t = 1 - 0.17 * cos(radians(hMean - 30)) + 0.24 * cos(radians(2 * hMean))
+            + 0.32 * cos(radians(3 * hMean + 6)) - 0.20 * cos(radians(4 * hMean - 63))
+        let sL = 1 + 0.015 * pow(lMean - 50, 2) / (20 + pow(lMean - 50, 2)).squareRoot()
+        let sC = 1 + 0.045 * cpMean
+        let sH = 1 + 0.015 * cpMean * t
+        let rotation = -2 * (pow(cpMean, 7) / (pow(cpMean, 7) + pow25to7)).squareRoot()
+            * sin(radians(60 * exp(-pow((hMean - 275) / 25, 2))))
+
+        let lTerm = dL / sL, cTerm = dC / sC, hTerm = dH / sH
+        return (lTerm * lTerm + cTerm * cTerm + hTerm * hTerm + rotation * cTerm * hTerm).squareRoot()
+    }
+
     /// Component-wise mean. Nil for an empty input, for the same reason as ``RGB8/mean(ofLinear:)``.
     public static func mean<S: Sequence>(of colors: S) -> LabColor? where S.Element == LabColor {
         var sum = LabColor(l: 0, a: 0, b: 0)

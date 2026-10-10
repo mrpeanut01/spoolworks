@@ -26,6 +26,19 @@ struct ColorScanSheet: View {
     /// A binding writes through immediately and the button is only a way out.
     @Binding var hex: String
 
+    /// What the form already says the filament is, so the matches offered are *this maker's*
+    /// colours first. All three may be empty, in which case every maker is searched.
+    var brand: String = ""
+    var line: String = ""
+    var material: String = ""
+    /// Told which maker's colour was chosen from the list, or nil when the choice is undone.
+    var onPickFilament: (BrandColour?) -> Void = { _ in }
+
+    /// The filaments nearest the taken reading.
+    @State private var matches: [BrandColourCatalogue.Match] = []
+    /// The one the user chose, if any. Its hex has replaced the reading in the form.
+    @State private var picked: BrandColourCatalogue.Match?
+
     @StateObject private var scanner = CameraColorScanner()
     @ObservedObject private var nameCache = ColorNameCache.shared
     @Environment(\.dismiss) private var dismiss
@@ -47,7 +60,7 @@ struct ColorScanSheet: View {
             Rule()
             footer
         }
-        .frame(width: 640, height: 620)
+        .frame(width: 640, height: 700)
         .background(Theme.background)
         .task {
             original = hex
@@ -61,7 +74,18 @@ struct ColorScanSheet: View {
             hex = reading.color.hexString
         }
         .task(id: accepted) {
-            if let accepted { await nameCache.resolve([accepted]) }
+            guard let accepted else {
+                matches = []
+                return
+            }
+            await nameCache.resolve([accepted])
+            // Seventeen thousand colours and a CIEDE2000 each — a few milliseconds, but not ones
+            // to spend on the main thread while the preview is drawing.
+            let (brand, line, material) = (brand, line, material)
+            matches = await Task.detached(priority: .userInitiated) {
+                BrandColourCatalogue.shared.matches(brand: brand, name: line, material: material,
+                                                    hex: accepted, limit: 4)
+            }.value
         }
         .onDisappear { scanner.stop() }
     }
@@ -194,8 +218,14 @@ struct ColorScanSheet: View {
             // At most one piece of advice at a time. A stack of four warnings on a mediocre shot
             // is a wall of text nobody reads; the first one is the one to fix first.
             if accepted != nil {
-                Text("Taken — this colour is already in the form. Save to close, Re-measure to "
-                     + "take another, or Cancel to put back what was there.")
+                if !matches.isEmpty {
+                    closestFilaments.padding(.bottom, 10)
+                }
+                Text(picked == nil
+                     ? "Taken — this colour is already in the form. Save to close, Re-measure to "
+                       + "take another, or Cancel to put back what was there."
+                     : "Using \(picked!.colour.brand)'s “\(picked!.colour.name)” in place of the "
+                       + "reading. Click it again to go back to what the camera measured.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
@@ -210,6 +240,36 @@ struct ColorScanSheet: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The filaments this reading most resembles — the maker's own colours when the form says who
+    /// the maker is, anyone's when it does not.
+    ///
+    /// A camera reading is a colour; what goes on a label is a filament. The reading alone names
+    /// itself "Malibu Dune", and the box says "Skin". Offering the nearest real filaments here is
+    /// the moment that gap can be closed, while the spool is still in the user's hand to compare.
+    ///
+    /// Choosing one replaces the reading with that filament's own colour. That is deliberate: two
+    /// spools of one filament then carry one colour rather than two slightly different camera
+    /// readings, which is what lets the inventory — and the printer — treat them as the same.
+    private var closestFilaments: some View {
+        let anywhere = matches.first?.scope == .anywhere
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(anywhere ? "Closest filaments"
+                          : "Closest \(matches.first?.colour.brand ?? "") filaments").kicker()
+            FilamentMatchChips(matches: matches, showsBrand: anywhere, selectedID: picked?.id) { match in
+                guard let accepted else { return }
+                if picked?.id == match.id {
+                    picked = nil
+                    hex = accepted
+                    onPickFilament(nil)
+                } else {
+                    picked = match
+                    hex = match.colour.hex
+                    onPickFilament(match.colour)
+                }
+            }
+        }
     }
 
     private func message(symbol: String, title: String, detail: String,
@@ -250,6 +310,8 @@ struct ColorScanSheet: View {
             if scanner.state == .running {
                 Button("Re-measure") {
                     accepted = nil
+                    picked = nil
+                    onPickFilament(nil)
                     scanner.resetReading()
                 }
                     .buttonStyle(.sw(.ghost))
@@ -262,6 +324,7 @@ struct ColorScanSheet: View {
                 // Undoes an automatic acceptance. Taking a reading without being asked is only
                 // reasonable if leaving without saving puts back exactly what was there.
                 if let original { hex = original }
+                onPickFilament(nil)
                 dismiss()
             }
             .buttonStyle(.sw(.ghost))
@@ -292,10 +355,11 @@ struct ColorScanSheet: View {
 
     /// What the readout shows: the taken reading once there is one, the live one until then.
     private var shownHex: String {
-        accepted ?? scanner.reading?.color.hexString ?? ""
+        picked?.colour.hex ?? accepted ?? scanner.reading?.color.hexString ?? ""
     }
 
     private var shownName: String? {
+        if let picked { return picked.colour.name }
         guard let accepted else { return scanner.readingName }
         return nameCache.name(forHex: accepted) ?? scanner.readingName
     }

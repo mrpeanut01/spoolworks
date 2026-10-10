@@ -227,7 +227,7 @@ final class InventoryViewModel: ObservableObject {
         // The colour comes from the tag now, because the tag is what the printer and every later
         // read will report. Leaving the two to disagree would make the spool fail to match itself.
         spool.colorHex = record.rgbHex
-        spool.colorName = colorName(forHex: record.rgbHex)
+        applyColourName(to: &spool)
 
         var uids: [[UInt8]] = []
         for uid in readUIDs where !uids.contains(uid) { uids.append(uid) }
@@ -309,8 +309,22 @@ final class InventoryViewModel: ObservableObject {
     /// name — a degraded label, not a crash.
     private lazy var matcher: ColorMatcher? = try? ColorMatcher.shared()
 
-    init(store: InventoryStore, toasts: ToastCenter, defaults: UserDefaults = .standard) {
+    /// Every maker's colour list, for naming a spool the way its box does.
+    private let colours: BrandColourCatalogue
+    private let learnedStore: LearnedColourNamesStore
+    /// What the user has said a colour is called. Saved beside the inventory.
+    private var learned: LearnedColourNames
+
+    /// Spools whose colour could take its maker's name. Offered, never applied unasked — a name
+    /// the user has been reading for months does not change under them.
+    @Published private(set) var renameProposals: [ColourRename] = []
+
+    init(store: InventoryStore, toasts: ToastCenter, defaults: UserDefaults = .standard,
+         colours: BrandColourCatalogue = .shared) {
         self.store = store
+        self.colours = colours
+        self.learnedStore = LearnedColourNamesStore(directory: store.directory)
+        self.learned = learnedStore.load()
         self.toasts = toasts
         self.defaults = defaults
         self.places = SpoolPlacesStore.load(from: defaults)
@@ -429,6 +443,7 @@ final class InventoryViewModel: ObservableObject {
         do {
             inventory = try store.load()
             storageError = nil
+            refreshRenameProposals()
         } catch {
             // The inventory stays empty, but the screen says why rather than looking like a
             // first run.
@@ -437,6 +452,7 @@ final class InventoryViewModel: ObservableObject {
     }
 
     private func persist() {
+        refreshRenameProposals()
         do {
             try store.save(inventory)
             storageError = nil
@@ -784,6 +800,13 @@ final class InventoryViewModel: ObservableObject {
                                          holdingLookalikes: true,
                                          declined: declinedLookalikes)
         if pendingLookalikes != report.lookalikes { pendingLookalikes = report.lookalikes }
+        // A spool the poll discovers arrives with no colour name: `SpoolInventory` has no colour
+        // tables. It is named here, once, rather than left reading "#C12E1F" for ever.
+        for id in report.discovered {
+            guard var found = inventory.spool(id: id), found.colorName.isEmpty else { continue }
+            applyColourName(to: &found)
+            inventory.update(found)
+        }
         if !report.isEmpty {
             persist()
             if !report.discovered.isEmpty {
@@ -813,7 +836,7 @@ final class InventoryViewModel: ObservableObject {
         spool.tagSource = held.slot.hasTag ? .crealityFactory : .untagged
         if spool.materialType.isEmpty { spool.materialType = held.slot.materialType }
         spool.colorHex = held.identity.colorHex
-        spool.colorName = colorName(forHex: held.identity.colorHex)
+        applyColourName(to: &spool)
         spool.note(kind: .movement,
                    detail: held.slot.hasTag ? "Tag read by the printer in \(held.label) and attached"
                                             : "Matched to the payload set for \(held.label)")
@@ -836,10 +859,118 @@ final class InventoryViewModel: ObservableObject {
 
     // MARK: Building a spool
 
-    /// The nearest named colour, for a spool's label. Empty when the table is unavailable.
+    /// The nearest generic colour name. Empty when the table is unavailable.
+    ///
+    /// A description, not a product name — see ``colourName(brand:name:material:filamentId:hex:)``
+    /// for what a spool is actually called.
     func colorName(forHex hex: String) -> String {
         guard let matcher, let name = try? matcher.nearestName(forHex: hex) else { return "" }
         return name
+    }
+
+    // MARK: Colour names
+
+    /// One spool's offered rename.
+    struct ColourRename: Identifiable, Equatable {
+        let spool: Spool
+        let name: String
+        var id: Spool.ID { spool.id }
+    }
+
+    /// What a filament's colour is called: what the user said, else its maker's name where that is
+    /// beyond doubt, else the nearest generic name — with the maker's nearest colours alongside.
+    func colourName(brand: String, name: String, material: String = "",
+                    filamentId: String = "", hex: String) -> ColourNameResolver.Resolution {
+        let matcher = self.matcher
+        return ColourNameResolver(catalogue: colours, learned: learned, generic: { hex in
+            (try? matcher?.nearestName(forHex: hex)) ?? ""
+        }).resolve(brand: brand, name: name, material: material, filamentId: filamentId, hex: hex)
+    }
+
+    func colourName(for spool: Spool) -> ColourNameResolver.Resolution {
+        colourName(brand: spool.brand, name: spool.name, material: spool.materialType,
+                   filamentId: spool.identity?.filamentId ?? "", hex: spool.colorHex)
+    }
+
+    /// Names a spool's colour from its own description. For records being built or re-described.
+    func applyColourName(to spool: inout Spool) {
+        let resolved = colourName(for: spool)
+        spool.colorName = resolved.name
+        spool.colorNameSource = resolved.source
+    }
+
+    /// How far the name on screen can be trusted, for a spool recorded before that was stored.
+    func colourNameSource(for spool: Spool) -> ColourNameSource {
+        if let stored = spool.colorNameSource { return stored }
+        let resolved = colourName(for: spool)
+        return resolved.name.caseInsensitiveCompare(spool.colorName) == .orderedSame
+            ? resolved.source : .generic
+    }
+
+    /// The user says what a colour is called.
+    ///
+    /// Remembered against the filament and the exact colour, and applied to **every** spool of it
+    /// in stock — the answer is about the filament, and three spools of one red that disagreed
+    /// about its name would be the app contradicting itself. An empty name forgets the answer and
+    /// goes back to whatever the lists say.
+    func setColourName(_ raw: String, for spool: Spool) {
+        guard let current = inventory.spool(id: spool.id) else { return }
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = Self.colourKey(current)
+        guard !(name.isEmpty && learned.name(forKey: key) == nil) else { return }
+        learnColourName(name, describing: current)
+        var changed = 0
+        for var other in inventory.active where Self.colourKey(other) == key {
+            applyColourName(to: &other)
+            inventory.update(other)
+            changed += 1
+        }
+        persist()
+        if changed > 1, !name.isEmpty {
+            toasts.success("\(changed) spools of this filament are now “\(name)”")
+        }
+    }
+
+    /// Remembers a name for a spool's filament and colour without touching any record — for a
+    /// spool that is still being built.
+    func learnColourName(_ name: String, describing spool: Spool) {
+        learned.learn(name, forKey: Self.colourKey(spool))
+        do { try learnedStore.save(learned) } catch {
+            toasts.error("The colour name could not be saved. \(error.localizedDescription)")
+        }
+    }
+
+    private static func colourKey(_ spool: Spool) -> String {
+        LearnedColourNames.key(filamentId: spool.identity?.filamentId ?? "",
+                               brand: spool.brand, name: spool.name, hex: spool.colorHex)
+    }
+
+    /// Applies the offered renames the user ticked.
+    func applyRenames(_ ids: Set<Spool.ID>) {
+        var changed = 0
+        for proposal in renameProposals where ids.contains(proposal.id) {
+            guard var spool = inventory.spool(id: proposal.id) else { continue }
+            applyColourName(to: &spool)
+            inventory.update(spool)
+            changed += 1
+        }
+        guard changed > 0 else { return }
+        persist()
+        toasts.success("Renamed the colour of \(changed) spool\(changed == 1 ? "" : "s")")
+    }
+
+    /// Only names the lists are sure of, and only where they differ from what is shown. A spool
+    /// whose name already *is* its maker's needs nothing, and one the lists cannot decide is the
+    /// rail's question to ask, not a rename to offer.
+    private func refreshRenameProposals() {
+        let found = inventory.active.compactMap { spool -> ColourRename? in
+            guard spool.colorNameSource == nil || spool.colorNameSource == .generic else { return nil }
+            let resolved = colourName(for: spool)
+            guard resolved.source != .generic,
+                  resolved.name.caseInsensitiveCompare(spool.colorName) != .orderedSame else { return nil }
+            return ColourRename(spool: spool, name: resolved.name)
+        }
+        if found != renameProposals { renameProposals = found }
     }
 
     /// Builds an inventory record from a decoded tag.
@@ -869,7 +1000,6 @@ final class InventoryViewModel: ObservableObject {
                           name: name,
                           materialType: materialType,
                           colorHex: record.rgbHex,
-                          colorName: colorName(forHex: record.rgbHex),
                           netWeightGrams: netWeightGrams ?? record.weightGrams,
                           remainingPercent: remainingPercent,
                           location: location,
@@ -877,6 +1007,7 @@ final class InventoryViewModel: ObservableObject {
                               ? "Intake · assumed full"
                               : "Set at intake",
                           tagSource: tagSource)
+        applyColourName(to: &spool)
         spool.note(kind: .intake, detail: detail)
         return spool
     }
