@@ -508,3 +508,48 @@ What HueForge offers:
 *Vendor Libraries* at startup rests on its import dialog doing exactly that copy. The export file
 through *Filaments ▸ Import* is the route its own strings describe end to end. The CSV `Owned`
 column is written as `true`/`false`; HueForge's parser for it was not observable.
+
+## D-016 — A colour is named by its maker's list, decided by lead rather than distance, and the user's answer is final
+**Context:** Every colour was named by `ColorMatcher`, the nearest of 31,861 generic names. A
+factory Creality Hyper PLA Red read "Cherry Pie", Skin "Malibu Dune", Blue "Naval Adventures". The
+measured manufacturer swatches were already bundled, but only as a picker. Three separate causes:
+- The lookup was brand-blind.
+- **A tag's hex is a code, not a measurement.** The factory Hyper PLA Blue tag carries `0A2989`
+  (navy); the filament is listed at `0081BF`. ΔE2000 ≈ 31 — no metric joins them.
+- The printer's catalogue files third-party filament as brand `Generic` with the maker in the name.
+
+Tried against the 24 distinct filaments in the owner's stock before building anything.
+
+**Decision:**
+- `BrandColourCatalogue` holds two sources together: the Open Filament Database (published colours,
+  156 makers) and filamentcolors.xyz (measured, 150 makers; 67 in common). Each lookup searches the
+  spool's own **line** first, then the rest of the maker's range, one result per distinct name.
+- Lines are compared as word sets with the maker removed and the polymer added, so the printer's
+  `Polymaker ABS` meets the maker's `PolyLite ABS`. Exact set first: `Hyper PLA` is also contained
+  in `Hyper PLA-CF`, a different product.
+- Distance is CIEDE2000. CIE76 was kept where it already was (spread reporting, HueForge TDs).
+- **A name is taken automatically only when the nearest candidate has a clear lead** over the next
+  differently-named one (≥ 4 and ≥ 1.5×), within ΔE 15. An absolute threshold cannot work: correct
+  matches sit at ΔE 11 and wrong ones at 0.4.
+- The maker's wider range names a spool only when its line is absent from the lists altogether. A
+  listed line with nothing near is a question, not a licence to borrow a neighbour's name.
+- Lookalikes from other makers (no maker identified) are offered on the camera sheet and never used
+  to name anything.
+- What the user says is stored in `colour-names.json` keyed `filamentId|HEX` (or maker, line and
+  hex without an id) and applied to every spool with that key.
+- `Spool.colorNameSource` records which of the three it was. Existing spools decode with `nil` and
+  are **offered** a rename; nothing already on screen changes unasked.
+- On the camera sheet, choosing a filament replaces the reading with that filament's hex.
+
+**Consequences / limits:**
+- Of the owner's 24 filaments, the lists settle 8 unaided (Black, White, Grey, Red, Skin and their
+  ABS/TPU counterparts); the rest are asked once. Hyper Stardust, HP Ultra and the translucent PETG
+  are in neither source.
+- Published hexes are nominal. A camera reading lands nearer the measured swatches, which exist for
+  fewer lines.
+- The 4 / 1.5× / 15 figures were set from that one inventory. They are constants on
+  `ColourNameResolver` with a test each, and are the first thing to revisit if a wrong name is
+  auto-applied.
+- The camera sheet's filament list has not been exercised against a live camera in this change;
+  its matching is the same call the Inventory rail makes.
+

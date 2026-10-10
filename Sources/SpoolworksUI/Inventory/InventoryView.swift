@@ -15,6 +15,10 @@ struct InventoryView: View {
     /// row and the splitter read one source — the fixed `Column` constants this replaced existed
     /// for the same reason, and drifting apart is still the failure it prevents.
     @StateObject private var layout = InventoryLayout()
+    @State private var isReviewingRenames = false
+    /// "Not now" on the rename offer. Session-only on purpose: the offer is cheap to see again and
+    /// a permanent dismissal would need somewhere to undo it.
+    @State private var renamesDeferred = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -32,6 +36,32 @@ struct InventoryView: View {
                          confirm: { model.confirmRetire(spool) },
                          cancel: { model.retireTarget = nil })
         }
+        .sheet(isPresented: $isReviewingRenames) {
+            ColourRenameSheet(proposals: model.renameProposals) { model.applyRenames($0) }
+        }
+    }
+
+    /// The offer to rename. An offer and not an act: these names have been on screen, and on any
+    /// label the user printed from them, for as long as the spools have been in stock.
+    private var renameOffer: some View {
+        let n = model.renameProposals.count
+        // The example is one that has a name to contrast with; a spool the printer discovered
+        // before colours were named has none, and "“” is Creality's “Black”" says nothing.
+        let example = model.renameProposals.first { !$0.spool.colorName.isEmpty }
+        return HStack(spacing: Theme.Spacing.m) {
+            Text("\(n) spool\(n == 1 ? " has a colour its maker has" : "s have colours their makers have") "
+                 + "a name for"
+                 + (example.map { " — “\($0.spool.colorName)” is \($0.spool.brand)'s “\($0.name)”." } ?? "."))
+                .font(Theme.caption)
+                .foregroundStyle(Theme.label)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button("Review…") { isReviewingRenames = true }
+                .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 7))
+            Button("Not now") { renamesDeferred = true }
+                .buttonStyle(.sw(.ghost, size: 12, h: 10, v: 7))
+        }
+        .panelSurface(padding: Theme.Spacing.m)
     }
 
     // MARK: List
@@ -55,6 +85,10 @@ struct InventoryView: View {
 
             if let error = model.storageError {
                 InlineFailure(text: error).padding(.bottom, Theme.Spacing.m)
+            }
+
+            if !model.renameProposals.isEmpty, !renamesDeferred {
+                renameOffer.padding(.bottom, Theme.Spacing.m)
             }
 
             if model.isEmpty {
@@ -426,6 +460,10 @@ private struct InventoryDetailRail: View {
 
         VStack(spacing: 0) {
             TypeRow(spool: spool, model: model, materials: env.materialsModel)
+            ColourNameRow(spool: spool, model: model)
+                // Rebuilt when the spool or its name changes, so the field never shows the
+                // previous spool's draft.
+                .id("\(spool.id)|\(spool.colorName)")
             NetWeightRow(spool: spool, model: model)
             DataRow("Serial", spool.serialLabel, mono: true)
             DataRow("Filament ID", spool.filamentIdLabel, mono: true)
@@ -880,5 +918,201 @@ struct SpoolEditControls: View {
             RemainingControl(spool: spool, model: model)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Colour name
+
+/// What the colour is called, and — when the app could not tell — the maker's nearest colours to
+/// choose from.
+///
+/// The choices appear only while the name is a generic description. That is the one case with a
+/// question in it: "Naval Adventures" is what the colour looks like, and the maker has a name for
+/// it that no measurement can recover, because a factory tag's hex is a code and not a reading.
+/// One click answers it for this spool and every later one of the same filament and colour.
+struct ColourNameRow: View {
+    let spool: Spool
+    @ObservedObject var model: InventoryViewModel
+
+    @State private var draft = ""
+
+    var body: some View {
+        let source = model.colourNameSource(for: spool)
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                Text("Colour")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.secondaryLabel)
+                Spacer(minLength: Theme.Spacing.s)
+                SWTag(text: Self.title(source), style: source == .generic ? .accent : .neutral)
+                    .help(Self.help(source))
+                TextField("Name", text: $draft)
+                    .textFieldStyle(.plain)
+                    .swInput()
+                    .frame(maxWidth: 150)
+                    .onSubmit { model.setColourName(draft, for: spool) }
+                    .accessibilityLabel("Colour name of \(spool.label)")
+                    .accessibilityHint("Press Return to set it for every spool of this filament and colour.")
+            }
+            if source == .generic {
+                let suggestions = model.colourName(for: spool).suggestions
+                if !suggestions.isEmpty {
+                    // The line's own colours first — the answer is usually one of them even when
+                    // none is *near*, because a tag's hex is a code — then a few from the rest of
+                    // the maker's range.
+                    let line = suggestions.filter { $0.scope == .line }
+                    let rest = suggestions.filter { $0.scope != .line }
+                    FilamentMatchChips(matches: Array(line.prefix(6)) + Array(rest.prefix(line.isEmpty ? 6 : 3)),
+                                       showsBrand: false) { match in
+                        model.setColourName(match.colour.name, for: spool)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, Theme.Spacing.s)
+        .overlay(alignment: .bottom) { Hairline() }
+        .accessibilityElement(children: .contain)
+        .onAppear { draft = spool.colorName }
+    }
+
+    static func title(_ source: ColourNameSource) -> String {
+        switch source {
+        case .learned: return "set by you"
+        case .brand: return "maker's name"
+        case .generic: return "approx."
+        }
+    }
+
+    static func help(_ source: ColourNameSource) -> String {
+        switch source {
+        case .learned: return "You named this colour. It applies to every spool of this filament and colour."
+        case .brand: return "The maker's own name for this colour."
+        case .generic: return "A description of the colour, not the maker's name for it. Pick one below or type it."
+        }
+    }
+}
+
+/// A row of a maker's colours to choose between: swatch, name, and the line it belongs to.
+///
+/// Shared by the Inventory rail and the camera sheet so the two offer a filament the same way.
+struct FilamentMatchChips: View {
+    let matches: [BrandColourCatalogue.Match]
+    /// True when the matches span makers, and the maker is therefore part of the answer.
+    var showsBrand: Bool
+    var selectedID: String? = nil
+    let pick: (BrandColourCatalogue.Match) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Theme.Spacing.s) {
+                ForEach(matches) { match in
+                    Button { pick(match) } label: {
+                        HStack(spacing: 6) {
+                            Swatch(hex: match.colour.hex, size: 16)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(match.colour.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Theme.label)
+                                    .lineLimit(1)
+                                Text(detail(match))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Theme.secondaryLabel)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Theme.surface)
+                        .overlay(Rectangle().strokeBorder(
+                            match.id == selectedID ? Theme.accent : Theme.separator,
+                            lineWidth: match.id == selectedID ? 2 : 1))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(match.colour.brand) \(match.colour.label) · #\(match.colour.hex) · "
+                          + (match.colour.source == .measured ? "measured swatch" : "published colour")
+                          + String(format: " · ΔE %.1f", match.deltaE))
+                    .accessibilityLabel("\(match.colour.brand) \(match.colour.name), \(match.colour.line)")
+                    .accessibilityAddTraits(match.id == selectedID ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private func detail(_ match: BrandColourCatalogue.Match) -> String {
+        showsBrand ? "\(match.colour.brand) · \(match.colour.line)" : match.colour.line
+    }
+}
+
+/// Review of the offered renames: what each spool is called now, and what its maker calls it.
+struct ColourRenameSheet: View {
+    let proposals: [InventoryViewModel.ColourRename]
+    let apply: (Set<Spool.ID>) -> Void
+
+    @State private var chosen: Set<Spool.ID> = []
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Colour names").kicker()
+                Text("Use the makers' names").font(.system(size: 20, weight: .heavy))
+                Text("These spools were named by the nearest of 31,861 generic colours. Each has a "
+                     + "colour in its maker's own range that it matches clearly. Untick any you "
+                     + "would rather keep.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+            Rule()
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(proposals) { proposal in
+                        Toggle(isOn: Binding(
+                            get: { chosen.contains(proposal.id) },
+                            set: { if $0 { chosen.insert(proposal.id) } else { chosen.remove(proposal.id) } })) {
+                            HStack(spacing: Theme.Spacing.s) {
+                                Swatch(hex: proposal.spool.colorHex)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("\(proposal.spool.brand) \(proposal.spool.name)")
+                                        .font(Theme.rowTitle)
+                                    Text("\(proposal.spool.colorName.isEmpty ? "—" : proposal.spool.colorName) → \(proposal.name)")
+                                        .font(Theme.caption)
+                                        .foregroundStyle(Theme.secondaryLabel)
+                                }
+                                Spacer(minLength: 0)
+                                Text("#" + proposal.spool.colorHex)
+                                    .font(Theme.monoSmall)
+                                    .foregroundStyle(Theme.kickerLabel)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(.vertical, 6)
+                    }
+                }
+                .padding(20)
+            }
+            Rule()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.sw(.ghost))
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename \(chosen.count)") {
+                    apply(chosen)
+                    dismiss()
+                }
+                .buttonStyle(.sw(.primary))
+                .disabled(chosen.isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+        }
+        .frame(width: 520, height: 520)
+        .background(Theme.background)
+        .onAppear { chosen = Set(proposals.map(\.id)) }
     }
 }

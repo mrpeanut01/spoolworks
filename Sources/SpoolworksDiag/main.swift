@@ -28,6 +28,9 @@ func usage() {
                                 it never reaches the process list or the shell
                                 history. Read-only.
 
+      spooldiag colours            Name every spool's colour the way the app would, and
+                                show the maker's nearest colours for each. Read-only.
+
       spooldiag hueforge [--csv] [--out PATH]
                                 Show the inventory as a HueForge filament library,
                                 with where each transmission distance came from.
@@ -406,6 +409,34 @@ case "boxinfo":
             print("  \(spool.remainingLabel.padding(toLength: 5, withPad: " ", startingAt: 0))"
                   + "  \(spool.location.description)  \(spool.label)")
         }
+    }
+
+case "colours":
+    do {
+        let store = try InventoryStore.applicationSupport()
+        let matcher = try? ColorMatcher.shared()
+        let resolver = ColourNameResolver(
+            catalogue: .shared,
+            learned: LearnedColourNamesStore(directory: store.directory).load(),
+            generic: { hex in (try? matcher?.nearestName(forHex: hex)) ?? "" })
+        var seen = Set<String>()
+        for spool in try store.load().active {
+            let key = "\(spool.brand)|\(spool.name)|\(spool.colorHex)"
+            guard seen.insert(key).inserted else { continue }
+            let r = resolver.resolve(brand: spool.brand, name: spool.name,
+                                     material: spool.materialType,
+                                     filamentId: spool.identity?.filamentId ?? "",
+                                     hex: spool.colorHex)
+            print("\(spool.brand) / \(spool.name) #\(spool.colorHex)  now \"\(spool.colorName)\""
+                  + "  ->  \"\(r.name)\" [\(r.source.rawValue)]")
+            for m in r.suggestions.prefix(5) {
+                print(String(format: "      %5.1f  %@  (%@, %@)", m.deltaE, m.colour.label,
+                             "\(m.scope)", m.colour.source.rawValue))
+            }
+        }
+    } catch {
+        print("colours: \(error.localizedDescription)")
+        exit(1)
     }
 
 case "hueforge":

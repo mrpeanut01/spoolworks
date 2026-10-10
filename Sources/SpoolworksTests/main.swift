@@ -137,6 +137,12 @@ let exitCode = TestDriver.run([
     inventorySortTests,
     sortToggleTests,
 
+    // Naming a colour the way its maker does
+    deltaE2000Tests,
+    brandColourCatalogueTests,
+    colourNameResolverTests,
+    inventoryColourNameTests,
+
     // HueForge export and sync
     hueForgeLibraryTests,
     hueForgeExportTests,

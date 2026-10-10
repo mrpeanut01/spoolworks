@@ -35,6 +35,16 @@ The 31,861-entry colour-name dataset inside `reference/colors.db`, compiled by
 `Tools/build-color-table.sh` into `Sources/SpoolworksCore/Resources/colors.bin`. This is what turns
 a filament's `RRGGBB` into "Sakura" or "Galaxy Black" on screen.
 
+## Open Filament Database
+
+<https://openfilamentdatabase.org> — MIT licensed, by the Open Filament Collective
+(<https://github.com/OpenFilamentCollective/open-filament-database>).
+
+`Sources/SpoolworksCore/Resources/brand-colours.json` — 14,566 colours across 156 makers and 1,962
+product lines, reduced from the project's `all.json` export by `Tools/build-brand-colours.py` to
+brand, line, polymer, colour name and hex. It is what lets a spool's colour be called what its maker
+calls it. These are the makers' **published** colours, not measurements.
+
 ## filamentcolors.xyz
 
 <https://filamentcolors.xyz> — MIT licensed, by Joe Kaufeld

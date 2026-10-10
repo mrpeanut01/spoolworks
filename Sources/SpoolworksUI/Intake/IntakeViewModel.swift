@@ -201,6 +201,8 @@ final class IntakeViewModel: ObservableObject {
     /// on the tag says how much has been printed.
     @Published var remainingPercent: Double = 100
     @Published var colorHex = "C12E1F"
+    /// The maker's colour chosen on the camera sheet, if one was. Its name goes on the spool.
+    @Published var pickedColour: BrandColour?
     /// Allocated by this app in method B; read off the tag in method A.
     @Published var serial = ""
     @Published var filamentId = ""
@@ -754,7 +756,6 @@ final class IntakeViewModel: ObservableObject {
                              name: name,
                              materialType: materialType,
                              colorHex: colorHex,
-                             colorName: inventory.colorName(forHex: Spool.normaliseHex(colorHex)),
                              netWeightGrams: netWeightGrams,
                              remainingPercent: remainingPercent,
                              // Unplaced, like every other way in. Nothing here has observed where
@@ -768,6 +769,13 @@ final class IntakeViewModel: ObservableObject {
                                                      : "Manual record · tag pending",
                              tagSource: willBeTagged ? .spoolworksWritten : .untagged,
                              plannedSerial: identity == nil ? serial : nil)
+            // A filament picked off the camera sheet's list is the user saying what this is, so
+            // it is remembered like any other answer — and still only if the colour is the one
+            // that was picked: a hex edited afterwards is a different colour.
+            if let picked = pickedColour, picked.hex == made.colorHex {
+                inventory.learnColourName(picked.name, describing: made)
+            }
+            inventory.applyColourName(to: &made)
             made.note(kind: .intake,
                       detail: willBeTagged
                           ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
@@ -935,6 +943,7 @@ final class IntakeViewModel: ObservableObject {
         netWeightGrams = 1000
         remainingPercent = 100
         colorHex = "C12E1F"
+        pickedColour = nil
         filamentId = ""
         materialID = ""
         // The catalogue pre-fill is Method B's: it is where the tag's filament id comes from. In

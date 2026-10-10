@@ -57,7 +57,10 @@ struct LookalikeSlotBanners: View {
     private func message(_ held: SpoolInventory.LookalikeSlot, _ spool: Spool) -> String {
         let slot = held.slot
         let name = [slot.brand, slot.name].filter { !$0.isEmpty }.joined(separator: " ")
-        let colour = inventory.colorName(forHex: slot.rgbHex)
+        let colour = inventory.colourName(brand: slot.brand, name: slot.name,
+                                          material: slot.materialType,
+                                          filamentId: held.identity.filamentId,
+                                          hex: slot.rgbHex).name
         let what = (name.isEmpty ? "filament \(held.identity.filamentId)" : name)
             + " · " + (colour.isEmpty ? "#\(slot.rgbHex)" : colour)
         let source = slot.hasTag

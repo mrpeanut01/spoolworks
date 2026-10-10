@@ -76,11 +76,39 @@ D-013 explains why.
 The touchscreen lists an added filament straight away. The CFS may not recognise its tag until the
 printer restarts.
 
+## What a colour is called
+
+A filament's colour name belongs to its maker. Creality's `C12E1F` is **Red**; the nearest of 31,861
+generic colour names is "Cherry Pie", which describes the colour and appears on no box. So a spool's
+colour is named in this order:
+
+1. **What you said.** Remembered against the filament and the exact colour, and applied to every
+   spool of it — now and later. This is the only thing that can name some factory colours: a tag's
+   hex is a *code*, and Creality's Hyper PLA Blue tag says navy `0A2989` where the filament is cyan.
+2. **The maker's name**, when one colour in the spool's own product line is clearly the nearest —
+   near, and well ahead of the next differently-named one. There is no distance that means "match":
+   a tag's `000000` is ΔE 11 from a measured black and plainly the same filament, while two pastels
+   in one matte range sit a hair apart and are different products.
+3. **A description** — the generic name, marked *approx.* in the Inventory rail, with the maker's
+   nearest colours beside it to pick from. One click answers it for good.
+
+The maker is found in the name when the brand is `Generic` (`Generic` / `Overture - Matte PLA`).
+Two lists are searched together: the Open Filament Database (156 makers, published colours) and
+filamentcolors.xyz (150 makers, colorimeter readings). Distances are CIEDE2000.
+
+Spools already in stock are never renamed unasked. Inventory offers the renames it is sure of, for
+review. `spooldiag colours` prints what every spool would be called and why.
+
 ## Reading a spool's colour with the camera
 
 Intake's Method B needs a colour for a spool that has no tag to read it from, and typing a hex code
 means guessing. **Intake ▸ Colour ▸ Scan…** opens the camera instead: fill the small box with
 filament, hold still until the corners turn green, take the reading.
+
+Once a reading is taken the sheet lists the **closest filaments** — the maker's own colours when the
+form says who the maker is, anyone's when it does not. Choosing one uses that filament's colour and
+name in place of the reading, so two spools of one filament carry one colour rather than two
+slightly different camera readings.
 
 It does not average the pixels, because averaging them is wrong. Filament is a 1.75 mm cylinder
 wound in a spiral, so a close-up of a wrap is a corrugated surface — a specular highlight along
@@ -219,7 +247,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 828 tests, runnable without hardware |
+| `SpoolworksTests` | 847 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
