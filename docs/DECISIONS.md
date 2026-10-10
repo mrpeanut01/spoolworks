@@ -472,3 +472,39 @@ user their record.
   question does not come back while it stays loaded.
 - Factory twins remain indistinguishable to a desk reader. The hero on Read / identify says "One of
   N spools with this tag" rather than claiming a single match.
+
+## D-015 — HueForge gets a library file Spoolworks owns, with ids derived from the filament; TDs are labelled by where they came from
+**Context:** HueForge needs the user's filaments — line, colour, polymer and transmission distance
+(TD). Spoolworks holds the first three for every spool in stock. HueForge documents none of its
+file formats, so they were read off the installed 0.9.4.3: its 20 shipped vendor libraries (890
+entries), the strings of its import dialog, and `thehueforge/hueforge-community-library-example`.
+
+What HueForge offers:
+- **Library JSON** — `{"Filaments":[{Brand, Color, Name, Owned, Transmissivity, Type, uuid}]}`, with
+  optional `Tags` / `Secondary_*`. The same shape for the personal, vendor and community libraries.
+- **CSV** — required `Brand, Type, Color, Name, TD`; optional `Owned, Uuid`; anything else ignored.
+- ***Filaments ▸ Import*** — copies a file into *Vendor Libraries* / *Community Libraries*, or
+  merges it into the personal library, matching on uuid and then on name, and offering *Replace
+  Entire File* / *Update Selected Entries* / *Update All Entries*.
+- **Community sources** — a `manifest.json` URL HueForge polls and re-downloads from.
+- No API, no URL scheme for filaments, no watch folder.
+
+**Decision:**
+- One entry per *filament*, not per spool. Retired spools are left out; everything else is `Owned`.
+- Brand is the product line: Spoolworks' brand + name with the polymer taken back off
+  (`Creality` + `Hyper PLA` → `Creality Hyper`), which is HueForge's own convention.
+- The uuid is a hash of line, polymer and colour. HueForge matches on uuid first, so this is what
+  makes a second export an update. The colour's *name* and the TD are deliberately not in the hash.
+- Sync writes `Vendor Libraries/Spoolworks.json` and nothing else. `personal_library.json` is
+  HueForge's working copy, rewritten while it runs; writing it would lose one side's edits.
+- Sync refuses any path inside a `.app` — the shipped libraries live in the bundle and a file added
+  there breaks its signature.
+- TD is looked up in HueForge's own libraries (same line and polymer, same name or ΔE ≤ 5), else
+  estimated as the median of the nearest colours, else typed. The source is shown on every row,
+  because an estimate and a measurement are the same number in the file.
+- The user's TDs and exclusions live in `hueforge.json` beside the inventory, keyed by filament.
+
+**Not verified:** Spoolworks cannot drive HueForge, so that HueForge *loads* an unlisted file from
+*Vendor Libraries* at startup rests on its import dialog doing exactly that copy. The export file
+through *Filaments ▸ Import* is the route its own strings describe end to end. The CSV `Owned`
+column is written as `true`/`false`; HueForge's parser for it was not observable.

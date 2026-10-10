@@ -136,5 +136,12 @@ let exitCode = TestDriver.run([
     inventoryLayoutTests,
     inventorySortTests,
     sortToggleTests,
+
+    // HueForge export and sync
+    hueForgeLibraryTests,
+    hueForgeExportTests,
+    hueForgeTransmissivityTests,
+    hueForgeInstallTests,
+    hueForgeViewModelTests,
 ])
 exit(exitCode)

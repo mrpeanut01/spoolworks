@@ -26,6 +26,7 @@ final class AppEnvironment: ObservableObject {
     let intakeModel: IntakeViewModel
     /// The offer to add a just-tagged filament to a printer that does not list it.
     let filamentPushModel: FilamentPushModel
+    let hueForgeModel: HueForgeViewModel
 
     /// Which sidebar destination the detail column is showing.
     ///
@@ -99,6 +100,10 @@ final class AppEnvironment: ObservableObject {
                 .appendingPathComponent("Spoolworks", isDirectory: true))
         let inventoryModel = InventoryViewModel(store: inventoryStore, toasts: toasts)
         self.inventoryModel = inventoryModel
+        self.hueForgeModel = HueForgeViewModel(
+            inventory: inventoryModel,
+            store: HueForgePreferencesStore(directory: inventoryStore.directory),
+            toasts: toasts)
         self.cfsModel = CFSViewModel(transport: LivePrinterTransport(),
                                      printers: printerModel,
                                      inventory: inventoryModel)
@@ -238,6 +243,7 @@ final class AppEnvironment: ObservableObject {
     nonisolated static let materialsWindowID = "materials"
     nonisolated static let printersWindowID = "printers"
     nonisolated static let locationsWindowID = "locations"
+    nonisolated static let hueForgeWindowID = "hueforge"
 }
 
 // MARK: - App
@@ -298,6 +304,13 @@ public struct SpoolworksApp: App {
         }
         .defaultSize(width: 540, height: 640)
 
+        // A window like the three above, and with its own `.toast` for the reason they have one:
+        // every way out of it reports through the toast centre.
+        Window("HueForge", id: AppEnvironment.hueForgeWindowID) {
+            HueForgeView(model: env.hueForgeModel).toast(env.toasts).nonRestorableWindow()
+        }
+        .defaultSize(width: 760, height: 720)
+
         // Tag Memory is a reference view you keep open next to the main window, not a sheet.
         // The Windows author gave `TagMemoryForm` its own taskbar entry — the same instinct.
         Window("Tag Memory", id: AppEnvironment.tagMemoryWindowID) {
@@ -341,6 +354,9 @@ struct SpoolworksCommands: Commands {
                 .keyboardShortcut("2", modifiers: [.command, .shift])
             Button("Locations…") { openWindow(id: AppEnvironment.locationsWindowID) }
                 .keyboardShortcut("3", modifiers: [.command, .shift])
+            Divider()
+            Button("HueForge…") { openWindow(id: AppEnvironment.hueForgeWindowID) }
+                .keyboardShortcut("4", modifiers: [.command, .shift])
         }
 
         CommandMenu("Tag") {

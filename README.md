@@ -30,6 +30,9 @@ where you look for the parts of an app. All three are parts: the catalogue turns
 a name on Intake and Write, the printer list holds the address and password the CFS poll uses, and
 the location list is where a spool can be kept and where one goes when it leaves the printer.
 
+**HueForge** (`Manage ▸ HueForge…`, ⇧⌘4) is a fourth window — see
+[Sending your stock to HueForge](#sending-your-stock-to-hueforge).
+
 The former **Reader** screen is gone. Its diagnostics are the right-hand column of Read / identify,
 and its one setting — show key material — moved into the Tag Memory window (⇧⌘M), which is the only
 place its effect is visible.
@@ -93,6 +96,34 @@ warm, and auto white balance actively tries to neutralise a large field of one c
 is a good way to pick a swatch; it is offered into a field you can still type over, never applied
 silently. An iPhone used as a Continuity Camera is much the better instrument — it focuses at a few
 centimetres, which a built-in Mac camera cannot.
+
+## Sending your stock to HueForge
+
+[HueForge](https://shop.thehueforge.com) needs to know which filaments you own and how much light
+each one passes. `Manage ▸ HueForge…` turns the inventory into a HueForge filament library — one
+entry per filament, however many spools of it there are — and offers the three routes HueForge
+has for taking one in:
+
+| Route | What Spoolworks writes | What you do in HueForge |
+|---|---|---|
+| **Export…** | A `.json` library or a `.csv` (`Brand, Type, Color, Name, TD, Owned, Uuid`) | *Filaments ▸ Import* |
+| **Sync** | `Filaments/Vendor Libraries/Spoolworks.json` in HueForge's folder, replaced whole each time | Restart it |
+| **Community source** | `manifest.json` + `libraries/Spoolworks.json` for a Git repository | *Filaments ▸ Manage Community Sources*, once — it then updates itself |
+
+Every entry carries an id derived from the filament (line, polymer, colour), so a second export
+updates the first rather than duplicating it. Your `personal_library.json` is never written.
+
+**Transmission distance is the one thing Spoolworks cannot know** — a tag does not carry it. Each
+row says where its TD came from: *HueForge library* (the same filament in the libraries HueForge
+ships), *estimate* (the median of similar colours — a starting point, not a measurement), or *set by
+you*. Type a figure and press Return, or use **Import TDs…** on a file from HueForge's own
+*Filaments ▸ Export* to bring back what you measured there.
+
+On macOS, HueForge's folder is inside its sandbox container:
+`~/Library/Containers/com.thehueforge.hueforge/Data/Documents/HueForge`. macOS asks before one app
+reads another's container, so Spoolworks only goes there once you have chosen it for Sync.
+
+`spooldiag hueforge [--csv] [--out PATH]` prints or writes the same library without the window.
 
 ## Requirements
 
@@ -188,7 +219,7 @@ swift run spooldiag read      # read and decode a spool record
 | `SpoolworksUI` | The SwiftUI app, as a library so its state machine is testable |
 | `Spoolworks` | Two-line executable; `@main` only |
 | `SpoolworksDiag` | Diagnostic CLI (`spooldiag`) |
-| `SpoolworksTests` | 737 tests, runnable without hardware |
+| `SpoolworksTests` | 828 tests, runnable without hardware |
 
 `SpoolworksCore` imports no UI framework, so the entire codec, database and colour layer is
 testable against a `MockTransport` that simulates a MIFARE card.
