@@ -35,6 +35,11 @@ final class FilamentPushModel: ObservableObject {
         let family: PrinterType
         let printerName: String
         let host: String
+        /// Further filaments riding on the same notice, when the Inventory asks for every missing
+        /// one at once. Empty for a notice raised by a write.
+        var otherIDs: [String] = []
+
+        var allIDs: [String] { [filamentID] + otherIDs }
     }
 
     enum Phase: Equatable {
@@ -115,6 +120,42 @@ final class FilamentPushModel: ObservableObject {
                       host: printer.host))
     }
 
+    /// Raises the notice for a filament the Inventory has marked as missing from its printer.
+    ///
+    /// The same notice a write raises, reached the other way round: here the user has pointed at
+    /// the spool, so an earlier "Not now" does not apply and neither does the factory shortcut. The
+    /// printer is still asked first — the Inventory's copy of its list may be minutes old.
+    func offer(filamentID: String, family: PrinterType) {
+        guard let printer = printer(family), let filament = catalogueRecord(filamentID, family) else {
+            return
+        }
+        declinedID = nil
+        check(Subject(filamentID: filamentID,
+                      label: [filament.vendor, filament.name].filter { !$0.isEmpty }.joined(separator: " "),
+                      family: family,
+                      printerName: printer.name,
+                      host: printer.host))
+    }
+
+    /// Raises one notice for every filament the Inventory has marked as missing from a printer.
+    ///
+    /// One question and one click for the lot, rather than the same notice six times. The printer
+    /// is asked first, as for one, and only the ids it still lacks are carried forward.
+    func offerAll(filamentIDs: [String], family: PrinterType) {
+        var seen = Set<String>()
+        let known = filamentIDs.filter { seen.insert($0).inserted && catalogueRecord($0, family) != nil }
+        guard let first = known.first else { return }
+        guard known.count > 1 else { return offer(filamentID: first, family: family) }
+        guard let printer = printer(family) else { return }
+        declinedID = nil
+        check(Subject(filamentID: first,
+                      label: "\(known.count) filaments",
+                      family: family,
+                      printerName: printer.name,
+                      host: printer.host,
+                      otherIDs: Array(known.dropFirst())))
+    }
+
     /// Adds the filament the notice is about to its printer.
     func add() {
         let subject: Subject
@@ -124,9 +165,13 @@ final class FilamentPushModel: ObservableObject {
         default:
             return
         }
-        guard let filament = catalogueRecord(subject.filamentID, subject.family) else {
-            phase = .failed(subject, .add, "\(subject.filamentID) is no longer in this Mac's catalogue.")
-            return
+        var filaments: [Filament] = []
+        for id in subject.allIDs {
+            guard let filament = catalogueRecord(id, subject.family) else {
+                phase = .failed(subject, .add, "\(id) is no longer in this Mac's catalogue.")
+                return
+            }
+            filaments.append(filament)
         }
         guard let credentials = credentials(subject.family) else {
             phase = .failed(subject, .add,
@@ -138,7 +183,13 @@ final class FilamentPushModel: ObservableObject {
         let transport = self.transport
         work = Task { [weak self] in
             do {
-                _ = try await transport.addFilament(filament, credentials: credentials, family: subject.family)
+                // One at a time, each its own read, splice and verified write (D-013). A failure
+                // stops the run; the ones already added stay added, and Try again skips them —
+                // the printer reports them as already listed.
+                for filament in filaments {
+                    try Task.checkCancellation()
+                    _ = try await transport.addFilament(filament, credentials: credentials, family: subject.family)
+                }
                 guard let self, self.phase == .adding(subject) else { return }
                 self.phase = .added(subject)
             } catch {
@@ -185,12 +236,31 @@ final class FilamentPushModel: ObservableObject {
             do {
                 let ids = try await filamentList.filamentIDs(host: subject.host)
                 guard let self, self.phase == .checking(subject) else { return }
-                self.phase = ids.contains(subject.filamentID) ? .idle : .missing(subject)
+                let missing = subject.allIDs.filter { !ids.contains($0) }
+                guard let first = missing.first else {
+                    self.phase = .idle
+                    return
+                }
+                var remaining = subject
+                if missing.count != subject.allIDs.count {
+                    // Some were added since the Inventory last looked.
+                    remaining = Subject(filamentID: first,
+                                        label: missing.count == 1 ? self.label(first, subject.family)
+                                                                  : "\(missing.count) filaments",
+                                        family: subject.family, printerName: subject.printerName,
+                                        host: subject.host, otherIDs: Array(missing.dropFirst()))
+                }
+                self.phase = .missing(remaining)
             } catch {
                 guard let self, self.phase == .checking(subject) else { return }
                 self.phase = .failed(subject, .check, error.localizedDescription)
             }
         }
+    }
+
+    private func label(_ id: String, _ family: PrinterType) -> String {
+        guard let filament = catalogueRecord(id, family) else { return id }
+        return [filament.vendor, filament.name].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     // MARK: Factory catalogue

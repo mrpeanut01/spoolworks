@@ -304,6 +304,9 @@ final class InventoryViewModel: ObservableObject {
     private let toasts: ToastCenter
     private let defaults: UserDefaults
 
+    /// Where the inventory file lives, for the stores kept beside it.
+    var dataDirectory: URL { store.directory }
+
     /// Loaded once and cached: the table is 636 KB and naming a colour on every row render would
     /// re-read it. `nil` when the resource is missing, in which case spools simply carry no colour
     /// name — a degraded label, not a crash.
@@ -890,6 +893,78 @@ final class InventoryViewModel: ObservableObject {
     func colourName(for spool: Spool) -> ColourNameResolver.Resolution {
         colourName(brand: spool.brand, name: spool.name, material: spool.materialType,
                    filamentId: spool.identity?.filamentId ?? "", hex: spool.colorHex)
+    }
+
+    /// The maker the colour lists know this spool's filament by, or nil when they know none.
+    func maker(of spool: Spool) -> String? {
+        colours.brand(for: spool.brand, name: spool.name)
+    }
+
+    /// Every colour the maker sells this spool's filament in. See ``BrandColourCatalogue/colours(brand:name:material:)``.
+    func makerColours(for spool: Spool) -> (colours: [BrandColour], scope: BrandColourCatalogue.Scope) {
+        colours.colours(brand: spool.brand, name: spool.name, material: spool.materialType)
+    }
+
+    /// One filament-and-colour whose name is still only a description, and every spool of it.
+    struct UnmatchedColour: Identifiable {
+        /// The key a name is learned against — see ``LearnedColourNames/key(filamentId:brand:name:hex:)``.
+        let id: String
+        /// One of the spools, to describe the group by and to name it through.
+        let spool: Spool
+        let spoolCount: Int
+        /// The maker's colours for it, the nearest few first and then the rest by name.
+        let options: [BrandColour]
+        /// True when ``options`` spans the maker's whole range rather than the spool's own line.
+        let showsLine: Bool
+    }
+
+    /// The colours still waiting for their maker's name, one row per filament and colour — so
+    /// five spools of one grey are one question, and the whole stock can be answered in a sitting.
+    func unmatchedColours() -> [UnmatchedColour] {
+        var order: [String] = []
+        var groups: [String: (spool: Spool, count: Int)] = [:]
+        for spool in inventory.active where colourNameSource(for: spool) == .generic {
+            let key = Self.colourKey(spool)
+            if groups[key] == nil { order.append(key) }
+            groups[key] = (groups[key]?.spool ?? spool, (groups[key]?.count ?? 0) + 1)
+        }
+        // By filament and then by colour, so one maker's colours sit together and the sheet reads
+        // the same way each time it is opened.
+        func rank(_ key: String) -> (String, Double) {
+            guard let spool = groups[key]?.spool else { return ("", 0) }
+            return ("\(spool.brand) \(spool.name)".lowercased(), spool.colourOrder)
+        }
+        return order.sorted { rank($0) < rank($1) }.compactMap { key in
+            guard let group = groups[key] else { return nil }
+            let listed = makerColours(for: group.spool)
+            let near = colourName(for: group.spool).suggestions.map(\.colour)
+            var seen = Set<String>()
+            let options = (near + listed.colours).filter { seen.insert("\($0.name)|\($0.line)").inserted }
+            return UnmatchedColour(id: key, spool: group.spool, spoolCount: group.count,
+                                   options: options,
+                                   showsLine: listed.scope != .line || near.contains { $0.line != near.first?.line })
+        }
+    }
+
+    /// Names several colours in one go: `names` maps ``UnmatchedColour/id`` to the chosen name.
+    func applyColourNames(_ names: [String: String], to groups: [UnmatchedColour]) {
+        var named = 0
+        for group in groups {
+            guard let name = names[group.id]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { continue }
+            learned.learn(name, forKey: group.id)
+            for var spool in inventory.active where Self.colourKey(spool) == group.id {
+                applyColourName(to: &spool)
+                inventory.update(spool)
+                named += 1
+            }
+        }
+        guard named > 0 else { return }
+        do { try learnedStore.save(learned) } catch {
+            toasts.error("The colour names could not be saved. \(error.localizedDescription)")
+        }
+        persist()
+        toasts.success("Named the colour of \(named) spool\(named == 1 ? "" : "s")")
     }
 
     /// Names a spool's colour from its own description. For records being built or re-described.

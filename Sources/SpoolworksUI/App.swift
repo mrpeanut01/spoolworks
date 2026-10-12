@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import SpoolworksCore
 
 // MARK: - Shared state
@@ -27,6 +28,10 @@ final class AppEnvironment: ObservableObject {
     /// The offer to add a just-tagged filament to a printer that does not list it.
     let filamentPushModel: FilamentPushModel
     let hueForgeModel: HueForgeViewModel
+    /// What each spool still needs before it prints and designs correctly — the Inventory's
+    /// warning triangles.
+    let attentionModel: SpoolAttentionModel
+    private var observations: Set<AnyCancellable> = []
 
     /// Which sidebar destination the detail column is showing.
     ///
@@ -142,6 +147,48 @@ final class AppEnvironment: ObservableObject {
                     .first { $0.id == id }
             },
             isFactoryFilament: FilamentPushModel.isInBundledCatalogue)
+        let attentionModel = SpoolAttentionModel(
+            inventory: inventoryModel,
+            hueForge: self.hueForgeModel,
+            filamentList: CrealityPrinterSocket(),
+            printers: { [weak printerModel] in
+                (printerModel?.printers ?? []).filter(\.isReachableOnPaper).map {
+                    SpoolAttentionModel.Printer(
+                        family: $0.family,
+                        host: $0.host.trimmingCharacters(in: .whitespacesAndNewlines),
+                        name: $0.displayName)
+                }
+            },
+            isFactoryFilament: FilamentPushModel.isInBundledCatalogue,
+            filamentID: { [weak materialsModel] spool in
+                AppEnvironment.materialID(for: spool, in: materialsModel?.rows ?? [])
+            },
+            filamentLabel: { [weak materialsModel] id in
+                materialsModel?.rows.first { $0.id == id }.map { row in
+                    // Vendor rows already lead with their maker: `Anycubic` / `Anycubic PLA`.
+                    row.name.lowercased().hasPrefix(row.brand.lowercased())
+                        ? row.name : "\(row.brand) \(row.name)"
+                }
+            })
+        self.attentionModel = attentionModel
+        // A spool with no tag is checked by the id the catalogue gives its brand and name, which
+        // is not known until the catalogue has loaded. Hopped to the next turn of the run loop:
+        // `$rows` publishes on willSet, and the closures above read the model, not the value.
+        materialsModel.$rows
+            .receive(on: DispatchQueue.main)
+            .sink { [weak attentionModel] _ in attentionModel?.catalogueChanged() }
+            .store(in: &observations)
+        // Adding a filament to the printer clears its warning without asking the printer again.
+        self.filamentPushModel.$phase
+            .sink { [weak attentionModel] phase in
+                if case let .added(subject) = phase {
+                    for id in subject.allIDs {
+                        attentionModel?.noteAdded(filamentID: id, family: subject.family)
+                    }
+                }
+            }
+            .store(in: &observations)
+
         // Everything the closure reaches is captured weakly, `tagModel` included: the closure is
         // owned by `tagModel`, which is owned by this environment, so a strong `self` here was a
         // cycle. Harmless for a process-lifetime object, but not what the other captures say.

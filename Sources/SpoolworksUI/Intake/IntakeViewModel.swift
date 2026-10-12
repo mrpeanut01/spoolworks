@@ -201,8 +201,17 @@ final class IntakeViewModel: ObservableObject {
     /// on the tag says how much has been printed.
     @Published var remainingPercent: Double = 100
     @Published var colorHex = "C12E1F"
-    /// The maker's colour chosen on the camera sheet, if one was. Its name goes on the spool.
+    /// The maker's colour chosen — from the form's list, on the camera sheet, or off the box's
+    /// barcode — if one was. Its name goes on the spool.
     @Published var pickedColour: BrandColour?
+
+    /// The barcode read off this spool's box, as a GTIN-14, until the spool is added or discarded.
+    ///
+    /// Kept so the description the user ends up confirming can be remembered against it: the next
+    /// box of the same filament is then one scan, whether or not any list had heard of it.
+    @Published private(set) var scannedBarcode: String?
+    /// What the barcode said, or that it said nothing — shown under the form's heading.
+    @Published private(set) var barcodeNote: String?
     /// Allocated by this app in method B; read off the tag in method A.
     @Published var serial = ""
     @Published var filamentId = ""
@@ -214,7 +223,12 @@ final class IntakeViewModel: ObservableObject {
     /// that is not in the printer's catalogue produces a tag the printer reads and then ignores —
     /// so Method B picks from the catalogue rather than letting brand and material be free text.
     @Published var materialID = "" {
-        didSet { adoptCatalogueMaterial() }
+        didSet {
+            // A maker's colour belongs to its product line. Carried across a change of material it
+            // would put one filament's colour name on another's spool.
+            if oldValue != materialID { pickedColour = nil }
+            adoptCatalogueMaterial()
+        }
     }
     /// The brand filter above the material picker, also from the catalogue.
     @Published var catalogueBrand = "" {
@@ -240,15 +254,27 @@ final class IntakeViewModel: ObservableObject {
     private let inventory: InventoryViewModel
     private let materials: MaterialsViewModel
     private let toasts: ToastCenter
+    /// Every maker's colour list, for the form's colour menu.
+    private let colours: BrandColourCatalogue
+    /// The bundled box barcodes, and the ones described here. Saved beside the inventory.
+    private let barcodes: FilamentBarcodeCatalogue
+    private let learnedBarcodeStore: LearnedBarcodesStore
+    private var learnedBarcodes: LearnedBarcodes
 
     init(monitor: ReaderMonitor,
          inventory: InventoryViewModel,
          materials: MaterialsViewModel,
-         toasts: ToastCenter) {
+         toasts: ToastCenter,
+         colours: BrandColourCatalogue = .shared,
+         barcodes: FilamentBarcodeCatalogue = .shared) {
         self.monitor = monitor
         self.inventory = inventory
         self.materials = materials
         self.toasts = toasts
+        self.colours = colours
+        self.barcodes = barcodes
+        self.learnedBarcodeStore = LearnedBarcodesStore(directory: inventory.dataDirectory)
+        self.learnedBarcodes = learnedBarcodeStore.load()
         self.serial = Self.allocateSerial()
     }
 
@@ -516,6 +542,144 @@ final class IntakeViewModel: ObservableObject {
         // about the spool; the catalogue has nothing to say about it.
     }
 
+    // MARK: The maker's colours
+
+    /// Every colour the maker sells the chosen filament in.
+    ///
+    /// This is what makes the colour on a third-party tag the *filament's* colour rather than a
+    /// guess at it. Brand and material are already chosen from lists; the colour was the one field
+    /// left to a hex code typed by eye, and it is the field HueForge designs with. The maker
+    /// publishes the list, so the form offers it — the spool's own line where the lists know it,
+    /// the maker's whole range where they do not, and nothing for a maker they have never heard of.
+    var makerColours: (colours: [BrandColour], scope: BrandColourCatalogue.Scope) {
+        let key = "\(brand)|\(name)|\(materialType)"
+        if let cached = makerColourCache, cached.key == key { return cached.value }
+        let value = brand.isEmpty && name.isEmpty
+            ? ([], BrandColourCatalogue.Scope.anywhere)
+            : colours.colours(brand: brand, name: name, material: materialType)
+        makerColourCache = (key, value)
+        return value
+    }
+
+    /// The view asks on every render and the answer only changes with the material.
+    private var makerColourCache: (key: String,
+                                   value: (colours: [BrandColour], scope: BrandColourCatalogue.Scope))?
+
+    /// The colour in ``makerColours`` the form is currently set to, if it is one of them.
+    var chosenMakerColour: BrandColour? {
+        guard let picked = pickedColour, picked.hex == Spool.normaliseHex(colorHex) else { return nil }
+        return picked
+    }
+
+    /// Sets the form's colour to one of the maker's. `nil` only forgets the choice: the hex stays,
+    /// because a colour the user typed or scanned is still the best statement on hand.
+    func chooseMakerColour(_ colour: BrandColour?) {
+        guard !isIdentityLocked else { return }
+        pickedColour = colour
+        if let colour { colorHex = colour.hex }
+    }
+
+    // MARK: The box's barcode
+
+    /// What a barcode says is in the box: the user's own answer for it first, then the bundled
+    /// table's — and of the table's, the one the printer's catalogue can actually tag.
+    func barcodeFilament(for code: String) -> BarcodeFilament? {
+        if let learned = learnedBarcodes.filament(for: code) { return learned }
+        let listed = barcodes.filaments(for: code)
+        return listed.first { catalogueRow(for: $0) != nil } ?? listed.first
+    }
+
+    /// The catalogue entry to tag a box's filament as.
+    ///
+    /// A barcode names the maker's product; a tag needs an id the *printer* knows. They meet by
+    /// maker and product line, compared as word sets the way ``BrandColourCatalogue`` compares
+    /// them — and where the catalogue has nothing from that maker, at the printer's generic entry
+    /// for the polymer, which is what a spool of an unlisted brand is tagged as anyway.
+    func catalogueRow(for filament: BarcodeFilament) -> FilamentRow? {
+        let rows = materials.rows
+        if let id = filament.catalogueID, let row = rows.first(where: { $0.id == id }) { return row }
+
+        let maker = BrandColourCatalogue.brandKey(filament.brand)
+        let wanted = BrandColourCatalogue.lineTokens(filament.line, material: filament.material,
+                                                     brandKey: maker)
+        // The maker's own word is taken out of both sides: the box's maker may be a sub-brand
+        // the catalogue files under its parent — `Panchroma` / `Matte PLA` on the box is
+        // `Polymaker` / `Panchroma PLA Matte` in the catalogue.
+        func words(_ row: FilamentRow) -> Set<String> {
+            BrandColourCatalogue.lineTokens(row.name, material: row.materialType,
+                                            brandKey: BrandColourCatalogue.brandKey(row.brand))
+                .subtracting([maker])
+        }
+        let own = rows.filter {
+            BrandColourCatalogue.brandKey($0.brand) == maker
+                || BrandColourCatalogue.lineTokens($0.name, material: "", brandKey: "").contains(maker)
+        }
+        if let exact = own.first(where: { words($0) == wanted }) { return exact }
+        // `PolySonic PLA Pro HS` on the box against `PolySonic PLA Pro` in the catalogue: the
+        // fullest entry that says nothing the box does not. Never the other way round — a box
+        // that says only `PETG` is not the maker's `PETG-ESD`.
+        let near = own.filter { !words($0).isEmpty && words($0).isSubset(of: wanted) }
+            .max { words($0).count < words($1).count }
+        if let near { return near }
+
+        let polymer = BrandColourCatalogue.lineTokens(filament.material, material: "", brandKey: "")
+        guard !polymer.isEmpty else { return nil }
+        return rows.first { $0.brand.caseInsensitiveCompare("Generic") == .orderedSame && words($0) == polymer }
+    }
+
+    /// Fills the form from a box's barcode. A nil `filament` is a box nobody has described yet:
+    /// the code is kept, and ``confirm()`` remembers what the user says it is.
+    ///
+    /// Method B only, and only before a tag is written — the same two conditions as every other
+    /// way of setting what the tag will carry.
+    func applyBarcode(code: String, filament: BarcodeFilament?) {
+        guard !isScan, !isIdentityLocked, let gtin = BoxBarcode.normalise(code) else { return }
+        scannedBarcode = gtin
+        guard let filament else {
+            barcodeNote = "Barcode \(BoxBarcode.display(gtin)) is not listed. Describe the spool "
+                + "and it is remembered for the next box."
+            return
+        }
+
+        if let row = catalogueRow(for: filament) {
+            catalogueBrand = row.brand
+            materialID = row.id
+            // The catalogue row decides the id; the box decides what the spool is called. They
+            // differ whenever the row is the printer's generic one, and for a learned box whose
+            // name the user edited.
+            let sameMaker = BrandColourCatalogue.brandKey(row.brand) == BrandColourCatalogue.brandKey(filament.brand)
+            if !sameMaker || filament.source == .learned {
+                brand = filament.brand
+                name = filament.line
+            }
+            barcodeNote = "From the box: \(filament.product) · \(filament.colourName)."
+                + (sameMaker ? "" : " Tagged as \(row.name) — the printer's catalogue has no entry "
+                    + "of \(filament.brand)'s own.")
+        } else {
+            barcodeNote = "The box is \(filament.product) · \(filament.colourName). The catalogue "
+                + "has no entry for it — choose the nearest material."
+        }
+        colorHex = filament.hex
+        pickedColour = filament.colour
+        if let grams = filament.netWeightGrams, Self.weights.contains(grams) { netWeightGrams = grams }
+    }
+
+    /// Remembers the description being confirmed against the barcode it was scanned under.
+    private func learnScannedBarcode(describing spool: Spool) {
+        guard let code = scannedBarcode else { return }
+        learnedBarcodes.learn(BarcodeFilament(brand: spool.brand,
+                                              line: spool.name,
+                                              material: spool.materialType,
+                                              colourName: spool.colorName,
+                                              hex: spool.colorHex,
+                                              netWeightGrams: spool.netWeightGrams,
+                                              catalogueID: materialID.isEmpty ? nil : materialID),
+                              for: code)
+        do { try learnedBarcodeStore.save(learnedBarcodes) } catch {
+            toasts.error("The barcode could not be saved. \(error.localizedDescription)")
+        }
+    }
+
     // MARK: Actions
 
     /// Takes a tag the reader has already read and files it in the next empty slot.
@@ -776,6 +940,7 @@ final class IntakeViewModel: ObservableObject {
                 inventory.learnColourName(picked.name, describing: made)
             }
             inventory.applyColourName(to: &made)
+            learnScannedBarcode(describing: made)
             made.note(kind: .intake,
                       detail: willBeTagged
                           ? (tagsRequired == 1 ? "Intake · one tag written, second skipped"
@@ -944,6 +1109,8 @@ final class IntakeViewModel: ObservableObject {
         remainingPercent = 100
         colorHex = "C12E1F"
         pickedColour = nil
+        scannedBarcode = nil
+        barcodeNote = nil
         filamentId = ""
         materialID = ""
         // The catalogue pre-fill is Method B's: it is where the tag's filament id comes from. In

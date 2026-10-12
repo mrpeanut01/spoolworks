@@ -18,7 +18,7 @@ flat, square-cornered, 2 pt rules, one red accent on a warm ground.
 |---|---|
 | **Inventory** | Every spool you own, filterable by where it is and how much is left, with a detail rail carrying its full usage history. Location and % remaining are edited in place — the places are a list you keep, and every correction to the figure writes the line that explains it. Slots the printer reports stay the printer's to set. |
 | **Printer & CFS** | The printer's live slots, read from `material_box_info.json` over SSH every 30 s, folded into the inventory. |
-| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. Its colour can be read off the spool with a camera. |
+| **Intake** | Log incoming spools without leaving the reader — scan a Creality tag, or describe a third-party spool and tag it. Its colour is chosen from the maker's own list, read off the box's barcode, or measured off the spool with a camera. |
 | **Read / identify** | Put a tag on the reader and see *which of your spools it is*, not just what bytes it holds. |
 | **Write tag** | Program a tag for a third-party spool, or replace a damaged one — and log it to stock. |
 
@@ -99,6 +99,39 @@ filamentcolors.xyz (150 makers, colorimeter readings). Distances are CIEDE2000.
 Spools already in stock are never renamed unasked. Inventory offers the renames it is sure of, for
 review. `spooldiag colours` prints what every spool would be called and why.
 
+## What the warning triangle in the Inventory means
+
+A spool's row carries a triangle while something stands between it and a correct print or a correct
+HueForge design. Point at the triangle for the list of faults; the detail rail explains each and
+offers the fix for that spool. The bar above the list counts each fault across the whole stock and
+fixes it everywhere at once: **Add all to ⟨printer⟩…** (one confirmation for every missing
+filament), **Sync all to HueForge**, and **Match colours…**, which lists every unmatched colour —
+one row per filament and colour, however many spools — with the maker's colours to choose from.
+
+| Warning | When | Fix |
+|---|---|---|
+| *⟨printer⟩ does not list ⟨filament⟩ yet* | The spool's filament id is not in the printer's live filament list (asked over its websocket, no password), so the CFS would ignore the tag. Never raised for a factory Creality id, nor when the printer could not be reached. | **Add to ⟨printer⟩…** raises the same one-record add a freshly written tag offers. |
+| *Not synced with HueForge* / *HueForge has an older version* | The filament has not been sent to HueForge, or its name, colour or TD has changed since it was. Only shown on a Mac that uses HueForge, and never for a filament left out of the export on purpose. | **Sync to HueForge now**, or open the HueForge window to choose its folder or export. |
+| *Colour is not matched to ⟨maker⟩'s own colours* | The colour's name is the nearest generic description rather than the maker's name for it. | Pick it from **Maker's colours** under *Colour* in the rail, or type the name off the box. |
+
+## Saying what colour a spool is
+
+Intake's Method B has three ways, most exact first.
+
+**The box's barcode.** *Scan the box's barcode…* reads the EAN/UPC with the camera and fills in the
+maker, the material and the colour. 5,629 boxes are listed (from the Open Filament Database —
+strong for FormFutura, Spectrum, Polymaker, SUNLU and Bambu Lab, thin for Creality). A box that is
+not listed is remembered the first time its spool is described, so the next box of it is one scan.
+The tag still needs an id the *printer* knows: the box is matched to the catalogue's entry for that
+maker and line, or to the printer's generic entry for the polymer, and the form says which.
+
+**The maker's list.** Choosing a brand and a material fills the *Colour* menu with every colour
+that maker sells the filament in. Choosing one sets the colour code and the name. Where both
+sources list a colour, the measured swatch is used rather than the published value. The last row,
+*Scan the colour…*, opens the camera.
+
+**The camera** — below.
+
 ## Reading a spool's colour with the camera
 
 Intake's Method B needs a colour for a spool that has no tag to read it from, and typing a hex code
@@ -108,7 +141,8 @@ filament, hold still until the corners turn green, take the reading.
 Once a reading is taken the sheet lists the **closest filaments** — the maker's own colours when the
 form says who the maker is, anyone's when it does not. Choosing one uses that filament's colour and
 name in place of the reading, so two spools of one filament carry one colour rather than two
-slightly different camera readings.
+slightly different camera readings. The **Maker's colours** menu above them holds the maker's whole
+list, nearest first, and can be chosen from before anything has been measured.
 
 It does not average the pixels, because averaging them is wrong. Filament is a 1.75 mm cylinder
 wound in a spiral, so a close-up of a wrap is a corrugated surface — a specular highlight along

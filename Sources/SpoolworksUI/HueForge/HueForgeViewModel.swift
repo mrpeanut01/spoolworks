@@ -11,6 +11,11 @@ import SpoolworksCore
 final class HueForgeViewModel: ObservableObject {
 
     @Published private(set) var entries: [HueForgeExportEntry] = []
+    /// For each spool in stock, whether HueForge has its filament as it is now described.
+    ///
+    /// Empty while HueForge is not in use on this Mac (``isInUse``): a mark on every row saying
+    /// "not sent to an app you do not have" is not a warning, it is wallpaper.
+    @Published private(set) var spoolSyncStates: [UUID: HueForgeSyncState] = [:]
     @Published private(set) var reference: HueForgeTDReference
     @Published private(set) var problem: String?
     /// The HueForge folder *Sync* writes into, once the user has chosen one.
@@ -22,6 +27,9 @@ final class HueForgeViewModel: ObservableObject {
     private let store: HueForgePreferencesStore
     private let toasts: ToastCenter
     private let defaults: UserDefaults
+    /// Whether HueForge.app is on this Mac. Looked up once; only the application's own path is
+    /// tested, never its container, so nothing here makes macOS ask a question.
+    private let isInstalled: Bool
     private var preferences = HueForgePreferences()
     private var observation: AnyCancellable?
 
@@ -35,12 +43,16 @@ final class HueForgeViewModel: ObservableObject {
          store: HueForgePreferencesStore,
          toasts: ToastCenter,
          reference: HueForgeTDReference = HueForgeTDReference(),
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard,
+         isInstalled: Bool? = nil) {
         self.inventory = inventory
         self.store = store
         self.toasts = toasts
         self.reference = reference
         self.defaults = defaults
+        self.isInstalled = isInstalled ?? HueForgeInstall.bundledFolders().contains {
+            FileManager.default.fileExists(atPath: $0.deletingLastPathComponent().path)
+        }
         self.sourceName = defaults.string(forKey: Keys.sourceName) ?? "Spoolworks inventory"
         self.sourceBaseURL = defaults.string(forKey: Keys.sourceBaseURL) ?? ""
         self.syncFolder = defaults.string(forKey: Keys.syncFolder).map { URL(fileURLWithPath: $0) }
@@ -64,9 +76,28 @@ final class HueForgeViewModel: ObservableObject {
             + "\(spools) spool\(spools == 1 ? "" : "s")"
     }
 
+    /// Whether this Mac uses HueForge at all: it is installed, a folder has been chosen for Sync,
+    /// or something has been sent to it before.
+    var isInUse: Bool { isInstalled || syncFolder != nil || preferences.sent != nil }
+
     private func rebuild(from inventory: SpoolInventory) {
         entries = HueForgeExporter.entries(for: inventory, preferences: preferences,
                                            reference: reference)
+        var states: [UUID: HueForgeSyncState] = [:]
+        if isInUse {
+            for entry in entries {
+                let state = HueForgeExporter.syncState(of: entry, sent: preferences.sent)
+                for id in entry.spoolIDs { states[id] = state }
+            }
+        }
+        if states != spoolSyncStates { spoolSyncStates = states }
+    }
+
+    /// Records that `library` is what HueForge now has. Every route out calls this.
+    private func noteSent(_ library: HueForgeLibrary) {
+        preferences.sent = HueForgeExporter.sentRecord(for: library)
+        do { try store.save(preferences) } catch { problem = error.localizedDescription }
+        rebuild(from: inventory.inventory)
     }
 
     // MARK: Editing
@@ -121,6 +152,7 @@ final class HueForgeViewModel: ObservableObject {
                 ? Data(library.csvString().utf8)
                 : try library.jsonData()
             try data.write(to: url, options: .atomic)
+            noteSent(library)
             toasts.success("\(included.count) filament\(included.count == 1 ? "" : "s") written to "
                 + "\(url.lastPathComponent) — import it with HueForge's Filaments ▸ Import.")
         } catch {
@@ -133,6 +165,7 @@ final class HueForgeViewModel: ObservableObject {
         guard sync(to: url) else { return }
         syncFolder = url
         defaults.set(url.path, forKey: Keys.syncFolder)
+        rebuild(from: inventory.inventory)
         Task { await loadReference() }
     }
 
@@ -146,6 +179,7 @@ final class HueForgeViewModel: ObservableObject {
         do {
             let written = try HueForgeInstall.sync(library, toHueForgeFolder: folder)
             problem = nil
+            noteSent(library)
             toasts.success("Synced \(included.count) filament\(included.count == 1 ? "" : "s") to "
                 + "\(written.lastPathComponent) — HueForge reads it the next time it starts.")
             return true
@@ -160,6 +194,7 @@ final class HueForgeViewModel: ObservableObject {
             try HueForgeCommunitySource.write(library, to: folder, sourceName: sourceName,
                                               baseURL: sourceBaseURL)
             problem = nil
+            noteSent(library)
             toasts.success("Source written to \(folder.lastPathComponent) — push it, then add its "
                 + "manifest URL under Filaments ▸ Manage Community Sources.")
         } catch {

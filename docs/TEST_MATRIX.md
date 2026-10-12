@@ -1,7 +1,7 @@
 # TEST_MATRIX
 
 Run: `swift run SpoolworksTests` · Hardware: `swift run spooldiag <cmd>` (both from the repository root)
-Status at last update: **801 automated tests passing**, 0 failing.
+Status at last update: **879 automated tests passing**, 0 failing.
 
 ## Automated — domain (no hardware required)
 
@@ -41,6 +41,17 @@ Status at last update: **801 automated tests passing**, 0 failing.
 | Colour scan | stabiliser reports the *worst* confidence in the window, not the average | unit | pass |
 | Colour scan | target square is centred and inside the frame at every aspect ratio | unit | pass |
 | Colour scan | a letterboxed preview targets the video rectangle, not the view | regression | pass |
+| Box barcode | EAN-13 and the UPC-A inside it are one code; a wrong check digit or a non-GTIN is refused | unit | pass |
+| Box barcode | the bundled table (> 5,000 codes) names maker, line, colour, hex and weight | unit | pass |
+| Box barcode | a box the user described is stored, reloaded and wins over the table | unit | pass |
+| Maker's colours | a line lists its own colours once per name; measured beats published; an unlisted line gives the whole range; an unknown maker gives nothing | unit | pass |
+| Intake (D-017) | brand + material offers the maker's colours; choosing one sets the code and names the spool; retyping the code or changing material drops the choice | unit | pass |
+| Intake (D-017) | a listed box fills maker entry, colour and size; a sub-brand finds its parent's entry; a plain `PETG` box is not matched to `PETG-ESD`; an unlisted maker is tagged as the generic polymer under its own name | unit | pass |
+| Intake (D-017) | an unlisted box is learned at Add to stock and recognised after a relaunch; nothing is filled in Method A or after a tag is written | unit | pass |
+| Attention (D-017) | a filament missing from the printer's list is marked with printer and filament named; factory ids never; an unreachable or absent printer raises nothing; adding it clears the mark; the list is cached and re-read on demand | unit | pass |
+| Attention (D-017) | faults are counted and missing filaments listed once each; every missing filament is offered in one notice and added on one click, skipping any the printer has gained; an Inventory offer overrides an earlier "Not now" | unit | pass |
+| Attention (D-017) | unmatched colours group by filament and colour; naming a group names every spool of it and leaves unanswered groups alone | unit | pass |
+| Attention (D-017) | a description-only colour is marked until named; HueForge marks appear only where HueForge is in use, clear on export/sync, return as "older version" after a change, and never for an excluded filament | unit | pass |
 | Crypto | keys match Arduino `u_key` / `d_key` byte-for-byte | unit | pass |
 | Crypto | golden vectors vs. compiled Arduino reference (4 vectors) | golden | pass |
 | Crypto | ECB determinism; equal tails ⇒ equal block 6 | unit | pass |

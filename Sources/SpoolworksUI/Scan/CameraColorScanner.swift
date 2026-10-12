@@ -4,10 +4,12 @@
 // is a wall of warnings about a rule the framework predates.
 @preconcurrency import AVFoundation
 import CoreImage
+import Vision
 import SwiftUI
 import SpoolworksCore
 
-/// Drives the Mac's camera and turns what it sees into one filament colour.
+/// Drives the Mac's camera and turns what it sees into one filament colour — or, pointed at the
+/// box instead of the spool, into the barcode printed on it (see ``Mode``).
 ///
 /// The measurement itself is not here — that is ``FilamentColorEstimator`` in `SpoolworksCore`,
 /// which has no camera in it and is tested against synthetic wraps with known colours. This class
@@ -51,6 +53,31 @@ final class CameraColorScanner: NSObject, ObservableObject {
         case failed(String)
         case running
     }
+
+    /// What the frames are being read for.
+    ///
+    /// One camera session serves both because the two are the same act from the user's side —
+    /// hold the thing up to the camera — and a second session would mean a second permission
+    /// path, a second device picker and a second set of ways to fail to start.
+    enum Mode: String, Hashable, Identifiable, CaseIterable {
+        /// Measure the filament's colour inside the target square.
+        case colour
+        /// Read the GTIN off the box, anywhere in the frame.
+        case barcode
+
+        var id: String { rawValue }
+    }
+
+    @Published var mode: Mode = .colour {
+        didSet {
+            guard oldValue != mode else { return }
+            processor?.setMode(mode)
+            resetReading()
+        }
+    }
+
+    /// The barcode last read off a box, as a GTIN-14, until ``resetReading()`` asks for another.
+    @Published private(set) var barcode: String?
 
     @Published private(set) var state: State = .idle
     /// The settled colour, or nil until the first frame lands.
@@ -150,6 +177,7 @@ final class CameraColorScanner: NSObject, ObservableObject {
         state = .idle
         reading = nil
         readingName = nil
+        barcode = nil
         frameTick = 0
     }
 
@@ -159,6 +187,7 @@ final class CameraColorScanner: NSObject, ObservableObject {
         processor?.reset()
         reading = nil
         readingName = nil
+        barcode = nil
     }
 
     private func restart() {
@@ -238,9 +267,19 @@ final class CameraColorScanner: NSObject, ObservableObject {
         // failure the user would actually notice.
         output.alwaysDiscardsLateVideoFrames = true
 
-        let processor = FrameProcessor { [weak self] reading in
+        let processor = FrameProcessor(onReading: { [weak self] reading in
             Task { @MainActor [weak self] in self?.publish(reading) }
-        }
+        }, onBarcode: { [weak self] code in
+            Task { @MainActor [weak self] in self?.publish(barcode: code) }
+        }, onBarcodeFrame: { [weak self] in
+            // Colour mode ticks with every reading; a frame with no barcode in it publishes
+            // nothing, and the preview still needs telling that frames have started to flow.
+            Task { @MainActor [weak self] in
+                guard let self, self.mode == .barcode else { return }
+                self.frameTick &+= 1
+            }
+        })
+        processor.setMode(mode)
         self.processor = processor
         output.setSampleBufferDelegate(processor, queue: queue)
 
@@ -278,7 +317,14 @@ final class CameraColorScanner: NSObject, ObservableObject {
 
     private var nameTask: Task<Void, Never>?
 
+    private func publish(barcode code: String) {
+        // A frame already in flight when the mode changed, or when the last code was cleared.
+        guard mode == .barcode else { return }
+        if barcode != code { barcode = code }
+    }
+
     private func publish(_ reading: FilamentColorStabiliser.Reading) {
+        guard mode == .colour else { return }
         let previous = self.reading?.color
         self.reading = reading
         frameTick &+= 1
@@ -319,6 +365,8 @@ private final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBuff
     private static let cropSide = 160
 
     private let onReading: (FilamentColorStabiliser.Reading) -> Void
+    private let onBarcode: (String) -> Void
+    private let onBarcodeFrame: () -> Void
 
     private let estimator = FilamentColorEstimator()
     private var stabiliser = FilamentColorStabiliser()
@@ -336,9 +384,26 @@ private final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBuff
 
     private let lock = NSLock()
     private var resetRequested = false
+    private var mode: CameraColorScanner.Mode = .colour
 
-    init(onReading: @escaping (FilamentColorStabiliser.Reading) -> Void) {
+    /// The code seen in the previous frame, and how many frames in a row have agreed on it.
+    private var candidate: (code: String, frames: Int)?
+    /// The code already handed out, so one box held in view is reported once.
+    private var reported: String?
+
+    init(onReading: @escaping (FilamentColorStabiliser.Reading) -> Void,
+         onBarcode: @escaping (String) -> Void,
+         onBarcodeFrame: @escaping () -> Void) {
         self.onReading = onReading
+        self.onBarcode = onBarcode
+        self.onBarcodeFrame = onBarcodeFrame
+    }
+
+    func setMode(_ mode: CameraColorScanner.Mode) {
+        lock.lock()
+        self.mode = mode
+        resetRequested = true
+        lock.unlock()
     }
 
     /// Asks for the window to be cleared. Applied on the capture queue, so the stabiliser is only
@@ -359,15 +424,51 @@ private final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBuff
         lock.lock()
         if resetRequested {
             stabiliser.reset()
+            candidate = nil
+            reported = nil
             resetRequested = false
         }
+        let mode = self.mode
         lock.unlock()
 
-        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let field = crop(buffer),
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        if mode == .barcode {
+            readBarcode(in: buffer)
+            return
+        }
+        guard let field = crop(buffer),
               let estimate = estimator.estimate(from: field),
               let reading = { stabiliser.add(estimate); return stabiliser.reading }() else { return }
         onReading(reading)
+    }
+
+    /// Looks for a GTIN anywhere in the frame.
+    ///
+    /// The whole frame rather than the target square: a barcode is found or it is not, and nothing
+    /// around it can contaminate the answer the way a spool's core contaminates a colour. The
+    /// square stays on screen only as somewhere to aim.
+    ///
+    /// Two frames have to agree before a code is believed. ``BoxBarcode/normalise(_:)`` already
+    /// rejects a misread whose check digit is wrong, which is nine in ten of them; the second
+    /// frame is for the tenth.
+    private func readBarcode(in buffer: CVPixelBuffer) {
+        onBarcodeFrame()
+        let request = VNDetectBarcodesRequest()
+        // EAN-13 covers UPC-A — Vision reports a UPC-A as the EAN-13 it is. UPC-E is left out: its
+        // payload is a compressed form that would have to be expanded before it meant anything.
+        request.symbologies = [.ean13, .ean8]
+        guard (try? VNImageRequestHandler(cvPixelBuffer: buffer, options: [:]).perform([request])) != nil,
+              let code = (request.results ?? [])
+                .sorted(by: { $0.confidence > $1.confidence })
+                .compactMap({ $0.payloadStringValue.flatMap(BoxBarcode.normalise) })
+                .first else {
+            candidate = nil
+            return
+        }
+        candidate = (code, candidate?.code == code ? (candidate?.frames ?? 0) + 1 : 1)
+        guard let candidate, candidate.frames >= 2, reported != code else { return }
+        reported = code
+        onBarcode(code)
     }
 
     /// The target square, colour-managed into sRGB and scaled to a fixed size.

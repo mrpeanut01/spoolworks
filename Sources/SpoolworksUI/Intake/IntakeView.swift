@@ -87,8 +87,16 @@ struct IntakeView: View {
         }
     }
 
-    /// Whether the camera colour scanner is open.
-    @State private var isScanningColour = false
+    /// The camera sheet, when it is open, and which of its two jobs it opened on.
+    ///
+    /// One optional rather than a flag and a mode: a sheet presented from a flag reads the mode
+    /// as it was when the view was last rendered, which is the mode before the one just set.
+    @State private var scanning: CameraColorScanner.Mode?
+
+    private func openScanner(_ mode: CameraColorScanner.Mode) { scanning = mode }
+
+    /// The colour menu's row for "open the camera", which is an action and not a colour.
+    private static let scanChoice = "\u{0}scan"
 
     /// Puts the reader into the mode this screen currently needs.
     ///
@@ -287,6 +295,24 @@ struct IntakeView: View {
             }
             .padding(.bottom, 16)
 
+            // The quickest way through the form, so it is offered before the form: the box says
+            // who made the filament, which line it is and what the colour is called, exactly.
+            if !model.isScan {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.m) {
+                    Button("Scan the box's barcode…") { openScanner(.barcode) }
+                        .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 8))
+                        .disabled(model.isIdentityLocked)
+                        .help("Read the barcode on the filament's box with a camera to fill in the maker, material and colour.")
+                    Text(model.barcodeNote
+                         ?? "Fills in the maker, the material and the colour from the box.")
+                        .font(Theme.caption)
+                        .foregroundStyle(model.barcodeNote == nil ? Theme.kickerLabel : Theme.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.bottom, 16)
+            }
+
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 18),
                                 GridItem(.flexible(), spacing: 18)],
                       alignment: .leading, spacing: 14) {
@@ -367,16 +393,21 @@ struct IntakeView: View {
             .padding(.bottom, 16)
 
             HStack(alignment: .bottom, spacing: 18) {
-                FieldBox(label: "Colour",
+                // Method B only: the maker's own colours for the brand and material just chosen.
+                // First, because it is the answer most likely to be right — the name is printed
+                // on the box — and the hex field beside it then shows what was chosen.
+                if !model.isScan { makerColourField }
+                FieldBox(label: model.isScan ? "Colour" : "Colour code",
                          note: model.isScan ? "from tag" : model.isIdentityLocked ? "on the tag" : nil) {
                     TextField("", text: $model.colorHex).textFieldStyle(.plain).swInput()
                         .disabled(model.isIdentityLocked)
                 }
+                .frame(maxWidth: model.isScan ? .infinity : 150)
                 // Method B only. In Method A the tag is the authority on colour, and colour is
                 // part of how a spool is identified (see the README on serial collisions) — a
                 // camera reading laid over a decoded one would quietly break that key.
                 if !model.isScan {
-                    Button("Scan…") { isScanningColour = true }
+                    Button("Scan…") { openScanner(.colour) }
                         .buttonStyle(.sw(.secondary, size: 12, h: 14, v: 10))
                         .help("Read the colour off the spool with a camera.")
                         .disabled(model.isIdentityLocked)
@@ -431,11 +462,15 @@ struct IntakeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: 20)
-        .sheet(isPresented: $isScanningColour) {
+        .sheet(item: $scanning) { startsOn in
             ColorScanSheet(hex: $model.colorHex,
                            brand: model.brand,
                            line: model.name,
-                           material: model.materialType) { model.pickedColour = $0 }
+                           material: model.materialType,
+                           onPickFilament: { model.pickedColour = $0 },
+                           startsOn: startsOn,
+                           resolveBarcode: { model.barcodeFilament(for: $0) },
+                           onBarcode: { model.applyBarcode(code: $0, filament: $1) })
         }
         // A colour typed or scanned while the panel is open has to reach the panel too, or its next
         // click would quietly undo the newer value.
@@ -457,6 +492,51 @@ struct IntakeView: View {
         // Unconditional on purpose: `relinquish` is a no-op unless this screen still owns the
         // panel, which is exactly the check that makes it safe to call from here.
         .onDisappear { SystemColorPanel.shared.relinquish(owner: colorPanelOwner) }
+    }
+
+    /// The maker's colours for the chosen brand and material, with the camera as the last row.
+    ///
+    /// One menu rather than a menu and a button, because they are the same decision: "which colour
+    /// is this" is answered either by reading the name off the box or, when the name is not on the
+    /// list, by measuring. Choosing the camera row opens the sheet and leaves the selection where
+    /// it was — it is a way of answering, not an answer.
+    private var makerColourField: some View {
+        let listed = model.makerColours
+        let chosen = model.chosenMakerColour
+        // A colour taken off the camera sheet or a barcode need not be a row of this list.
+        let extra = chosen.flatMap { colour in listed.colours.contains { $0.id == colour.id } ? nil : colour }
+        return FieldBox(label: "Colour", note: makerColourNote(listed)) {
+            Picker("", selection: Binding(
+                get: { chosen?.id ?? "" },
+                set: { id in
+                    if id == Self.scanChoice {
+                        openScanner(.colour)
+                    } else {
+                        model.chooseMakerColour(listed.colours.first { $0.id == id })
+                    }
+                })) {
+                Text(listed.colours.isEmpty ? "—" : "Choose a colour").tag("")
+                if let extra {
+                    Text(ColorScanSheet.menuTitle(extra, showsLine: true)).tag(extra.id)
+                }
+                ForEach(listed.colours) { colour in
+                    Text(ColorScanSheet.menuTitle(colour, showsLine: listed.scope != .line))
+                        .tag(colour.id)
+                }
+                Divider()
+                Text("Scan the colour…").tag(Self.scanChoice)
+            }
+            .labelsHidden()
+            .disabled(model.isIdentityLocked)
+            .accessibilityLabel("The maker's name for this spool's colour")
+        }
+    }
+
+    private func makerColourNote(_ listed: (colours: [BrandColour], scope: BrandColourCatalogue.Scope)) -> String {
+        if model.isIdentityLocked { return "on the tag" }
+        guard !listed.colours.isEmpty else { return "no list for this maker — scan it" }
+        let n = listed.colours.count
+        return listed.scope == .line ? "\(n) from the maker" : "the maker's whole range"
     }
 
     /// Identifies this screen to the app-wide colour panel. See ``SystemColorPanel``.

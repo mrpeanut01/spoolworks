@@ -615,4 +615,51 @@ let filamentPushModelTests = TestSuite(name: "Add-to-printer offer after a verif
             }
         }
     },
+
+    test("the Inventory can offer every missing filament at once, and one click adds them all") { t in
+        runOnMain {
+            do {
+                // A1001 is already on the printer, so only the other two are carried forward.
+                let h = try makePushHarness(onPrinter: ["A1001"])
+                h.model.offerAll(filamentIDs: ["P1023", "A1001", "A1002", "P1023"], family: .k2)
+                await h.model.settle()
+                guard case let .missing(subject) = h.model.phase else {
+                    t.expect(false, "expected an offer, got \(h.model.phase)")
+                    return
+                }
+                t.equal(subject.allIDs, ["P1023", "A1002"])
+                t.equal(subject.label, "2 filaments")
+                t.equal(h.transport.pushes, [], "nothing is written until the offer is accepted")
+
+                h.model.add()
+                await h.model.settle()
+                t.equal(h.transport.pushes, ["P1023@192.168.10.19/k2", "A1002@192.168.10.19/k2"])
+                guard case .added = h.model.phase else {
+                    t.expect(false, "expected added, got \(h.model.phase)")
+                    return
+                }
+            } catch {
+                t.expect(false, "harness: \(error)")
+            }
+        }
+    },
+
+    test("an offer made from the Inventory is not silenced by an earlier Not now") { t in
+        runOnMain {
+            do {
+                let h = try makePushHarness()
+                h.model.noteVerifiedWrite(filamentID: "P1023", printerTypeString: "K2")
+                await h.model.settle()
+                h.model.notNow()
+                h.model.offer(filamentID: "P1023", family: .k2)
+                await h.model.settle()
+                guard case .missing = h.model.phase else {
+                    t.expect(false, "expected an offer, got \(h.model.phase)")
+                    return
+                }
+            } catch {
+                t.expect(false, "harness: \(error)")
+            }
+        }
+    },
 ])
