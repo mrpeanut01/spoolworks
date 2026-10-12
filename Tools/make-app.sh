@@ -191,7 +191,7 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
          why CameraColorScanner checks for this key before it touches a capture API, and why the
          verify step below refuses to ship a bundle missing it. -->
     <key>NSCameraUsageDescription</key>
-    <string>Spoolworks uses the camera to read a spool's filament colour so it can be written to the tag.</string>
+    <string>Spoolworks uses the camera to read a spool's filament colour, or the barcode on its box, so the right filament and colour are written to the tag.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Spoolworks. Derived from DnG-Crafts/K2-RFID; see repository for licensing.</string>
 $( [[ -n "${ICON_NAME}" ]] && printf '    <key>CFBundleIconFile</key>\n    <string>%s</string>\n' "${ICON_NAME}" )
@@ -265,7 +265,8 @@ for required in "Contents/MacOS/${APP_NAME}" "Contents/Info.plist" "Contents/Pkg
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/vendor-k2.json" \
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/refresh-k2.json" \
                 "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/filament-swatches.json" \
-                "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/brand-colours.json"; do
+                "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/brand-colours.json" \
+                "Contents/Resources/${APP_NAME}_SpoolworksCore.bundle/filament-barcodes.json"; do
     if [[ ! -e "${APP_BUNDLE}/${required}" ]]; then
         echo "make-app.sh: missing ${required}" >&2
         exit 1

@@ -1,7 +1,8 @@
 import SwiftUI
 import SpoolworksCore
 
-/// Point the camera at the spool, hold still, take the colour.
+/// Point the camera at the spool, hold still, take the colour — or point it at the box and take
+/// the barcode, which says the maker, the line and the colour in one go.
 ///
 /// The sheet's whole job is to make one thing unambiguous: **which reading is worth taking**. A live
 /// colour readout is always showing *something*, and a user with no way to tell a settled
@@ -34,10 +35,23 @@ struct ColorScanSheet: View {
     /// Told which maker's colour was chosen from the list, or nil when the choice is undone.
     var onPickFilament: (BrandColour?) -> Void = { _ in }
 
+    /// Which of the two the sheet opens on.
+    var startsOn: CameraColorScanner.Mode = .colour
+    /// Says what a box barcode is, or nil when the caller has no use for one — the barcode mode is
+    /// then not offered at all.
+    var resolveBarcode: ((String) -> BarcodeFilament?)? = nil
+    /// Told which barcode was read and what it turned out to be. A nil filament is a box nobody
+    /// has described yet: the caller keeps the code, so describing the spool teaches it.
+    var onBarcode: (String, BarcodeFilament?) -> Void = { _, _ in }
+
     /// The filaments nearest the taken reading.
     @State private var matches: [BrandColourCatalogue.Match] = []
     /// The one the user chose, if any. Its hex has replaced the reading in the form.
-    @State private var picked: BrandColourCatalogue.Match?
+    @State private var picked: BrandColour?
+    /// Every colour the maker sells this filament in — nearest the reading first once there is
+    /// one, by name until then.
+    @State private var makerColours: [BrandColour] = []
+    @State private var makerScope: BrandColourCatalogue.Scope = .anywhere
 
     @StateObject private var scanner = CameraColorScanner()
     @ObservedObject private var nameCache = ColorNameCache.shared
@@ -60,10 +74,11 @@ struct ColorScanSheet: View {
             Rule()
             footer
         }
-        .frame(width: 640, height: 700)
+        .frame(width: 640, height: 760)
         .background(Theme.background)
         .task {
             original = hex
+            scanner.mode = resolveBarcode == nil ? .colour : startsOn
             await scanner.start()
         }
         // The acceptance. Anything that has held still for a full window is as good as this
@@ -71,38 +86,76 @@ struct ColorScanSheet: View {
         .onChange(of: scanner.reading?.isSteady == true) { _, steady in
             guard steady, accepted == nil, let reading = scanner.reading else { return }
             accepted = reading.color.hexString
-            hex = reading.color.hexString
+            // A maker's colour chosen off the list before the reading settled is the user's
+            // answer; the reading then only orders the list, it does not replace the choice.
+            if picked == nil { hex = reading.color.hexString }
         }
-        .task(id: accepted) {
-            guard let accepted else {
-                matches = []
-                return
-            }
-            await nameCache.resolve([accepted])
+        .task(id: "\(accepted ?? "")|\(brand)|\(line)|\(material)") {
+            if let accepted { await nameCache.resolve([accepted]) }
             // Seventeen thousand colours and a CIEDE2000 each — a few milliseconds, but not ones
             // to spend on the main thread while the preview is drawing.
-            let (brand, line, material) = (brand, line, material)
-            matches = await Task.detached(priority: .userInitiated) {
-                BrandColourCatalogue.shared.matches(brand: brand, name: line, material: material,
-                                                    hex: accepted, limit: 4)
+            let (brand, line, material, accepted) = (brand, line, material, accepted)
+            let found = await Task.detached(priority: .userInitiated) {
+                let catalogue = BrandColourCatalogue.shared
+                var listed = catalogue.colours(brand: brand, name: line, material: material)
+                var nearest: [BrandColourCatalogue.Match] = []
+                if let accepted {
+                    nearest = catalogue.matches(brand: brand, name: line, material: material,
+                                                hex: accepted, limit: 4)
+                    if let rgb = try? RGB8(hex: accepted) {
+                        let lab = LabColor(rgb)
+                        func distance(_ colour: BrandColour) -> Double {
+                            (try? RGB8(hex: colour.hex)).map { lab.deltaE2000(to: LabColor($0)) } ?? .infinity
+                        }
+                        listed.colours.sort { distance($0) < distance($1) }
+                    }
+                }
+                return (listed, nearest)
             }.value
+            guard !Task.isCancelled else { return }
+            makerColours = found.0.colours
+            makerScope = found.0.scope
+            matches = found.1
         }
         .onDisappear { scanner.stop() }
+    }
+
+    private var isBarcode: Bool { scanner.mode == .barcode }
+
+    /// Takes a maker's colour in place of the reading, or — with nil — goes back to the reading.
+    private func choose(_ colour: BrandColour?) {
+        picked = colour
+        if let colour {
+            hex = colour.hex
+        } else if let fallback = accepted ?? original {
+            hex = fallback
+        }
+        onPickFilament(colour)
     }
 
     // MARK: Header
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Step 2 · Colour").kicker()
-            Text("Scan the filament")
+            Text(isBarcode ? "Step 2 · The box" : "Step 2 · Colour").kicker()
+            Text(isBarcode ? "Scan the box's barcode" : "Scan the filament")
                 .font(.system(size: 20, weight: .heavy))
-            Text("Hold the spool so the box is filled with filament and nothing else. "
-                 + "Several points across the box are measured, so the shadow between strands and "
-                 + "the shine along them are discarded rather than averaged in.")
+            Text(isBarcode
+                 ? "Hold the barcode on the box up to the camera. It names the maker, the product "
+                   + "line and the colour exactly — nothing is measured, so the lighting does not "
+                   + "matter."
+                 : "Hold the spool so the box is filled with filament and nothing else. "
+                   + "Several points across the box are measured, so the shadow between strands and "
+                   + "the shine along them are discarded rather than averaged in.")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.secondaryLabel)
                 .fixedSize(horizontal: false, vertical: true)
+            if resolveBarcode != nil {
+                SegmentedFilter(options: CameraColorScanner.Mode.allCases,
+                                title: { $0 == .barcode ? "The box's barcode" : "The filament's colour" },
+                                selection: $scanner.mode)
+                    .padding(.top, 6)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,14 +208,17 @@ struct ColorScanSheet: View {
     private var liveBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             CameraPreview(session: scanner.session,
-                          isSettled: scanner.reading?.isSteady == true,
+                          isSettled: isBarcode ? scanner.barcode != nil
+                                               : scanner.reading?.isSteady == true,
                           tick: scanner.frameTick)
                 .frame(maxWidth: .infinity, minHeight: 300)
                 .overlay(Rectangle().strokeBorder(Theme.rule, lineWidth: Theme.ruleWidth))
                 .accessibilityLabel("Camera preview with a target square in the centre")
 
-            readout
-                .padding(20)
+            Group {
+                if isBarcode { barcodeReadout } else { readout }
+            }
+            .padding(20)
         }
     }
 
@@ -176,7 +232,7 @@ struct ColorScanSheet: View {
                         // The tick is the whole point of accepting automatically: it says which
                         // value is the one that will be saved, without the user having to decide
                         // when the number had stopped moving.
-                        if accepted != nil {
+                        if accepted != nil || picked != nil {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 13))
                                 .foregroundStyle(Theme.success)
@@ -217,15 +273,25 @@ struct ColorScanSheet: View {
 
             // At most one piece of advice at a time. A stack of four warnings on a mediocre shot
             // is a wall of text nobody reads; the first one is the one to fix first.
-            if accepted != nil {
+            if !makerColours.isEmpty || picked != nil {
+                makerColourPicker.padding(.bottom, 10)
+            }
+            if let picked {
+                if accepted != nil, !matches.isEmpty {
+                    closestFilaments.padding(.bottom, 10)
+                }
+                Text("Using \(picked.brand)'s “\(picked.name)” in place of "
+                     + (accepted == nil ? "a reading" : "the reading")
+                     + ". Choose “As measured” to go back to what the camera sees.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if accepted != nil {
                 if !matches.isEmpty {
                     closestFilaments.padding(.bottom, 10)
                 }
-                Text(picked == nil
-                     ? "Taken — this colour is already in the form. Save to close, Re-measure to "
-                       + "take another, or Cancel to put back what was there."
-                     : "Using \(picked!.colour.brand)'s “\(picked!.colour.name)” in place of the "
-                       + "reading. Click it again to go back to what the camera measured.")
+                Text("Taken — this colour is already in the form. Save to close, Re-measure to "
+                     + "take another, or Cancel to put back what was there.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
@@ -258,18 +324,112 @@ struct ColorScanSheet: View {
             Text(anywhere ? "Closest filaments"
                           : "Closest \(matches.first?.colour.brand ?? "") filaments").kicker()
             FilamentMatchChips(matches: matches, showsBrand: anywhere, selectedID: picked?.id) { match in
-                guard let accepted else { return }
-                if picked?.id == match.id {
-                    picked = nil
-                    hex = accepted
-                    onPickFilament(nil)
-                } else {
-                    picked = match
-                    hex = match.colour.hex
-                    onPickFilament(match.colour)
-                }
+                choose(picked?.id == match.id ? nil : match.colour)
             }
         }
+    }
+
+    /// The maker's own names for this filament's colours — all of them, not only the near ones.
+    ///
+    /// The chips above are the camera's guess at which it is. This is for when the user already
+    /// knows, because it is printed on the box in their other hand: the name can be chosen before
+    /// anything has been measured, and no reading is needed at all.
+    private var makerColourPicker: some View {
+        // A chip's colour need not be in the list — it may come from another line, or be the
+        // other source's reading of the same name — and a picker with no row for its own
+        // selection renders blank.
+        let listed = makerColours.contains { $0.id == picked?.id }
+        return HStack(spacing: Theme.Spacing.s) {
+            Text(makerScope == .line ? "Maker's colours" : "Maker's range").kicker()
+            Picker("", selection: Binding(get: { picked?.id ?? "" },
+                                          set: { id in choose(makerColours.first { $0.id == id }) })) {
+                Text(accepted == nil ? "Not chosen" : "As measured").tag("")
+                if let picked, !listed {
+                    Text(Self.menuTitle(picked, showsLine: true)).tag(picked.id)
+                }
+                ForEach(makerColours) { colour in
+                    Text(Self.menuTitle(colour, showsLine: makerScope != .line)).tag(colour.id)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 300)
+            .accessibilityLabel("The maker's name for this colour")
+            Spacer(minLength: 0)
+        }
+    }
+
+    static func menuTitle(_ colour: BrandColour, showsLine: Bool) -> String {
+        showsLine && !colour.line.isEmpty ? "\(colour.name) · \(colour.line)" : colour.name
+    }
+
+    // MARK: Barcode
+
+    /// What the box's barcode turned out to be.
+    private var barcodeReadout: some View {
+        let found = scanner.barcode.flatMap { resolveBarcode?($0) }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 16) {
+                if let found {
+                    Swatch(hex: found.hex, size: 64, height: 52)
+                } else {
+                    Image(systemName: "barcode.viewfinder")
+                        .font(.system(size: 30))
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .frame(width: 64, height: 52)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(found.map { "\($0.product) · \($0.colourName)" }
+                         ?? (scanner.barcode == nil ? "Looking for a barcode…" : "Not a box Spoolworks knows"))
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(2)
+                    Text(barcodeDetail(found))
+                        .font(Theme.monoCaption)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if scanner.barcode != nil {
+                    SWTag(text: found == nil ? "Unlisted"
+                                             : (found?.source == .learned ? "Seen before" : "Found"),
+                          style: found == nil ? .neutral : .accent)
+                }
+            }
+            .padding(.bottom, 14)
+            .accessibilityElement(children: .combine)
+
+            Hairline().padding(.bottom, 12)
+
+            Text(barcodeAdvice(found))
+                .font(Theme.caption)
+                .foregroundStyle(Theme.secondaryLabel)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func barcodeDetail(_ found: BarcodeFilament?) -> String {
+        guard let code = scanner.barcode else { return "EAN-13 or UPC-A, usually on the end of the box" }
+        var parts = [BoxBarcode.display(code)]
+        if let found {
+            parts.append("#" + found.hex)
+            if let grams = found.netWeightGrams { parts.append(Spool.weightLabel(grams)) }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func barcodeAdvice(_ found: BarcodeFilament?) -> String {
+        guard scanner.barcode != nil else {
+            return "Keep the whole barcode in view and in focus. A Mac's built-in camera focuses "
+                + "at arm's length, so hold the box back rather than close."
+        }
+        guard found != nil else {
+            return "No filament is listed under this barcode. Describe the spool on the form — "
+                + "scan its colour, or choose it from the maker's list — and the barcode is "
+                + "remembered, so the next box of it is one scan."
+        }
+        return "Use it to fill in the maker, the material and the colour. The colour is the "
+            + "maker's published one; everything stays editable."
     }
 
     private func message(symbol: String, title: String, detail: String,
@@ -307,11 +467,16 @@ struct ColorScanSheet: View {
                 .accessibilityLabel("Camera")
             }
 
-            if scanner.state == .running {
+            if scanner.state == .running, isBarcode {
+                if scanner.barcode != nil {
+                    Button("Scan again") { scanner.resetReading() }
+                        .buttonStyle(.sw(.ghost))
+                        .help("Forgets this barcode and looks for another.")
+                }
+            } else if scanner.state == .running {
                 Button("Re-measure") {
                     accepted = nil
-                    picked = nil
-                    onPickFilament(nil)
+                    choose(nil)
                     scanner.resetReading()
                 }
                     .buttonStyle(.sw(.ghost))
@@ -330,36 +495,63 @@ struct ColorScanSheet: View {
             .buttonStyle(.sw(.ghost))
             .keyboardShortcut(.cancelAction)
 
-            Button(useTitle) {
-                // Nothing to commit when a reading has already been taken — the binding wrote it
-                // the moment it settled. This only closes.
-                if accepted == nil, let reading = scanner.reading {
-                    hex = reading.color.hexString
+            if isBarcode {
+                barcodeAction
+            } else {
+                Button(useTitle) {
+                    // Nothing to commit when a reading has already been taken, or a maker's colour
+                    // chosen — the binding wrote it at the time. This only closes.
+                    if accepted == nil, picked == nil, let reading = scanner.reading {
+                        hex = reading.color.hexString
+                    }
+                    dismiss()
                 }
+                .buttonStyle(.sw(.primary))
+                .disabled(scanner.reading == nil && accepted == nil && picked == nil)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+    }
+
+    /// The barcode mode's way out, which depends on whether the box was recognised: a known box
+    /// fills the form and closes, an unknown one hands over to the colour scan with the code kept.
+    @ViewBuilder
+    private var barcodeAction: some View {
+        let code = scanner.barcode
+        if let code, let found = resolveBarcode?(code) {
+            Button("Use this filament") {
+                onBarcode(code, found)
                 dismiss()
             }
             .buttonStyle(.sw(.primary))
-            .disabled(scanner.reading == nil && accepted == nil)
+            .keyboardShortcut(.defaultAction)
+        } else {
+            Button("Scan the colour instead") {
+                if let code { onBarcode(code, nil) }
+                scanner.mode = .colour
+            }
+            .buttonStyle(.sw(.primary))
+            .disabled(code == nil)
             .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
     }
 
     /// Says what the button will actually do, which is not the same in the two states: with a
     /// reading taken it only closes, and without one it takes whatever is on screen first.
     private var useTitle: String {
-        accepted != nil ? "Save" : "Use it anyway"
+        accepted != nil || picked != nil ? "Save" : "Use it anyway"
     }
 
     // MARK: Derived
 
     /// What the readout shows: the taken reading once there is one, the live one until then.
     private var shownHex: String {
-        picked?.colour.hex ?? accepted ?? scanner.reading?.color.hexString ?? ""
+        picked?.hex ?? accepted ?? scanner.reading?.color.hexString ?? ""
     }
 
     private var shownName: String? {
-        if let picked { return picked.colour.name }
+        if let picked { return picked.name }
         guard let accepted else { return scanner.readingName }
         return nameCache.name(forHex: accepted) ?? scanner.readingName
     }

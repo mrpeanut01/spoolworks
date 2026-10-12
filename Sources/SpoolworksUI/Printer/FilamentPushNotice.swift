@@ -65,11 +65,13 @@ struct FilamentPushNotice: View {
         case .checking:
             return "Checking whether \(subject.printerName) lists \(subject.label)…"
         case .missing:
-            return "\(subject.printerName) doesn't list \(subject.label) (\(subject.filamentID)) yet"
+            return "\(subject.printerName) doesn't list \(subject.label) (\(subject.allIDs.joined(separator: ", "))) yet"
         case .adding:
             return "Adding \(subject.label) to \(subject.printerName)…"
         case .added:
-            return "\(subject.label) is in \(subject.printerName)'s filament list"
+            return subject.otherIDs.isEmpty
+                ? "\(subject.label) is in \(subject.printerName)'s filament list"
+                : "\(subject.label) are in \(subject.printerName)'s filament list"
         case .failed(_, .check, _):
             return "Couldn't check \(subject.printerName) for \(subject.label)"
         case .failed(_, .add, _):
@@ -79,9 +81,10 @@ struct FilamentPushNotice: View {
 
     private var detail: String? {
         switch model.phase {
-        case .missing:
-            return "The CFS ignores a tag for a filament its printer doesn't list. Adding it puts that one "
-                + "entry in the printer's filament list and changes nothing else; the file it replaces is "
+        case let .missing(subject):
+            return "The CFS ignores a tag for a filament its printer doesn't list. Adding "
+                + (subject.otherIDs.isEmpty ? "it puts that one entry" : "them puts those entries")
+                + " in the printer's filament list and changes nothing else; the file replaced is "
                 + "kept on the printer."
         case .added:
             // Seen on a K2 Plus: the touchscreen picked the new entry up at once, while the CFS kept

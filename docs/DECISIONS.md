@@ -553,3 +553,52 @@ Tried against the 24 distinct filaments in the owner's stock before building any
 - The camera sheet's filament list has not been exercised against a live camera in this change;
   its matching is the same call the Inventory rail makes.
 
+## D-017 — The Inventory marks what a spool still needs; the colour is chosen from the maker's list or read off the box
+**Context:** The point of naming colours properly (D-016) is that HueForge designs with them. Three
+things could silently be wrong with a spool and only show at the moment of failure: the printer not
+listing its filament (the CFS ignores the tag, D-013), HueForge never having been sent it (D-015),
+and its colour being a description rather than the maker's. And Intake's Method B took brand and
+material from lists but left the colour to a typed hex or a camera reading.
+
+**Decision:**
+- `SpoolAttention` is the list of those three, per spool. One triangle on the row whatever the
+  count; the rail explains each and carries the fix. Low stock keeps its own mark.
+- *Printer*: `SpoolAttentionModel` reads each configured printer's filament list over the
+  read-only websocket (D-013), caches it for five minutes, and marks a spool only when **no**
+  printer whose list was read has the id. Factory ids are never marked; a printer that does not
+  answer raises nothing. The fix reuses `FilamentPushModel` — nothing reaches the printer without
+  the notice's own click, and no restart is involved (D-006).
+- *HueForge*: every route out (Sync, export, community source) records `uuid → fingerprint` in
+  `hueforge.json`. A filament is `notSent`, `current`, `outdated` or `excluded`. The record is
+  kept rather than read back from HueForge's folder because that folder is in another app's
+  container and reading it makes macOS prompt. Marks appear only where HueForge is installed, a
+  sync folder is chosen, or something has been sent.
+- *Colour*: marked while `colorNameSource` is `.generic`.
+- Pointing at a row's triangle opens a popover listing its faults — not a tooltip, which is slow
+  and unreliable inside a row that is itself a button.
+- A bar above the list counts each fault and fixes it across the stock: one push notice for every
+  missing filament (added one record at a time, stopping at the first failure), one HueForge sync,
+  and a sheet naming unmatched colours a filament-and-colour at a time. Nothing in that sheet is
+  pre-chosen: a factory tag's hex is a code, so "nearest" is a suggestion and not an answer.
+- Method B's *Colour* is a menu of `BrandColourCatalogue.colours(brand:name:material:)` — the
+  line's colours, else the maker's range — with *Scan the colour…* as its last row. One entry per
+  name, the measured swatch preferred. A change of material drops the choice; the hex stays.
+- The camera sheet gains the same full list and a second mode that reads the box's GTIN with
+  Vision (`VNDetectBarcodesRequest`, EAN-13/EAN-8, two agreeing frames, check digit verified).
+  `filament-barcodes.json` maps 5,629 codes; an unlisted box is learned into `barcodes.json` when
+  its spool is added. The box names the maker's product, the tag needs a printer id: matched by
+  maker and line word-set, sub-brand included, then the generic polymer entry.
+
+**Consequences / limits:**
+- On first run after this change every filament reads *Not synced with HueForge* until one sync or
+  export, because nothing was recorded before.
+- "Sent" means written by Spoolworks. A file exported and never imported counts as sent.
+- A spool with no tag is checked against the printer by the id the catalogue gives its brand and
+  name; one the catalogue cannot resolve is not checked.
+- Barcode coverage is the database's: Creality has five codes. Learning fills the gap one box at a
+  time.
+- **Not verified on hardware:** a real box under the camera (the sheet, camera and mode switch were
+  exercised live; no barcode was presented), and the printer warning against a live printer with a
+  vendor-id spool in stock beyond seeing the warning raised (the add itself was not run). Both are
+  covered by unit tests with stand-ins. The triangle's hover popover was not exercised with a pointer.
+

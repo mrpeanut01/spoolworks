@@ -31,6 +31,13 @@ let exitCode = TestDriver.run([
     colorHexTests,
     colorTableIntegrityTests,
 
+    // Warnings, the maker's colour list, and the box barcode
+    boxBarcodeTests,
+    makerColourListTests,
+    hueForgeSyncStateTests,
+    spoolAttentionTests,
+    intakeMakerColourTests,
+
     // Camera colour scan
     labColorTests,
     pixelFieldTests,

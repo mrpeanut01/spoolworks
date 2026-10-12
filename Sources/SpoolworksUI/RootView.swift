@@ -113,6 +113,8 @@ struct RootView: View {
             Task {
                 await env.printerModel.refresh()
                 env.cfsModel.startAutoPoll()
+                // The same ordering: asking which filaments a printer lists needs a printer.
+                env.attentionModel.refreshListings(force: true)
             }
             // The catalogue used to load only when MaterialsView appeared. Now that Materials is
             // a window rather than a sidebar destination, nothing opened it on a normal run — so
@@ -126,7 +128,7 @@ struct RootView: View {
     private var detail: some View {
         switch env.sidebarSelection {
         case .inventory:
-            InventoryView(model: env.inventoryModel, env: env)
+            InventoryView(model: env.inventoryModel, env: env, attention: env.attentionModel)
         case .printerCFS:
             PrinterCFSView(model: env.cfsModel, inventory: env.inventoryModel)
         case .intake:

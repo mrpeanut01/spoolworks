@@ -11,6 +11,9 @@ import SpoolworksCore
 struct InventoryView: View {
     @ObservedObject var model: InventoryViewModel
     @ObservedObject var env: AppEnvironment
+    /// Observed here, not reached through `env`: a nested `ObservableObject` does not republish
+    /// through its owner, and the triangles have to appear when a printer's list arrives.
+    @ObservedObject var attention: SpoolAttentionModel
     /// Column and rail widths, dragged by the user and remembered. Owned here so the header, every
     /// row and the splitter read one source — the fixed `Column` constants this replaced existed
     /// for the same reason, and drifting apart is still the failure it prevents.
@@ -19,6 +22,9 @@ struct InventoryView: View {
     /// "Not now" on the rename offer. Session-only on purpose: the offer is cheap to see again and
     /// a permanent dismissal would need somewhere to undo it.
     @State private var renamesDeferred = false
+    /// The colours being named in bulk, while that sheet is open.
+    @State private var matchingColours: [InventoryViewModel.UnmatchedColour]?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 0) {
@@ -28,9 +34,12 @@ struct InventoryView: View {
             ResizeHandle(axis: .rail) { delta in
                 layout.setRailWidth(layout.railWidth - delta)
             }
-            InventoryDetailRail(model: model, env: env)
+            InventoryDetailRail(model: model, env: env, attention: attention,
+                                hueForge: env.hueForgeModel)
                 .frame(width: layout.railWidth)
         }
+        // Cheap when the lists are fresh — see `SpoolAttentionModel.listingLifetime`.
+        .onAppear { attention.refreshListings() }
         .sheet(item: $model.retireTarget) { spool in
             RetireDialog(spool: spool,
                          confirm: { model.confirmRetire(spool) },
@@ -38,6 +47,75 @@ struct InventoryView: View {
         }
         .sheet(isPresented: $isReviewingRenames) {
             ColourRenameSheet(proposals: model.renameProposals) { model.applyRenames($0) }
+        }
+        .sheet(isPresented: Binding(get: { matchingColours != nil },
+                                    set: { if !$0 { matchingColours = nil } })) {
+            ColourMatchSheet(groups: matchingColours ?? []) { names in
+                model.applyColourNames(names, to: matchingColours ?? [])
+            }
+        }
+    }
+
+    /// The faults in stock, counted, each with the one action that clears every case of it.
+    ///
+    /// The rail fixes a spool; this fixes a fault. Thirty spools that all say "not synced" are one
+    /// problem with one answer, and making it thirty clicks would teach the user to ignore the
+    /// triangle.
+    @ViewBuilder
+    private var attentionSummary: some View {
+        let printer = attention.missingFilaments
+        let hueForge = attention.count("hueforge")
+        let colour = attention.count("colour")
+        if printer != nil || hueForge > 0 || colour > 0 {
+            VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                if let printer {
+                    let n = printer.ids.count
+                    attentionLine("\(printer.printerName) does not list \(n) filament\(n == 1 ? "" : "s") in stock "
+                                  + "(\(attention.count("printer")) spool\(attention.count("printer") == 1 ? "" : "s"))",
+                                  action: n == 1 ? "Add it to \(printer.printerName)…"
+                                                 : "Add all \(n) to \(printer.printerName)…") {
+                        env.filamentPushModel.offerAll(filamentIDs: printer.ids, family: printer.family)
+                    }
+                }
+                if hueForge > 0 {
+                    let synced = env.hueForgeModel.syncFolder != nil
+                    attentionLine("\(hueForge) spool\(hueForge == 1 ? " is" : "s are") not in step with HueForge",
+                                  action: synced ? "Sync all to HueForge" : "Open HueForge…") {
+                        if synced {
+                            env.hueForgeModel.syncNow()
+                        } else {
+                            openWindow(id: AppEnvironment.hueForgeWindowID)
+                        }
+                    }
+                }
+                if colour > 0 {
+                    attentionLine("\(colour) spool\(colour == 1 ? " has a colour" : "s have colours") "
+                                  + "not matched to the maker's own",
+                                  action: "Match colours…") {
+                        matchingColours = model.unmatchedColours()
+                    }
+                }
+            }
+            .padding(Theme.Spacing.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.warning.opacity(0.08))
+            .overlay(Rectangle().strokeBorder(Theme.warning, lineWidth: 1))
+        }
+    }
+
+    private func attentionLine(_ text: String, action: String, perform: @escaping () -> Void) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.warning)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.label)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Theme.Spacing.s)
+            Button(action, action: perform)
+                .buttonStyle(.sw(.secondary, size: 12, h: 12, v: 6))
         }
     }
 
@@ -91,6 +169,12 @@ struct InventoryView: View {
                 renameOffer.padding(.bottom, Theme.Spacing.m)
             }
 
+            attentionSummary.padding(.bottom, Theme.Spacing.m)
+
+            // Raised from the rail's "Add to printer", and shown here rather than in the rail so
+            // it survives selecting another spool while the printer is being written to.
+            FilamentPushNotice(model: env.filamentPushModel).padding(.bottom, Theme.Spacing.m)
+
             if model.isEmpty {
                 EmptyPanel(kicker: "Nothing in stock",
                            title: "No spools logged yet",
@@ -117,6 +201,7 @@ struct InventoryView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { spool in
                         InventoryRow(spool: spool,
+                                     issues: attention.issues(for: spool),
                                      layout: layout,
                                      isSelected: model.selected?.id == spool.id) {
                             model.selectedID = spool.id
@@ -312,11 +397,15 @@ private struct InventoryHeaderRow: View {
 
 private struct InventoryRow: View {
     let spool: Spool
+    /// What this spool still needs. See ``SpoolAttention``.
+    let issues: [SpoolAttention]
     @ObservedObject var layout: InventoryLayout
     let isSelected: Bool
     let select: () -> Void
 
     @State private var hovering = false
+    /// Whether the pointer is on the triangle, which is what shows the list of faults.
+    @State private var hoveringIssues = false
 
     var body: some View {
         Button(action: select) {
@@ -324,10 +413,32 @@ private struct InventoryRow: View {
                 Swatch(hex: spool.colorHex)
                     .frame(width: InventoryLayout.swatchWidth, alignment: .leading)
 
-                Text(spool.label)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text(spool.label)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                    // One triangle however many things are wrong: the row says *that* the spool
+                    // needs something, the tooltip and the rail say what. Beside the name rather
+                    // than in a column of its own, because most rows have nothing to show and an
+                    // empty column is width taken from the name.
+                    if !issues.isEmpty {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.warning)
+                            // A little air around it: an 11 pt glyph is a target you slide off.
+                            .padding(3)
+                            .contentShape(Rectangle())
+                            .onHover { hoveringIssues = $0 }
+                            // A popover and not a tooltip. A tooltip waits a second and a half,
+                            // and inside a row that is itself a button it does not reliably
+                            // appear at all; the faults should be there the moment you point.
+                            .popover(isPresented: $hoveringIssues, arrowEdge: .bottom) {
+                                IssueList(issues: issues)
+                            }
+                            .accessibilityHidden(true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 gap
                 Text(spool.materialType.isEmpty ? "—" : spool.materialType)
@@ -377,7 +488,8 @@ private struct InventoryRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(spool.label), \(spool.materialType), \(spool.remainingLabel) remaining, \(spool.location.description)")
+        .accessibilityLabel("\(spool.label), \(spool.materialType), \(spool.remainingLabel) remaining, \(spool.location.description)"
+                            + (issues.isEmpty ? "" : ". Needs attention: " + issues.map(\.title).joined(separator: "; ")))
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
@@ -394,11 +506,39 @@ private struct InventoryRow: View {
     }
 }
 
+/// What a row's triangle stands for, one fault per line.
+private struct IssueList: View {
+    let issues: [SpoolAttention]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+            ForEach(issues) { issue in
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.warning)
+                    Text(issue.title)
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: 340, alignment: .leading)
+        // Hovering must not be able to take the click, or the row under it could not be selected.
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - Detail rail
 
 private struct InventoryDetailRail: View {
     @ObservedObject var model: InventoryViewModel
     @ObservedObject var env: AppEnvironment
+    @ObservedObject var attention: SpoolAttentionModel
+    @ObservedObject var hueForge: HueForgeViewModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ScrollView {
@@ -437,6 +577,11 @@ private struct InventoryDetailRail: View {
             Spacer(minLength: 0)
         }
         .padding(.bottom, Theme.Spacing.l)
+
+        let issues = attention.issues(for: spool)
+        if !issues.isEmpty {
+            attentionPanel(issues, for: spool).padding(.bottom, Theme.Spacing.l)
+        }
 
         HStack(alignment: .lastTextBaseline) {
             Text(spool.remainingLabel).font(Theme.monoFigure(30)).foregroundStyle(Theme.label)
@@ -526,6 +671,72 @@ private struct InventoryDetailRail: View {
         // act on, which is the other reason it belongs after the buttons.
         Text("Usage log").kicker().padding(.top, 18).padding(.bottom, 10)
         UsageLog(entries: spool.usage)
+    }
+}
+
+extension InventoryDetailRail {
+
+    /// What the row's triangle stands for, each with the one thing that puts it right.
+    ///
+    /// At the top of the rail, above the remaining figure: these are the reasons the spool will
+    /// not behave, and a reason the CFS will ignore a spool outranks how full it is.
+    func attentionPanel(_ issues: [SpoolAttention], for spool: Spool) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
+            ForEach(issues) { issue in
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.warning)
+                            .accessibilityHidden(true)
+                        Text(issue.title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(Theme.label)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(issue.detail)
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                    attentionAction(issue, for: spool)
+                }
+                .accessibilityElement(children: .contain)
+            }
+        }
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.warning.opacity(0.08))
+        .overlay(Rectangle().strokeBorder(Theme.warning, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func attentionAction(_ issue: SpoolAttention, for spool: Spool) -> some View {
+        switch issue {
+        case let .notOnPrinter(printer, _, filamentID):
+            if let family = attention.family(missing: spool) {
+                // Raises the notice above the list, which asks the printer again and then offers
+                // the add. Nothing is written to the printer from this button alone.
+                Button("Add to \(printer)…") {
+                    env.filamentPushModel.offer(filamentID: filamentID, family: family)
+                }
+                .buttonStyle(.sw(.secondary, size: 12, h: 12, v: 6))
+                .padding(.top, 2)
+            }
+        case .notInHueForge:
+            if hueForge.syncFolder != nil {
+                Button("Sync to HueForge now") { hueForge.syncNow() }
+                    .buttonStyle(.sw(.secondary, size: 12, h: 12, v: 6))
+                    .padding(.top, 2)
+                    .help("Rewrites Spoolworks' library in the HueForge folder with everything in stock.")
+            } else {
+                Button("Open HueForge…") { openWindow(id: AppEnvironment.hueForgeWindowID) }
+                    .buttonStyle(.sw(.secondary, size: 12, h: 12, v: 6))
+                    .padding(.top, 2)
+                    .help("Choose HueForge's folder to sync into, or export a library file to import.")
+            }
+        case .colourUnmatched:
+            EmptyView()
+        }
     }
 }
 
@@ -955,6 +1166,7 @@ struct ColourNameRow: View {
                     .accessibilityHint("Press Return to set it for every spool of this filament and colour.")
             }
             if source == .generic {
+                makerColourMenu
                 let suggestions = model.colourName(for: spool).suggestions
                 if !suggestions.isEmpty {
                     // The line's own colours first — the answer is usually one of them even when
@@ -973,6 +1185,40 @@ struct ColourNameRow: View {
         .overlay(alignment: .bottom) { Hairline() }
         .accessibilityElement(children: .contain)
         .onAppear { draft = spool.colorName }
+    }
+
+    /// Every colour the maker sells this filament in, by name.
+    ///
+    /// The chips below are the nearest few, and for a factory tag "nearest" can be wrong — its
+    /// hex is a code, not a reading. The box says the name; this is the whole list to find it in.
+    /// Choosing one names the colour and nothing else: on a tagged spool the hex is part of what
+    /// the printer identifies it by, so it is never changed from here.
+    @ViewBuilder
+    private var makerColourMenu: some View {
+        let listed = model.makerColours(for: spool)
+        if !listed.colours.isEmpty {
+            HStack(spacing: Theme.Spacing.s) {
+                Text(listed.scope == .line ? "Maker's colours" : "Maker's range")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.kickerLabel)
+                Spacer(minLength: Theme.Spacing.s)
+                Picker("", selection: Binding(
+                    get: { "" },
+                    set: { id in
+                        guard let colour = listed.colours.first(where: { $0.id == id }) else { return }
+                        model.setColourName(colour.name, for: spool)
+                    })) {
+                    Text("Choose…").tag("")
+                    ForEach(listed.colours) { colour in
+                        Text(ColorScanSheet.menuTitle(colour, showsLine: listed.scope != .line))
+                            .tag(colour.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 190)
+                .accessibilityLabel("The maker's name for the colour of \(spool.label)")
+            }
+        }
     }
 
     static func title(_ source: ColourNameSource) -> String {
@@ -1043,6 +1289,105 @@ struct FilamentMatchChips: View {
 
     private func detail(_ match: BrandColourCatalogue.Match) -> String {
         showsBrand ? "\(match.colour.brand) · \(match.colour.line)" : match.colour.line
+    }
+}
+
+/// Names every unmatched colour in stock in one sitting: a row per filament and colour, a menu of
+/// that maker's colours on each.
+///
+/// Nothing is pre-chosen. The nearest colour is listed first, but for a factory tag "nearest" is
+/// often wrong — its hex is a code, not a reading — and a sheet that arrived with thirty guesses
+/// already ticked would be thirty names applied on one careless click.
+struct ColourMatchSheet: View {
+    let groups: [InventoryViewModel.UnmatchedColour]
+    let apply: ([String: String]) -> Void
+
+    @State private var names: [String: String] = [:]
+    @Environment(\.dismiss) private var dismiss
+
+    private var chosen: Int {
+        names.values.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Colour names").kicker()
+                Text("Match colours to their makers'").font(.system(size: 20, weight: .heavy))
+                Text("Each row is one filament and colour, however many spools of it are in stock. "
+                     + "Choose what the maker calls it — the nearest are listed first — or type "
+                     + "the name off the box. Rows left alone are not changed.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+            Rule()
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(groups) { group in
+                        row(group)
+                            .padding(.vertical, 8)
+                            .overlay(alignment: .bottom) { Hairline() }
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+            Rule()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.sw(.ghost))
+                    .keyboardShortcut(.cancelAction)
+                Button("Name \(chosen)") {
+                    apply(names)
+                    dismiss()
+                }
+                .buttonStyle(.sw(.primary))
+                .disabled(chosen == 0)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+        }
+        .frame(width: 680, height: 560)
+        .background(Theme.background)
+    }
+
+    private func row(_ group: InventoryViewModel.UnmatchedColour) -> some View {
+        let name = Binding(get: { names[group.id] ?? "" }, set: { names[group.id] = $0 })
+        return HStack(spacing: Theme.Spacing.m) {
+            Swatch(hex: group.spool.colorHex)
+            VStack(alignment: .leading, spacing: 1) {
+                Text([group.spool.brand, group.spool.name].filter { !$0.isEmpty }.joined(separator: " "))
+                    .font(Theme.rowTitle)
+                    .lineLimit(1)
+                Text("“\(group.spool.colorName.isEmpty ? "—" : group.spool.colorName)” · #\(group.spool.colorHex)"
+                     + " · \(group.spoolCount) spool\(group.spoolCount == 1 ? "" : "s")")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.secondaryLabel)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !group.options.isEmpty {
+                Picker("", selection: Binding(
+                    get: { group.options.first { $0.name == name.wrappedValue }?.id ?? "" },
+                    set: { id in name.wrappedValue = group.options.first { $0.id == id }?.name ?? "" })) {
+                    Text("Maker's colours").tag("")
+                    ForEach(group.options) { colour in
+                        Text(ColorScanSheet.menuTitle(colour, showsLine: group.showsLine)).tag(colour.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 170)
+                .accessibilityLabel("The maker's colours for \(group.spool.label)")
+            }
+            TextField("Name", text: name)
+                .textFieldStyle(.plain)
+                .swInput()
+                .frame(width: 140)
+                .accessibilityLabel("Colour name for \(group.spool.label)")
+        }
     }
 }
 

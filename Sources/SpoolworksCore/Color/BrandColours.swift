@@ -119,7 +119,7 @@ public struct BrandColourCatalogue: Sendable {
         "prusa": "prusament", "prusaresearch": "prusament", "amolen": "amolen", "molen": "amolen",
     ]
 
-    static func brandKey(_ brand: String) -> String {
+    public static func brandKey(_ brand: String) -> String {
         let key = tokens(brand).joined()
         return brandAliases[key] ?? key
     }
@@ -132,7 +132,7 @@ public struct BrandColourCatalogue: Sendable {
     /// Both halves matter. The printer's catalogue says `Polymaker ABS` where the maker says
     /// `PolyLite ABS`, and one source files a line as `Matte` with polymer `PLA` where another
     /// calls the whole thing `Matte PLA`; as word sets they meet.
-    static func lineTokens(_ line: String, material: String, brandKey: String) -> Set<String> {
+    public static func lineTokens(_ line: String, material: String, brandKey: String) -> Set<String> {
         var words = tokens(line) + tokens(material)
         words.removeAll { noise.contains($0) || brandKey == (brandAliases[$0] ?? $0) }
         return Set(words)
@@ -225,6 +225,46 @@ public struct BrandColourCatalogue: Sendable {
         let brandMatches = nearest(in: pool.filter { !taken.contains($0.nameKey) }, to: lab,
                                    scope: .brand, distinctBy: \.nameKey, limit: limit)
         return lineMatches + brandMatches
+    }
+
+    /// Every colour the maker sells this filament in, by name — the list to choose from when the
+    /// box is in hand and nothing has been measured.
+    ///
+    /// The spool's own line when the catalogue has it (``Scope/line``), otherwise the maker's whole
+    /// range (``Scope/brand``), where each colour's ``BrandColour/line`` says which product it
+    /// belongs to. Empty when the maker is not one the catalogue knows: a list of every maker's
+    /// colours is not a list anyone can choose from.
+    ///
+    /// One entry per name. Where both sources list a colour the **measured** one is kept: its hex
+    /// is a colorimeter reading of the printed filament, and the published one is the maker's
+    /// marketing value — fine for finding the name, worse as the colour itself.
+    public func colours(brand: String, name: String = "", material: String = "")
+        -> (colours: [BrandColour], scope: Scope) {
+        guard let maker = self.brand(for: brand, name: name) else { return ([], .anywhere) }
+        let key = Self.brandKey(maker)
+        let pool = byBrand[key] ?? []
+        let wanted = Self.lineTokens(name, material: material, brandKey: key)
+
+        var inLine: [Entry] = []
+        if !wanted.isEmpty {
+            inLine = pool.filter { $0.lineTokens == wanted }
+            if inLine.isEmpty { inLine = pool.filter { wanted.isSubset(of: $0.lineTokens) } }
+        }
+        let scope: Scope = inLine.isEmpty ? .brand : .line
+        var chosen: [String: BrandColour] = [:]
+        for entry in inLine.isEmpty ? pool : inLine {
+            // Across a whole range the same name is a different colour in each line.
+            let k = scope == .line ? entry.nameKey : "\(entry.nameKey)|\(entry.lineTokens.sorted())"
+            if let held = chosen[k], held.source == .measured || entry.colour.source == .published {
+                continue
+            }
+            chosen[k] = entry.colour
+        }
+        let sorted = chosen.values.sorted {
+            ($0.name.lowercased(), $0.line.lowercased(), $0.hex)
+                < ($1.name.lowercased(), $1.line.lowercased(), $1.hex)
+        }
+        return (sorted, scope)
     }
 
     private func nearest<S: Sequence>(in entries: S, to lab: LabColor, scope: Scope,

@@ -152,10 +152,41 @@ public struct HueForgePreferences: Codable, Hashable, Sendable {
     public var transmissivity: [String: Double]
     /// Filaments left out of the export.
     public var excluded: Set<String>
+    /// What was last handed to HueForge, by any route: uuid → ``HueForgeFilament/sentFingerprint``.
+    ///
+    /// Recorded rather than read back from HueForge's folder. That folder is inside another app's
+    /// container, and looking in it makes macOS ask the user's permission — a question that should
+    /// follow them choosing the folder, not appear because the Inventory was opened. `nil` in a
+    /// file written before this was kept, and when nothing has ever been sent.
+    public var sent: [String: String]?
 
-    public init(transmissivity: [String: Double] = [:], excluded: Set<String> = []) {
+    public init(transmissivity: [String: Double] = [:], excluded: Set<String> = [],
+                sent: [String: String]? = nil) {
         self.transmissivity = transmissivity
         self.excluded = excluded
+        self.sent = sent
+    }
+}
+
+/// Whether HueForge has a filament as Spoolworks now describes it.
+public enum HueForgeSyncState: Hashable, Sendable {
+    /// Sent, and nothing about it has changed since.
+    case current
+    /// Sent, but its name, colour or TD has changed here since.
+    case outdated
+    /// Never sent.
+    case notSent
+    /// Left out of the export on purpose.
+    case excluded
+}
+
+public extension HueForgeFilament {
+    /// Everything HueForge is told about a filament, as one comparable string.
+    ///
+    /// Compared against ``HueForgePreferences/sent`` to tell a filament HueForge has from one it
+    /// has an older description of — a colour renamed to its maker's name, a TD measured since.
+    var sentFingerprint: String {
+        [brand, type, color, name, HueForgeLibrary.number(transmissivity)].joined(separator: "|")
     }
 }
 
@@ -233,6 +264,23 @@ public enum HueForgeExporter {
     /// The library to hand HueForge: the included entries, in order.
     public static func library(from entries: [HueForgeExportEntry]) -> HueForgeLibrary {
         HueForgeLibrary(filaments: entries.filter(\.isIncluded).map(\.filament))
+    }
+
+    /// What to record in ``HueForgePreferences/sent`` after handing `library` to HueForge.
+    ///
+    /// The whole record is replaced, not merged: Sync overwrites the file wholesale, so a filament
+    /// that was in the last one and is not in this one is no longer in HueForge's copy either.
+    public static func sentRecord(for library: HueForgeLibrary) -> [String: String] {
+        Dictionary(library.filaments.map { ($0.uuid, $0.sentFingerprint) },
+                   uniquingKeysWith: { _, latest in latest })
+    }
+
+    /// Whether HueForge has `entry` as it stands.
+    public static func syncState(of entry: HueForgeExportEntry,
+                                 sent: [String: String]?) -> HueForgeSyncState {
+        guard entry.isIncluded else { return .excluded }
+        guard let fingerprint = sent?[entry.filament.uuid] else { return .notSent }
+        return fingerprint == entry.filament.sentFingerprint ? .current : .outdated
     }
 
     /// The TDs a HueForge file can supply for these entries.
